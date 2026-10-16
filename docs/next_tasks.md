@@ -7,13 +7,13 @@
 - 목표/범위: 목록 1페이지 3건부터 수집하고, 대표 항목의 상세/지원조건을 소량 확인. 전국 전수 수집 제외.
 - 선행 조건: 해당 API 활용신청 승인, Decoding 키를 `.env`/환경변수로 안전하게 공급, 계정 한도 확인. 현재 세 종류 키 모두 프로세스 미설정.
 - 예상 파일: `gov24.py`, `domain.py`, `docs/data_sources.md`, `docs/source_specs.json`, 승인된 비식별 실응답 fixture. 필요한 경우 새 migration.
-- 계약: 승인 endpoint 응답 bytes → raw ID + 검증된 필드/타입/빈값/코드 의미/날짜/ID 중복/지역·대상 범위 보고서. API key와 개인/연락처 정보는 fixture 공유 전 검토.
+- 계약: 승인 endpoint 응답 bytes → raw/run ID → `profile --run-id ID --dataset-kind live` + 실제 필드/코드/날짜/범위 검토. 프로파일은 결측/길이 관측이며 코드 의미 검증과 다르다. API key와 개인/연락처 정보는 fixture 공유 전 검토.
 - 합격 기준: 실제 HTTP 상태·수집일·run ID를 기록하고 문서와 응답 차이를 명시. missing/false/empty 코드 의미를 확정하지 못하면 unresolved 유지. source URL 상태와 표본 범위를 명시. 기존 합성 fixture를 실제 응답으로 재명명하지 않음.
 - 검증: 명시적 live 실행과 raw 재생 결과 비교, 기존 오프라인 및 PostgreSQL suite. 실접속 테스트는 기본 suite에서 분리.
 
 ## T2 — 상세 근거와 검증 규칙 계약 (Sol 6.1 High)
 
-- 목표/범위: T1의 관측으로 목록/상세/지원조건 버전과 field evidence 연결을 확정. 개인/청년·고용·주거·복지 범위 분류. 코드 기반 자동 자격 단정 제외.
+- 목표/범위: T1 관측으로 목록/상세/지원조건 버전·field evidence 연결 확정. 개인·생활변화 범위를 분류하되 제품을 청년 cohort로 제한하지 않음. 코드 기반 자동 자격 단정 제외.
 - 선행 조건: 실제 표본·코드 값 의미·지원조건 관계에 대한 근거. 보조금24 상세와 목록의 field 차이 정리.
 - 파일: `domain.py`, `gov24.py`, `ingestion.py`, 새 migration, `tests/test_ingestion.py`, 아키텍처 문서.
 - 계약: source별 명시적 record type → 검증 상태 포함 canonical revision; 조건은 원문·span·reviewer·적용 시점 연결. 같은 source ID의 부분 응답이 이미 있는 상세를 지우지 않도록 merge/version 규칙부터 정한다.
@@ -31,11 +31,11 @@
 
 ## T4 — 검색 실험 기반 (Sol 6.1 High)
 
-- 목표/범위: frozen corpus에서 Kiwi/BM25Okapi, BGE-M3 dense, RRF 비교. 생성·reranker 제외.
-- 선행 조건: T1/T2를 거친 실제 corpus snapshot과 관련 프로그램 라벨. 모델 다운로드 저장 공간·메모리 및 Windows CPU/CUDA 호환 확인.
+- 목표/범위: frozen corpus에서 **SQL-only, Kiwi/BM25Okapi, BGE-M3 dense, RRF 네 baseline** 비교 및 별도 filtering ablation. 생성·reranker 제외.
+- 선행 조건: T1/T2 실제 corpus, 아래 T7의 reviewed 라벨·근거. 모델 revision SHA·저장 공간·메모리·Windows CPU/CUDA 호환 확인. 현재 revision 미확정.
 - 파일: 새로운 `retrieval/`, `embedding/`, index manifest, vector/model metadata migration, `tests/`, `evaluation/`.
 - 계약: `query + confirmed constraints + snapshot -> ranked program IDs with document IDs/ranks/evidence`; fixture namespace 제외, unknown 범위 유지.
-- 합격 기준: tokenizer/사전 버전 고정, 모델 revision/dimension 확인, 자동 모델 다운로드 없음, BM25 전체 rebuild/원자 교체, 과거 revision 제외, chunk 수에 따른 중복 부풀림 방지, raw score 합산 금지.
+- 합격 기준: tokenizer/사전·모델 revision/dimension 고정, 자동 다운로드 없음, BM25 전체 rebuild/원자 교체, 과거 revision 제외, 중복 점수 부풀림·raw score 합산 금지. candidate_top_k/evidence budget/final_result_limit 분리. 동일 corpus/라벨/예산 비교와 filter 제거 사유 보고.
 - 검증: docs/evaluation.md의 동일 corpus/queries 비교와 mock embedding 단위 테스트. 실제 모델 실험은 별도 marker. 측정 전 개선 주장 금지.
 
 ## T5 — 좁은 운영/CI 작업 (Luna 6, 명세 고정 후)
@@ -56,7 +56,25 @@
 - 합격 기준: 모델은 지정 `gpt-4o-mini`, 모델/embedding endpoint 자동 대체 없음. 없는 URL/정책 정보 생성 차단, retrieved text 명령 격리, no-result/증거 부족/불완전 프로필 처리, 민감 프로필 로그 제외.
 - 검증: mock generation와 공격 문서/허위 citation tests; 승인된 작은 paid suite 별도. SDK 설치 버전 API signature 확인. 실호출 없이 계정 접근 성공 주장 금지.
 
-## Astra 검토가 유용할 수 있는 질문
+## T7 — 실제 평가 주석과 evidence resolver (Sol 6.1 High)
+
+- 목표/범위: 제안 60문항 pilot의 실제 원문 기반 주석·독립 검토와 실DB evidence 복원. 합성 두 case를 실라벨로 변환하지 않음.
+- 선행 조건: T1/T2 실표본·동결 program/version/raw, 주석자·review 기준, 판정일. 제품 cohort와 실제 coverage 구분.
+- 파일: `evaluation_contract.py`, 새 resolver, 로컬 비공개 평가셋, `docs/evaluation.md`, 관련 tests.
+- 계약: policy_annotation JSON + snapshot + DB → raw SHA/pointer/span 존재 검증 + review 결과. 구조 통과와 의미 검토 결과를 분리.
+- 합격 기준: 관련성·삼값 조건·신청 회차·기대 사실/금지 주장 분리, complete/partial 구분, near-duplicate split 누출 없음. 불명확 조건은 확인 필요. 실제 corpus·라벨을 검증 없이 공개하지 않음.
+- 검증: 누락/다른 버전/위조 발췌 실패 tests, 사람의 근거 대조, 기본 suite; metric 목표를 측정 결과로 보고하지 않음.
+
+## T8 — 확정된 계약의 좁은 반복 주석/검사 (Luna 6)
+
+- 목표/범위: T7에서 확정된 주석 형식의 기계적 누락·ID·자료 연결 검사. 신규 정책 의미·자격·schema 판단 제외.
+- 선행 조건: Sol이 정한 동결 명세, 검토된 예시, 승인된 입력 파일 범위와 검사 기준.
+- 파일: 지정 평가 JSON·검사 결과 보고서만. schema/loader/migration 수정 금지.
+- 계약: 지정 파일 → 구조 오류 목록/수정 제안과 원본 근거. 라벨 자동 확정 금지.
+- 합격 기준: 누락 처리 재현, 합성/live 분리, 기존 라벨 의미·split 변경 없음. 불명확 판단은 Sol에 인계.
+- 검증: validate-evaluation 및 지정 resolver; 실제 의미 검토 완료 여부는 주석자 확인.
+
+## Astra 대상 검토 질문
 
 현재 막힌 설계 충돌은 없으며 Astra 작업을 시작하지 않았다. 다음 상황이 실제 발생하면 좁은 review package를 준비한다.
 

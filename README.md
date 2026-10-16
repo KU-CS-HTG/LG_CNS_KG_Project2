@@ -1,6 +1,8 @@
 # 한국 정부 혜택 Hybrid RAG — 초기 개발 기반
 
-개인 대상 청년·고용·주거·복지 혜택을 공식 근거로 안내하기 위한 수집 기반이다. 현재는 **보조금24 공식 명세 기반 합성 fixture의 수집·정규화·DB 적재·raw 재생**을 구현했다. 실제 정책 데이터는 확보하지 못했으며 live 연동, 검색, 생성, API 서버, UI는 아직 제공하지 않는다. 전국 혜택 완전성이나 공식 자격 결정을 주장하지 않는다.
+**개인 맞춤형 정부 지원제도 탐색 및 신청 안내**를 위한 개발 기반이다. 제품 대상은 취업·구직, 이사·주거, 결혼, 출산·양육 등 생활 변화를 겪는 개인이며 청년으로 제한하지 않는다. 초기 coverage는 실제 확보·검증한 프로그램만, 초기 검증 cohort는 청년 구직자·신혼부부·영유아 양육 가구로 제안한다. 기업 지원은 초기 범위 밖이다.
+
+현재는 **보조금24 합성 fixture 수집·정규화·적재·raw 재생, 오프라인 프로파일링, 평가 데이터 계약 검증**을 구현했다. 실제 정책 데이터·live 인증은 미검증이며 검색·생성·API/UI는 아직 없다. 충분한 근거가 있으면 약 3–5개·최대 5개를 안내하는 것이 제품 방향이다. 부족하면 더 적게 반환하며 결과를 채우거나 전체 혜택 목록·공식 자격 결정으로 표현하지 않는다. RAG/Hybrid의 품질 이점은 비교 실험할 가설이다.
 
 현재 검증 환경은 Windows 11 / PowerShell / Python 3.12.9 / uv 0.12.10이다. 기존 브랜치 `seok-kim`에서 작업했다. Python 3.11/3.12를 지원 대상으로 선언했으며 3.11·Linux 실행은 미검증이다.
 
@@ -32,7 +34,20 @@ uv run --locked benefit-rag replay --run-id <run_id>
 
 Linux/macOS에서는 `mkdir -p data`, `export DATABASE_URL=sqlite:///data/benefits.db`로 환경을 설정하고 동일 uv 명령을 사용한다. 직접 실행 경로는 `.venv/bin/`이다. Linux 절차는 아직 실행 검증하지 않았다.
 
-## PostgreSQL / pgvector
+## 저장 데이터 프로파일과 평가 계약
+
+위 fixture/replay 결과의 실제 run_id를 사용한다. 두 명령은 네트워크·유료 호출·모델 다운로드 없이 실행된다.
+
+```powershell
+uv run --locked benefit-rag profile --run-id <run_id> --dataset-kind fixture --output data/profile.json
+uv run --locked benefit-rag validate-evaluation --file tests/fixtures/evaluation/synthetic.json
+```
+
+profile은 종료된 단일 run의 raw를 읽고 상태·관측 수·명시적 분모의 결측·문자 길이·분야/대상 관측값·URL presence/저장 상태·raw manifest를 출력한다. fixture/live namespace 불일치는 거부하며 과거 통계를 최신 프로그램 값으로 바꾸지 않는다. 데이터 0건이면 분모 0·길이 통계 null이다. 미완료 표본과 합성 통계는 전체 corpus로 일반화할 수 없다. URL 상태 미저장은 not_stored_for_observation으로 표시한다. 상세 계약은 [data_sources.md](docs/data_sources.md)에 있다.
+
+평가 예제는 명시된 **합성 계약 테스트**이며 실제 혜택 라벨·성능 측정이 아니다. validation은 구조·참조와 합성 fixture의 SHA/원문 span만 검사한다. policy_truth_verified=false이며 검증 통과로 정답을 인증하지 않는다. 네 baseline(SQL/BM25/vector/hybrid), filtering ablation, 제안 pilot 60문항과 지표 분모는 [evaluation.md](docs/evaluation.md)에 있다. [planning_alignment.md](docs/planning_alignment.md)는 DOCX 정렬·외부 주장 상태를 기록한다.
+
+## PostgreSQL / pgvector 실행
 
 Docker Desktop Linux engine을 사용한다. 이미지 `pgvector/pgvector:0.8.0-pg16`, host bind `127.0.0.1:55432`, 영속 named volume을 구성했다. 예제 비밀번호는 로컬 개발 전용 공개 값이다. 실제 환경에서는 `.env.example`을 참고해 별도 비밀 값을 설정한다.
 
@@ -68,6 +83,7 @@ uv run --locked benefit-rag live --page-size 3 --max-pages 1
 - `migrations/`: Alembic frozen 초기 schema. `tests/fixtures/gov24/`: 실제 정책이 아닌 합성 3건.
 - [verification.md](docs/verification.md): 실제 검사 결과와 미확인 항목.
 - [next_tasks.md](docs/next_tasks.md), [evaluation.md](docs/evaluation.md): 구체적 인계와 후속 평가 계획.
+- [planning_alignment.md](docs/planning_alignment.md): 읽은 기획서, 방향·가설·외부 주장 검증 대장.
 
 canonical schema는 잠정이다. 수집 텍스트의 자격은 unresolved, 신청 상태는 unknown으로 둔다. 검증된 규칙/사용자 확인 정보만 삼값으로 평가한다. 소득·지역·기간 evaluator는 미구현이다. URL은 원문 값만 보존하고 공식성/접근성 검증 전 unverified다. 합성 fixture에 URL은 넣지 않았다.
 

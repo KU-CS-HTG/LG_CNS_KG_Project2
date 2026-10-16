@@ -10,6 +10,7 @@ from sqlalchemy.schema import CreateSchema, DropSchema
 
 from benefit_rag.db import Program, ProgramVersion, RawResponse, make_engine
 from benefit_rag.ingestion import ingest
+from benefit_rag.profiling import profile_run
 
 
 @pytest.mark.postgres
@@ -42,6 +43,9 @@ def test_postgres_migrations_types_and_ingestion(adapter):
         second = ingest(engine, adapter, dataset_kind="fixture")
         assert first["status"] == second["status"] == "completed"
         assert first["inserted"] == second["unchanged"] == 3
+        profile = profile_run(engine, first["run_id"], dataset_kind="fixture")
+        assert profile["observed"]["object_records"] == 3
+        assert profile["fields"]["target_text"]["missing_count"] == 1
         with Session(engine) as session:
             assert session.scalar(select(func.count()).select_from(ProgramVersion)) == 3
             assert session.scalar(select(func.count()).select_from(RawResponse)) == 4

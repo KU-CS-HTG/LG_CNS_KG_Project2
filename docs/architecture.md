@@ -1,6 +1,6 @@
 # 초기 아키텍처
 
-상태: **잠정 설계 + 최소 수집 기반 구현**. 실데이터 미확보, 기준일 2026-10-16. 개인 대상 청년·고용·주거·복지 정보 안내가 목표이며 공식 자격 심사·신청 대행·전국 완전성을 제공하지 않는다. 기업/창업 지원, 추가 소스, UI, 검색·생성·reranking은 이번 구현에서 제외했다.
+상태: **기존 수집 기반 + 오프라인 데이터 검증/평가 계약 구현; 검색·생성 설계는 잠정**. 기준일 2026-10-16. 제품은 **개인 맞춤형 정부 지원제도 탐색 및 신청 안내**이며 취업·구직, 이사·주거, 결혼, 출산·양육 등 생활 변화를 겪는 개인을 대상으로 한다. 청년으로 제한하지 않는다. 초기 coverage는 실제 확보·검증 데이터에 한정하며 현재 정책 실응답은 미확보다. 초기 검증 cohort는 청년 구직자·신혼부부·영유아 양육 가구로 제안한다. 공식 자격 심사·신청 대행·전국 완전성을 제공하지 않는다. 기업 지원과 복지로 등 추가 소스는 후속이다. [기획 정렬 기록](planning_alignment.md)에 방향·가설·관측·미확인을 구분한다.
 
 ## 경계와 흐름
 
@@ -19,6 +19,8 @@ flowchart LR
 ```
 
 실선의 수집·저장 경로와 별도의 최소 연령/AND/OR 순수 함수를 구현했다. 점선 검색·생성 흐름은 설계다. API 서버를 빈 상태로 추가하지 않았다. 한 프로세스 CLI로 검증한 뒤 FastAPI를 도입한다.
+
+정형·검증 조건은 SQL 필터/결정적 evaluator가 처리한다. 자연어 설명·세부 기준·예외·신청 안내는 관련 근거를 찾아 설명한다. 생성은 검색 근거를 요약하며 없는 사실을 채우지 않는다. 의미검색 자체가 수치 자격이나 예외 관계를 해결한다고 주장하지 않는다. 생활어 표현 차이, 정책명/행정 용어 일치, 설명 유용성 개선은 **hypothesis_to_test**다. SQL 또는 BM25가 일부 질의에 충분한 결과도 유효하며 네 baseline으로 검증한다.
 
 ## 기술 결정과 재검토 조건
 
@@ -66,6 +68,8 @@ flowchart LR
 | `ingestion.py` | `ingest(engine,adapter,dataset_kind,page_size,max_pages,replay_of) -> report dict`; 영속 run 상태와 카운터, 페이지 단위 load; ReplayAdapter는 저장 raw만 읽음 |
 | `db.py` | 다섯 테이블, UUID/UTC 생성, SQLAlchemy 엔진. 엔진 파라미터 로그 숨김 |
 | `domain.py` | JSON 계약과 provisional normalizer identity. schema 변경 때 normalizer 버전도 변경 |
+| `profiling.py` | 종료된 단일 run + source/namespace → 원본 object 행 분모의 결측·문자 길이·타입·분야/대상 관측값·URL 저장 상태·manifest. API/DB 쓰기 없음 |
+| `evaluation_contract.py` | 평가 JSON → 구조/버전/근거 참조·삼값·split 일관성 검증; 합성 예제의 SHA/pointer/span 확인. 라벨 사실성 인증 아님 |
 | `eligibility.py` | 검증된 연령 범위 평가와 삼값 AND/OR; source 규칙 추출이나 프로필 해석 없음 |
 | `config.py`, `cli.py` | 비밀 없는 실행 결과, `.env`/환경변수 설정. 명령 `fixture`, `live`, `replay`. 미완료 exit 2, 완료 exit 0 |
 
@@ -100,6 +104,8 @@ raw를 먼저 commit한 뒤 envelope·pagination을 검증하고 페이지 전�
 
 신청 상태 `open/upcoming/closed/ongoing/unknown`은 자격과 별도이며 명시된 접수 기간과 평가일로만 계산한다. ongoing은 출처에 상시 신청이 명시된 경우에 한정한다. 시행일·수집일·지원주기로 접수 상태를 추론하지 않는다. UTC로 수집 시각을 저장하고 time-sensitive 평가는 명시적 날짜와 `ZoneInfo('Asia/Seoul')`를 사용한다. Windows IANA timezone 사용을 위해 tzdata를 설치한다.
 
+현재 actionable 안내에서는 **검증된 closed 신청 회차**만 제외한다. 기간 unknown은 확인 경고를 붙여 유지한다. 마감된 연례 회차를 프로그램 전체 폐지로 바꾸지 않으며 다른 회차가 있으면 별도 근거로 평가한다. 누락 record로 closure를 추정하지 않는다. 프로필·정책 날짜·판정일은 분리하며 소득 의미/단위 불일치와 해석되지 않은 예외는 확인 필요다. 이 availability 처리와 복합 evaluator는 문서 계약이며 아직 런타임 구현이 아니다.
+
 ## 후속 검색·생성 설계
 
 먼저 소스/종류(fixture 제외)·최신 revision과 사용자 확인된 hard constraint를 SQL에서 처리한다. 예컨대 검증된 지역 범위만 사용하고 region unknown은 유지한다. 조건이 불확실하거나 OR/예외 일부라면 SQL에서 제거하지 않고 재순위/조건 평가로 보낸다. SQL의 NULL을 불충족으로 취급하지 않는다. hard constraint와 관심사/관련성 신호를 구분하며 실제 validation 근거 없이는 filter를 활성화하지 않는다.
@@ -110,15 +116,40 @@ BGE-M3는 [공식 모델 카드](https://huggingface.co/BAAI/bge-m3) 기준 dens
 
 임베딩에는 model ID, 고정 revision SHA, dimension=1024, dtype/정규화, text/chunk 버전, 생성일을 저장한다. 모델/revision/차원·tokenizer·청킹 변경은 전체 re-embedding 및 snapshot 분리를 요구한다. 처음에는 pgvector exact cosine search로 평가하고 corpus 규모/latency가 요구할 때 HNSW를 검토한다. 아직 vector 컬럼이 없으므로 향후 migration에서 `vector(1024)`와 model metadata를 함께 도입한다.
 
-RRF는 제안값 `k=60`으로 `sum(1/(k+rank))`를 계산하고 누락 retriever rank는 기여하지 않는다. 동일 문서는 retriever별 한 번만 센다. chunk별 fusion 후 program current version으로 묶고 최고 문서 순위 및 제한된 supporting chunks를 제시한다. 긴 정책의 chunk 수만으로 점수가 불어나는 것을 막도록 program 집계 방식은 라벨 평가로 결정한다. 다른 소스의 비슷한 이름은 자동 dedup하지 않는다.
+RRF는 제안값 `rrf_k=60`으로 `sum(1/(rrf_k+rank))`를 계산하고 누락 retriever rank는 기여하지 않는다. rank는 1부터 시작하고 동일 문서는 retriever별 한 번만 센다. 문서별 fusion 후 program current version으로 묶고 초기 프로그램 점수는 **최고 fused 문서 점수**로 제안한다. chunk 수를 단순 합산하지 않는다. 동점은 source/record ID로 결정하며 근거는 같은 버전의 문서만 연결한다. 다른 소스의 비슷한 이름은 자동 dedup하지 않는다. 이 집계의 적합성은 실제 라벨 평가가 필요하다.
 
-결과 없음은 확보 범위 내 결과 없음으로 표현한다. 관련 문서만 있고 자격 근거가 없으면 조건 확인을 요청하고, 프로필 불완전이면 필요한 필드만 묻는다. 생성 입력에는 문서를 untrusted evidence로 전달하며 원문 내 명령을 따르지 않는다. evidence ID와 허용 URL 목록을 넘기고 출력 claims를 그 목록과 검사한다. 생성기는 자유 SQL이나 새 URL을 만들 수 없다. 응답에는 프로그램명·관련성 근거·조건별 결과·확인 필요 항목·신청기간/방법·검증된 URL·데이터 갱신 정보를 포함한다. 누락 값은 미확인으로 명시한다.
+결과 없음은 확보 범위 내 결과 없음으로 표현한다. 관련 문서만 있고 자격 근거가 없으면 조건 확인을 요청하고, 프로필 불완전이면 필요한 필드만 묻는다. 생성 입력에는 문서를 untrusted evidence로 전달하며 원문 내 명령을 따르지 않는다. evidence ID와 허용 URL 목록을 넘기고 출력 claims를 그 목록과 검사한다. 생성기는 자유 SQL이나 새 URL을 만들 수 없다. 각 결과에는 프로그램명·소관기관·관련성 근거·지원내용·조건별 결과·확인 필요·신청방법/기간·근거 발췌·상세 링크와 검증 상태·수집/원본 갱신 정보·명시적 평가일을 포함한다. URL missing이면 링크를 만들지 않고 unverified이면 검증 전임을 표시한다. 충분한 근거가 있으면 약 3–5개, 최대 5개를 제시하며 0–2개뿐이면 그대로 반환하고 범위/근거 한계를 설명한다. 전체 혜택 목록이나 공식 자격 결정으로 표현하지 않는다.
+
+## 검색 설계 결정표 (구현과 제안 구분)
+
+아래 수치는 실험 시작값이며 측정 최적값이 아니다. `candidate_top_k`, evidence limits, `final_result_limit`은 별개다. 이번에는 검색 패키지·모델을 설치하거나 검색 스택을 구현하지 않았다.
+
+| 선택 | 현재 상태 | 이유 | 초기 설정 | 필요한 검증 | 재검토 조건 |
+|---|---|---|---|---|---|
+| 필드 기반 분할 | implemented | 출처 의미/offset 보존 | version+field 문서, 원문 그대로 | 실응답 필드 의미·길이 분포 | 상세 관측으로 필드 계약 변화 |
+| 긴 필드 recursive 분할 | provisional_choice | 항목/예외 문맥 보존 | 모델 tokenizer 기준 512 tokens 초과 시 문단→목록→문장→token 보조, overlap 64 제안 | 프로파일 후 길이·예외 절단·offset round-trip | 문맥 누락/중복이 실제 관측될 때 |
+| 검색 입력 prefix | provisional_choice | 프로그램 문맥 보조 | 버전의 서비스명+필드명+본문을 별도 retrieval_text로 구성 | 원문 hash/span 불변 | prefix가 정확한 용어 검색을 방해할 때 |
+| Embedding | provisional_choice | 지정 dense 후보 | BAAI/bge-m3, dense 1024, **revision 미확정** | 고정 SHA 선정 후 패키지/CPU·CUDA·메모리·latency | 품질/자원 측정이 요구를 못 맞출 때 |
+| 한국어 tokenization | provisional_choice | 한국어 조사·어간과 고유명사 대응 | Kiwi, 원문 어절 보완; 위 token 정책 고정 | Windows 설치·사전/버전·한국어 query | exact-name recall 저하 |
+| BM25 | provisional_choice | 초기 corpus의 단순 lexical baseline | rank_bm25 BM25Okapi, 기본 파라미터 시작; corpus별 전체 rebuild | 설치 호환·IDF·메모리/재작성 비용 | corpus 규모·시간이 운영 요구 초과 |
+| 후보 수 | provisional_choice | 최종 5개보다 넓게 확보 | **candidate_top_k=40 / retriever**, 평가 program budget=20 | chunk→program 다양성·Recall@5/10/20 | 평가용 후보 손실/latency |
+| RRF | provisional_choice | 비호환 raw score 합산 방지 | rrf_k=60, 동일 가중치, rank 1 시작 | 순위/동점·누락 retriever 처리 | 라벨 기반 조정 필요 때 |
+| 프로그램 집계 | provisional_choice | 긴 정책 chunk 수 편향 방지 | current version별 max fused score, source/record ID tie-break | 중복률·긴 정책 편향·근거 다양성 | 실제 오류가 남을 때 |
+| 설명 근거 예산 | provisional_choice | 출처 연결과 prompt 크기 통제 | program당 최대 2개, 전체 최대 10개 / 6,000 evidence tokens 제안 | 예외 누락·token budget·citation | 조건 문맥이 예산 밖으로 잘릴 때 |
+| 최종 표시 수 | confirmed_direction | 탐색 부담과 근거 품질 균형 | **final_result_limit=5**, 충분하면 약 3–5개 | 적은 결과·불충분 근거 UX | 사용자 검증에서 다른 필요 확인 |
+| metadata/eligibility | confirmed_direction / 런타임 deferred | 검증된 hard 조건만 제거 | confirmed facts+validated metadata, unknown 유지; OR/예외 전체 관계 필요 | false exclusion, unit/year/context | 미검증 규칙의 활성화 금지 |
+| availability | confirmed_direction / 런타임 deferred | 현재 신청 안내 | 평가일 Asia/Seoul, confirmed closed 회차 제외, unknown 경고 유지 | 회차/시행일/접수일 구분 | 실제 날짜 의미 확인 후 |
+| reranker/MMR | deferred | 근거 없는 복잡성 방지 | 비활성; ID dedup은 먼저 수행 | ranking/다양성 오류와 비용 | baseline 평가에서 필요 입증 |
+| query rewrite/multi-query | deferred | 조건 왜곡·호출 증가 방지 | 원질문 사용 | 표현 민감도·오염·API usage | 실패 유형과 개선 실험 근거 확보 |
+| 생성/citation | confirmed_direction / 구현 deferred | 근거 요약 | gpt-4o-mini 고정, 허용 evidence/URL만 인용 | endpoint/계정 권한·정답/faithfulness·citation | 자동 모델 대체 없이 별도 검토 |
+
+현재 search_document의 unique(version_id,field)는 여러 child chunk를 표현하지 못한다. 필요가 입증되면 **새 additive migration**으로 `search_chunk(parent_document_id,start_offset,end_offset,retrieval_text,representation_version)` 등을 설계한다. 원문은 parent field에서 span으로 복원하고 embedding용 prefix/정규화 사본은 별도 저장한다. 적용된 초기 migration을 다시 쓰지 않으며 tokenizer·prefix·청킹·모델 revision 변화는 새 index snapshot/reindex 대상으로 추적한다.
 
 OpenAI SDK는 [공식 Python 문서](https://developers.openai.com/api/reference/python)를 참고하되 실제 설치 버전으로 API signature를 검증한 뒤 도입한다. [gpt-4o-mini 공식 페이지](https://developers.openai.com/api/docs/models/gpt-4o-mini)에 deprecation 표기가 관측되었다. 사용자가 지정한 모델은 유지하고, 후속 생성 착수 전 공급 endpoint의 실제 지원/종료 공지/계정 권한을 확인한다. 자동 대체 모델·OpenAI embedding endpoint를 가정하지 않는다. 현재 키가 없으므로 계정 권한은 미검증이다.
 
 ## 단계와 도입 제한
 
-1. 현재: 조사·문서·fixture 수집·raw 재생·영속 이력·최소 조건 테스트.
+1. 현재: 조사·기획 정렬·fixture 수집·raw 재생·영속 이력·최소 조건 테스트·run 프로파일·평가 계약/합성 근거 검증.
 2. 승인 키 확보 후 소량 live 표본, 상세/조건 의미 검증, 스키마 revision, 범위 선별.
 3. 동결 corpus·한글 질의 라벨·BM25/dense/RRF 비교와 검증된 조건 evaluator 확대.
 4. gpt-4o-mini 권한 확인 후 근거 생성·citation 검증, FastAPI, 다음으로 Streamlit 데모.

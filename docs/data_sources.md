@@ -4,6 +4,8 @@
 
 ## 공통 접근 상태
 
+이번 정렬 revision에서도 프로세스의 인증키와 `.env`가 없음을 재확인했다. 공식 포털 및 보조금24 Swagger를 다시 열었고 저장 `source_specs.json`의 gov24 paths/definitions와 같았다. 이것은 문서 계약 재확인이며 live 인증/실제 정책 응답 검증이 아니다. 복지로는 이전 조사 기록을 유지하는 후속 통합 대상이다. 이번 우선 source는 **행정안전부_대한민국 공공서비스(혜택) 정보**다.
+
 `GOV24_SERVICE_KEY`, `DATA_GO_KR_SERVICE_KEY`, `BOKJIRO_SERVICE_KEY`가 현재 프로세스에 없다. 활용신청 승인 여부와 계정별 실제 할당량은 확인할 수 없다. `.env` 같은 비밀 파일의 내용을 조사하지 않았다. 키 없이 인증 API에 불필요한 호출을 하지 않았으며 정책 응답 표본은 0건이다. 유료 생성·대량 수집·정책 페이지 스크래핑도 하지 않았다.
 
 세 데이터셋 모두 공식 페이지에서 무료, 이용허락범위 제한 없음, 개발/운영 자동승인, 업데이트 주기 실시간으로 표시된다. 자동승인은 신청 자체가 필요 없다는 의미가 아니다. 포털 로그인 → 해당 데이터 활용신청 → 승인 상태 및 발급 키 확인이 필요하다. 포털의 실시간 표시는 개별 정책의 현행성이나 실시간 자격 결정 보장이 아니다. 재배포 시 출처·수집일·변경 여부를 함께 표기하는 것을 프로젝트 규칙으로 한다.
@@ -76,6 +78,26 @@
 지자체 명세의 `enfcBgngYmd`/`enfcEndYmd`는 **시행일자**이며 신청 접수 기간으로 변환하지 않는다. 중앙·지자체 Swagger의 여러 목록은 `object`로 선언되어 있다. 실제 XML에서 반복되는 형식은 표본으로 검증해야 하며 단일 object라고 단정하지 않는다. 두 API의 필드명은 유사하더라도 서로 다른 어댑터 계약을 둔다.
 
 ## 표본과 다음 검증
+
+### 목록·상세·지원조건의 분리 계약
+
+| 응답 종류 | 검증된 문서상 내용 | 현재 구현 | 미확인 의미 |
+|---|---|---|---|
+| 목록 serviceList | 요약·분야·사용자구분·상세조회URL 및 목록 원문 | HTTP adapter/fixture/parser/loader | 실제 결측·타입·수정일시 의미 |
+| 상세 serviceDetail | 서비스목적·구비서류·온라인신청사이트URL·법령 등 | 미구현 | 목록과 충돌 시 우선순위·현행성 |
+| 지원조건 supportConditions | JA 코드와 연령 시작/종료 등 | 미구현 | 값 집합·빈값·AND/OR·예외·소득 기준 적용연도 |
+
+같은 envelope라도 서로 교환 가능한 레코드가 아니다. 현재 loader는 목록만 받으며 `Program.normalized`를 목록 전체 snapshot으로 갱신한다. 따라서 상세 연동을 현재 loader에 그대로 넣으면 상세값 손실 위험이 있다. 후속 연동은 `(source,서비스ID,record_kind)`별 원본/버전을 분리하고 필드 소유권을 정의한 뒤 canonical projection을 만든다. 목록에서 없는 상세 전용 필드는 **변경 없음**이며 null로 덮어쓰지 않는다. source의 명시적 null/빈값도 삭제 의미를 확인하기 전 임의 제거하지 않는다. 충돌하는 목록/상세 값은 각각의 근거·시각과 함께 보존하고 최신 수집시각만으로 권위 순서를 정하지 않는다. 실제 migration과 merge 규칙은 실표본 검증 후 추가한다. 이번에는 endpoint나 코드 기반 자격 규칙을 추가하지 않았다.
+
+### 오프라인 프로파일 계약
+
+`benefit-rag profile --run-id ID --dataset-kind fixture|live`는 완료·partial·failed run의 **보존 raw**만 읽는다. 실행 중 run은 거부한다. source/namespace 불일치는 오류이며 다른 run이나 현재 프로그램 값을 합치지 않는다. 보고서의 object_records는 지원되는 목록 endpoint의 HTTP 200·JSON data 배열에서 관측한 object 수다. array_entries·비객체 행·분석 불가능 페이지를 따로 보고하고 DB의 loaded_unique_count/rejected_count와 구분한다. 잘못된 count envelope·거부/롤백 행도 raw에서 관측했다면 분모에 들어갈 수 있으며 이를 성공 적재로 표시하지 않는다.
+
+필드별 분모는 위 object 수다. absent/null/빈 문자열·공백은 missing, 비문자열 값은 invalid_type으로 별도 집계한다. 문자 길이 통계의 분모는 **비어 있지 않은 문자열 수**이며 Python Unicode code point 길이다. min/max/mean/median과 nearest-rank p95를 제공하고 0건이면 count=0·통계 null이다. 분야·사용자구분은 원본 문자열 관측값만 세며 코드 해석·복합값 분할·기관명으로 지역 추정은 하지 않는다. 임의 필드의 관측 타입도 보고한다.
+
+URL presence와 stored_status_counts는 다르다. 상태는 그 raw/레코드에서 생성된 ProgramVersion에 저장한 값만 사용한다. 변경 없는 재수집은 새 버전이 없으므로 `not_stored_for_observation`일 수 있다. 과거 URL 상태를 현재 값으로 소급하거나 미저장을 unverified/verified로 임의 변환하지 않는다. 실제 URL은 통계 출력에 포함하지 않는다. 후속 관측별 정규화 이력이 필요하면 별도 additive 설계를 검토한다.
+
+보고서에는 run 상태·범위·시각·원문 hash/ID·profile version과 snapshot hash가 있다. 생성 현재시각은 넣지 않아 같은 저장 상태에서 결정적으로 재생된다. `--output data/profile.json`으로 로컬 보관할 수 있다. 합성 통계·표본/partial 한계를 반드시 표시하며 전체 corpus profile은 이번 구현 범위 밖이다. 포털 공시 실시간, 아직 미구현인 프로젝트 수집 schedule, 개별 정책 수정/확인 시각은 별개다.
 
 공식 Swagger에는 이 구현에 바로 사용할 완전한 정책 응답 예제가 없었다. 따라서 `tests/fixtures/gov24/`는 명세의 envelope/필드 타입을 참고해 직접 만든 **합성 3건·2페이지**다. 실제 지원금·기간·기관·URL을 넣지 않았다. 한 null 필드, 빈 문자열, 빠진 필드, 알 수 없는 nested 추가 필드를 포함한다. 이 변이는 방어 로직 검증용이며 실제 결측률·지역 분포·중복률에 대한 관측 결과가 아니다.
 

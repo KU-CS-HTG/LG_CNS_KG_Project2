@@ -2,6 +2,10 @@
 
 기준일: **2026-10-16, Asia/Seoul**. 이 기록은 실제 실행 결과다. 검색·생성 품질은 측정하지 않았다.
 
+아래 ‘초기 기반’은 이전 실행의 역사적 기록이다. 이번 정렬 revision의 시작 커밋·명령·결과는 문서 끝의 **기획 정렬 revision 검증**에 별도로 기록하며 이전 결과를 현재 통과 근거로 사용하지 않는다.
+
+## 초기 기반 검증 (이전 실행 기록)
+
 ## 저장소와 환경
 
 시작 시 cwd는 `C:\Users\Admin\Desktop\LG_CNS_KG\LG_CNS_KG_Project2`, branch는 `seok-kim`, HEAD는 `d417ed8 chore: initialize seok-kim branch`였다. Git은 이미 초기화되어 있었고 `.git` 외 파일과 uncommitted 변경은 없었다. 작업 디렉터리 및 루트까지의 상위 경로에서 적용할 AGENTS.md는 발견되지 않아 루트에 새로 작성했다. 브랜치 변경·git init·커밋·push는 하지 않았다.
@@ -68,3 +72,43 @@ PostgreSQL smoke의 3회 실행 직후 프로그램 3개·버전 3개·문서 12
 live HTTP 어댑터는 실제 endpoint에 대한 인증 성공을 입증하지 않았고 기본 suite의 HTTP 검사는 MockTransport다. 상세/지원조건 API, 복지로 XML 파서, 한국어 tokenizer, embedding 추론·메모리/latency, 검색 index·RRF, 생성 endpoint/모델 권한, 소득·지역·기간 evaluator, API/UI는 미구현/미검증이다. SQLite와 Windows Python 3.12 외 지원 환경은 실제 검사하지 않았다. 품질 수치나 향상 주장은 없다.
 
 인계의 첫 작업은 승인 키 공급 후 보조금24 표본 검증(Sol 6.1 High)이다. 이어 상세/조건 계약, 프로필/조건 evaluator, corpus 평가·검색으로 진행한다. 정해진 CI 명령 구현만 Luna 6에 배정할 수 있다. Astra는 근거가 있는 설계 충돌이 생겼을 때 정확한 질문과 함께 요청한다. 각 작업의 파일·입출력·선행 조건·합격 기준은 [next_tasks.md](next_tasks.md)에 명시했다.
+
+## 기획 정렬 revision 검증 (이번 실행)
+
+2026-10-16 Asia/Seoul. 시작 branch **seok-kim**, commit **c17cd68deb6ce3d9df642e3bb793ff321a3957fd**이며 작업 트리는 clean이었다. 이전에 알려진 HEAD와 같았다. 적용 AGENTS 및 상위 경로를 재확인하고 기존 코드·문서·명세를 다시 읽었다. 지정 DOCX 두 사본의 본문을 읽어 작성자 칸 외 동일함을 확인했고 원본은 수정하지 않았다. 자료 위치·hash·기획/외부 주장 검증은 [planning_alignment.md](planning_alignment.md)에 있다.
+
+### 실제 변경 범위
+
+기존 수집·적재·재생·삼값 함수는 그대로 유지했다. 추가한 것은 profiling 모듈/CLI, evaluation_contract 모듈/CLI와 합성 계약 예제·집중 테스트, 기존 PostgreSQL 테스트의 profile 검사다. 제품/coverage/cohort 구분, 결과 수 계약, 상세 덮어쓰기 방지 설계, 기술 결정표, 네 baseline·filter ablation·평가 데이터/지표 분모·인계 문서를 정렬했다. **의존성·uv.lock·DB schema·적용된 초기 migration·.gitignore는 변경하지 않았다.**
+
+### 이번에 실행한 명령과 결과
+
+| 명령/검사 | 실제 결과 |
+|---|---|
+| `uv sync --locked --python 3.12` | 성공, 29 packages checked. 의존성 변경 없음 |
+| `uv run --locked pytest --tb=short` | **82 passed, 1 deselected**, 1.78초. 기존 48개와 신규 34개 검증 |
+| `uv run --locked pytest -m postgres --tb=short` | **1 passed, 82 deselected**, 0.78초. 로컬 개발 DB의 무작위 전용 스키마에서 수행 |
+| `uv run --locked ruff check .` | All checks passed |
+| `uv run --locked ruff format --check .` | 통과 |
+| SQLite 새 smoke DB migration/check | upgrade 성공, No new upgrade operations detected |
+| CLI fixture 첫/두 번째 및 replay | inserted=3 / unchanged=3 / replay unchanged=3 |
+| CLI profile 출력·반복 | object=3, target missing=1 / denominator=3, 재적재·재생 이후에도 첫 run profile 완전 일치 |
+| CLI validate-evaluation | synthetic_contract, case_count=2, structural_validation_passed, evidence_storage_checked=true, **policy_truth_verified=false** |
+| 공식 Swagger 문서 비교 | 문서 다운로드 성공, 저장 명세와 paths/definitions 동일. 정책 API 요청 아님 |
+| 최종 정적/문서 검사 | compileall 성공, Ruff 재확인 통과, Git diff whitespace 검사 통과, 깨진 로컬 링크·검사 파일 trailing whitespace 0 |
+
+uv cache·pytest temp·Docker pipe·공개 문서 HTTPS는 제한 환경에서 거부되어 필요한 명령을 escalation 후 실행했다. 자동 승인 검토의 거부는 없었다. 초기 신규 테스트가 pytest entrypoint에서 tests 패키지 import에 의존하는 문제를 발견하여 테스트 내부 adapter로 분리했고 최종 기본 suite가 통과했다. 초기 실패를 통과 결과로 기록하지 않는다.
+
+신규 검사는 namespace 혼합 거부, 과거 raw 통계 불변, 결측 분모·비문자열 구분·빈/실패 표본·읽기 전용, 합성→실제 라벨 오표기 방지, 필수 계약·버전/근거 참조·span·SHA, needs_confirmation 보존, split 누출 방지, 소득 비율만 있을 때 금액 미발명, profile의 HTTP 미생성·평가 검증의 DB 미접속·오류 입력값 비출력을 포함한다. 실제 정책 정답이나 검색 성능을 검사한 것이 아니다.
+
+### CLI smoke 재현 근거
+
+새 로컬 파일 `data/alignment-smoke-20261016.db`를 사용했으며 기존 DB를 초기화하지 않았다. 첫 run `637b32cf-f56f-4a17-b9e0-2be455eacbeb`. `data/alignment-profile.json`의 snapshot hash는 `05c34a46cf26bd694234abdd106323df3537ca8d55602ddef890b308e1c36bc0`이다. 보고서는 합성 raw 3건·2페이지 범위이며 전체 정책 corpus 수가 아니다. 원문·통계는 Git 제외 로컬 data에 보관한다.
+
+### live 상태·미확인·후속 의존성
+
+현재 GOV24/DATA_GO_KR/BOKJIRO/OPENAI 키 환경변수는 미설정이고 `.env`도 없었다. 키 값·인증 URL을 출력하지 않았다. 이번 **정책 live API 호출 0회**, 실제 정책 라벨 0개, 유료 생성 호출·대형 모델 다운로드 0회다. 공개 포털의 공시 정보와 공식 Swagger만 다시 확인했다. 상세/지원조건의 실제 타입·코드 값·예외 관계·날짜 의미와 계정 접근은 미검증이다.
+
+pilot 60문항·candidate_top_k=40·RRF 설정·근거 예산·recursive 분할은 제안이며 측정 최적값이 아니다. Embedding revision은 미확정, 검색/생성/availability evaluator/실DB annotation resolver는 후속이다. 합성 계약 두 case는 실제 품질 평가에 사용하지 않는다. 제품의 개인 전체 범위와 실제 coverage·초기 cohort를 혼동하지 않는다. 다음 작업의 선행 조건/파일/입출력/합격 기준/모델은 next_tasks T1/T2/T7/T4에 명시했다.
+
+검증 후 Docker DB를 시작 때의 중지 상태로 복원했고 volume은 유지했다. 최종 branch/HEAD도 시작과 동일하다. 변경 사항은 작업 트리에 남겼으며 커밋·push하지 않았다.
