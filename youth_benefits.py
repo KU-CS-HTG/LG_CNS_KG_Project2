@@ -9,6 +9,8 @@
     python youth_benefits.py --field 주거 --limit 20 # 서비스분야에 '주거'가 포함된 것만
     python youth_benefits.py --detail 도시청년         # 목록 후 서비스명에 포함된 문구로 상세 조회
 """
+from __future__ import annotations
+
 import argparse
 import csv
 import os
@@ -20,10 +22,10 @@ BASE_URL = "https://api.odcloud.kr/api/gov24/v3"
 YOUTH_KEYWORDS = ["청년", "대학생", "사회초년생", "취업준비", "구직", "신혼", "만 19세", "만19세", "만 34세", "만34세", "만 39세", "만39세"]
 
 
-def get_api_key() -> str:
-    key = os.environ.get("GOV24_API_KEY")
+def get_api_key(cli_key: str | None = None) -> str:
+    key = cli_key or os.environ.get("GOV24_API_KEY")
     if not key:
-        sys.exit("환경변수 GOV24_API_KEY 에 인증키를 설정하세요.")
+        sys.exit("인증키가 없습니다. --key 옵션 또는 환경변수 GOV24_API_KEY 로 전달하세요.")
     return key
 
 
@@ -103,12 +105,13 @@ def show_detail(key: str, rows, name_part: str):
 
 def main():
     ap = argparse.ArgumentParser(description="청년 공공서비스(혜택) 조회")
+    ap.add_argument("--key", help="인증키(Decoding). 없으면 환경변수 GOV24_API_KEY 사용")
     ap.add_argument("--field", help="서비스분야 필터 (예: 주거, 일자리, 교육, 금융)")
     ap.add_argument("--limit", type=int, help="최대 결과 수")
     ap.add_argument("--detail", help="서비스명에 이 문구가 포함된 항목의 상세 조회")
     args = ap.parse_args()
 
-    key = get_api_key()
+    key = get_api_key(args.key)
     rows = search_youth_benefits(key, args.field, args.limit)
     print(f"청년 관련 혜택 {len(rows)}건\n")
     print_rows(rows)
