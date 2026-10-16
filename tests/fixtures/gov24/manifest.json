@@ -1,0 +1,9 @@
+{
+  "dataset_kind": "synthetic",
+  "source": "gov24",
+  "basis": "공식 Swagger serviceList_api / serviceList_model의 필드 및 타입",
+  "documentation_url": "https://www.data.go.kr/data/15113968/openapi.do",
+  "specification_url": "https://infuser.odcloud.kr/api/stages/44436/api-docs?1684891964110",
+  "verified_on": "2026-10-16",
+  "notice": "실제 API 응답 및 실제 정책이 아님. 모든 정책명·조건·기관은 테스트용 합성 값. 추천·인용 금지."
+}

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "benefit-rag"
+version = "0.1.0"
+description = "공식 공공서비스 데이터 수집 및 근거 보존 기반"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "sqlalchemy>=2.0.36,<2.1",
+  "psycopg[binary]>=3.2,<4",
+  "alembic>=1.14,<2",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "httpx>=0.28,<0.29",
+  "tzdata>=2024.2",
+]
+
+[project.scripts]
+benefit-rag = "benefit_rag.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "ruff>=0.9,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not postgres and not live and not paid and not large_model'"
+markers = [
+  "postgres: 명시적 TEST_DATABASE_URL이 필요한 PostgreSQL 통합 테스트",
+  "live: 공식 API 실접속 (기본 실행 제외)",
+  "paid: 유료 생성 API (기본 실행 제외)",
+  "large_model: 모델 다운로드/추론 (기본 실행 제외)",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
