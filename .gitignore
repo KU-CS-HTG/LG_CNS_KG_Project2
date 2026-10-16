@@ -1,0 +1,21 @@
+# 비밀키
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# 데이터·벡터DB (용량이 크고 각자 다시 만들 수 있음)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+chroma_db/
+
+# 에디터/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

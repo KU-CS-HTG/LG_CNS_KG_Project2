@@ -1,0 +1,4 @@
+{"user": {"age": 25, "region": "서울특별시"}, "question": "취업 준비 중인데 받을 수 있는 지원금 있어?", "expected_ids": ["SAMPLE-001"], "forbidden_ids": ["SAMPLE-003"]}
+{"user": {"age": 25, "region": "서울특별시"}, "question": "월세 지원 받을 수 있어?", "expected_ids": ["SAMPLE-002"], "forbidden_ids": []}
+{"user": {"age": 40, "region": "서울특별시"}, "question": "월세 지원 받을 수 있어?", "expected_ids": [], "forbidden_ids": ["SAMPLE-002"]}
+{"user": {"age": 25, "region": "서울특별시"}, "question": "교통비 지원 있어?", "expected_ids": [], "forbidden_ids": ["SAMPLE-004"]}
