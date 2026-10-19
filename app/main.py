@@ -99,6 +99,7 @@ a.btn:hover { background:var(--accent-soft); }
 .empty { text-align:center; padding:1.6rem 1rem; border:1px dashed var(--line); border-radius:16px; }
 .empty .icon { font-size:2rem; } .empty p { margin:.4rem 0 .9rem; line-height:1.6; }
 .empty .links { justify-content:center; gap:.5rem; }
+.follow-on { font-size:.88rem; font-weight:600; color:var(--accent); padding:.45rem 0; }
 .demo { font-size:.82rem; border-radius:10px; padding:.5rem .75rem; background:var(--warn-soft); color:var(--warn); font-weight:600; }
 </style>
 """
@@ -213,72 +214,141 @@ def _render_answer(answer: Answer) -> None:
                 '실제와 다를 수 있습니다.</div>', unsafe_allow_html=True)
 
 
+def _thread() -> list[dict]:
+    """지금 화면에 보이는 주제의 대화. 없으면 빈 리스트 (첫 화면)."""
+    i = st.session_state.current
+    return st.session_state.threads[i] if i is not None else []
+
+
+def _title(thread: list[dict]) -> str:
+    q = thread[0]["content"] if thread else ""
+    return q if len(q) <= 22 else q[:21] + "…"
+
+
 def _sidebar() -> None:
     with st.sidebar:
         st.markdown("### 🧭 청년 지원제도 길잡이")
         st.caption("행정안전부 공공서비스(혜택) 정보(보조금24) 중 청년 대상 제도를 근거로 답합니다.")
+        if st.button("＋ 새 질문", use_container_width=True, type="primary"):
+            st.session_state.current, st.session_state.follow = None, False
+            st.rerun()
+
+        if st.session_state.threads:
+            st.markdown("**최근 질문**")
+            for i in reversed(range(len(st.session_state.threads))):
+                active = i == st.session_state.current
+                label = ("▸ " if active else "") + _title(st.session_state.threads[i])
+                if st.button(label, key=f"thread{i}", use_container_width=True, disabled=active):
+                    st.session_state.current, st.session_state.follow = i, False
+                    st.rerun()
+
         st.markdown("**답변 읽는 법**")
         st.markdown('<div class="legend"><span class="badge ok">해당 가능성 높음</span><div>밝혀 주신 조건으로 자격이 맞아요</div></div>'
                     '<div class="legend"><span class="badge check">확인 필요</span><div>소득·가구 등 더 확인할 조건이 있어요</div></div>',
                     unsafe_allow_html=True)
         st.markdown("**잘 물어보는 팁**")
-        st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요.")
+        st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요. "
+                   "답변 아래 '이어서 질문하기'로 소득 같은 정보를 덧붙일 수 있어요.")
         if not _search_ready():
             st.markdown('<div class="demo">🧪 샘플 데이터 미리보기 중 — 검색 모듈이 준비되면 실제 데이터로 바뀝니다.</div>',
                         unsafe_allow_html=True)
         st.write("")
-        if st.button("🗑 대화 지우기", use_container_width=True):
-            st.session_state.messages = []
+        if st.button("🗑 대화 모두 지우기", use_container_width=True):
+            st.session_state.threads, st.session_state.current, st.session_state.follow = [], None, False
             st.rerun()
+
+
+def _merged_question(thread: list[dict], new: str) -> str:
+    """이어서 질문: 같은 주제의 이전 질문들과 합쳐 하나의 질문으로 보낸다 (나이·지역 등 앞서 밝힌 정보 유지).
+    app은 여전히 answer_question 하나만 호출한다 (README 6장)."""
+    asked = [m["content"] for m in thread if m["role"] == "user"]
+    return " ".join(asked + [new])
 
 
 def main() -> None:
     st.set_page_config(page_title="청년 지원제도 길잡이", page_icon="🧭", layout="centered")
     st.markdown(CSS, unsafe_allow_html=True)
-    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("threads", [])     # 주제별 대화 [[{role, content}, ...], ...]
+    st.session_state.setdefault("current", None)   # 화면에 보이는 주제 번호 (None = 첫 화면)
+    st.session_state.setdefault("follow", False)   # True면 다음 입력을 지금 주제에 이어서 묻는다
     _sidebar()
+    thread = _thread()
 
-    st.markdown("""
+    pending = None
+    if not thread:                                  # 첫 화면: 소개 + 예시 질문
+        st.markdown("""
 <div class="hero">
   <div class="pill">청년 맞춤 · 공공데이터 기반</div>
   <h1>내게 맞는 정부 지원,<br>평소 말투로 물어보세요</h1>
   <p>상황을 적으면 받을 수 있는 지원제도를 근거와 신청 방법까지 함께 찾아드려요.</p>
 </div>""", unsafe_allow_html=True)
-
-    pending = None
-    if not st.session_state.messages:
         st.markdown('<div class="section-label">이렇게 물어볼 수 있어요</div>', unsafe_allow_html=True)
         cols = st.columns(2)
         for i, ex in enumerate(EXAMPLES):
             if cols[i % 2].button(ex, key=f"ex{i}", use_container_width=True):
                 pending = ex
 
-    for msg in st.session_state.messages:
+    for msg in thread:                              # 지금 주제의 대화만 보여 준다
         with st.chat_message(msg["role"], avatar="🙋" if msg["role"] == "user" else "🧭"):
             if msg["role"] == "user":
                 st.markdown(_e(msg["content"]))
             else:
                 _render_answer(msg["content"])
 
-    question = st.chat_input("예) 경기도 사는 25살 직장인인데 전세 대출 지원이 있나요?") or pending
-    if question:
-        st.session_state.messages.append({"role": "user", "content": question})
-        with st.chat_message("user", avatar="🙋"):
-            st.markdown(_e(question))
-        with st.chat_message("assistant", avatar="🧭"):
+    _answer_pending()
+
+    following = st.session_state.follow and bool(thread)
+    if thread and not pending:
+        if following:
+            c1, c2 = st.columns([3, 1])
+            c1.markdown('<div class="follow-on">💬 이 질문에 이어서 묻는 중이에요. 추가 정보나 궁금한 점을 입력하세요.</div>',
+                        unsafe_allow_html=True)
+            if c2.button("새 질문으로", use_container_width=True):
+                st.session_state.follow = False
+                st.rerun()
+        elif st.button("💬 이어서 질문하기", help="소득·가구처럼 더 알려 줄 정보가 있거나 이 답변에 대해 더 묻고 싶을 때"):
+            st.session_state.follow = True
+            st.rerun()
+
+    placeholder = "이어서 입력하세요 (예: 소득은 월 150만 원이에요)" if following \
+        else "새 질문을 입력하세요 (예: 경기도 사는 25살 직장인인데 전세 대출 지원이 있나요?)"
+    question = st.chat_input(placeholder) or pending
+    if not question:
+        return
+
+    if following:
+        asked = _merged_question(thread, question)
+    else:                                           # 새 주제: 화면을 새로 시작 (이전 주제는 사이드바 '최근 질문')
+        st.session_state.threads.append([])
+        st.session_state.current = len(st.session_state.threads) - 1
+        asked = question
+    _thread().append({"role": "user", "content": question})
+    st.session_state.follow = False                 # 기본은 다시 '새 질문'
+    st.session_state.asking = asked
+    st.rerun()                                      # 질문 말풍선이 있는 새 화면을 먼저 그린 뒤 답변을 만든다
+
+
+def _answer_pending() -> None:
+    """직전 실행에서 받은 질문에 답한다. 화면에는 이미 지금 주제의 대화와 새 질문이 그려져 있다."""
+    asked = st.session_state.pop("asking", None)
+    if not asked:
+        return
+    thread = _thread()
+    with st.chat_message("assistant", avatar="🧭"):
+        try:
             with st.spinner("상황에 맞는 지원제도를 찾고 있어요…"):
-                try:
-                    answer = _ask(question)
-                except Exception as e:  # 사용자에게는 짧게, 원인은 펼쳐서
-                    st.error("답변을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.")
-                    with st.expander("오류 내용"):
-                        st.code(repr(e))
-                    st.session_state.messages.pop()
-                    return
-            _render_answer(answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-        if pending:
-            st.rerun()       # 예시 버튼 영역을 지우고 대화 화면으로
+                answer = _ask(asked)
+        except Exception as e:  # 사용자에게는 짧게, 원인은 펼쳐서
+            st.error("답변을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.")
+            with st.expander("오류 내용"):
+                st.code(repr(e))
+            thread.pop()
+            if not thread:
+                st.session_state.threads.pop(st.session_state.current)
+                st.session_state.current = None
+            return
+    thread.append({"role": "assistant", "content": answer})
+    st.rerun()
 
 
 if __name__ == "__main__":
