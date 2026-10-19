@@ -1,5 +1,8 @@
 """구현 전(NotImplementedError)인 테스트는 실패가 아니라 skip으로 표시한다.
 구현하면 같은 테스트가 자동으로 실제 검증을 시작한다."""
+import hashlib
+
+import numpy as np
 import pytest
 
 from tests.fixtures import load_sample_chunks, load_search_cases
@@ -50,3 +53,53 @@ def fake_conditions(monkeypatch):
         )
 
     return install
+
+
+# --- B: 벡터 저장소·검색 테스트용 ---------------------------------------------
+FAKE_DIM = 256
+
+
+def _fake_vector(text: str) -> list[float]:
+    """글자 2-gram을 해시해 만든 가짜 임베딩. 같은 글자가 겹칠수록 가까워져서(결정적) 실제 모델 없이도 검색 테스트가 된다."""
+    import re
+
+    v = np.zeros(FAKE_DIM)
+    for word in re.findall(r"[0-9A-Za-z가-힣]+", text.lower()):
+        grams = [word] if len(word) == 1 else [word[i : i + 2] for i in range(len(word) - 1)]
+        for g in grams:
+            v[int(hashlib.md5(g.encode("utf-8")).hexdigest()[:8], 16) % FAKE_DIM] += 1.0
+    v[0] += 1e-3                                              # 영벡터 방지
+    return (v / np.linalg.norm(v)).tolist()
+
+
+@pytest.fixture
+def fake_embedder(monkeypatch):
+    """실제 모델(약 2.2GB) 없이 vector_store를 시험한다. embedder 모듈 함수를 가짜로 바꾼다."""
+    from src.index import embedder
+
+    monkeypatch.setattr(embedder, "embed_texts", lambda texts, kind="passage": [_fake_vector(t) for t in texts])
+    monkeypatch.setattr(embedder, "embed_query", lambda text: _fake_vector(text))
+    monkeypatch.setattr(embedder, "embedding_dim", lambda: FAKE_DIM)
+
+
+@pytest.fixture
+def tmp_vectorstore(tmp_path, monkeypatch):
+    """테스트마다 임시 폴더에 벡터 저장소를 만든다 (data/vectorstore를 건드리지 않음)."""
+    pytest.importorskip("chromadb", reason="pip install -r requirements.txt 필요")
+    pytest.importorskip("rank_bm25", reason="pip install -r requirements.txt 필요")
+    from src.common import config
+    from src.index import vector_store
+
+    monkeypatch.setattr(config, "VECTORSTORE_DIR", tmp_path / "vectorstore")
+    vector_store.reset_cache()
+    yield tmp_path / "vectorstore"
+    vector_store.reset_cache()
+
+
+@pytest.fixture
+def indexed_sample(fake_embedder, tmp_vectorstore, sample_chunks):
+    """샘플 조각 48개를 임시 저장소에 색인한 상태. 색인된 Chunk 목록을 돌려준다."""
+    from src.index import vector_store
+
+    vector_store.build_index(sample_chunks)
+    return sample_chunks

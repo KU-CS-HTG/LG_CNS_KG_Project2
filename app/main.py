@@ -2,8 +2,8 @@
 
 실행: python -m app.main   (내부에서 `streamlit run`으로 다시 띄운다)
 
-B의 hybrid.search가 아직 구현 전(NotImplementedError)이면 tests/fixtures의 샘플 조각으로 검색하는
-'샘플 데이터 미리보기' 모드로 자동 전환한다. B가 구현되면 같은 화면이 실제 검색을 쓴다.
+검색 색인이 비어 있으면(A의 수집·B의 색인 전) tests/fixtures의 샘플 조각으로 검색하는
+'샘플 데이터 미리보기' 모드로 자동 전환한다. 색인이 만들어지면 같은 화면이 실제 검색을 쓴다(서버 재시작).
 """
 from __future__ import annotations
 
@@ -127,13 +127,13 @@ a.btn:hover { background:var(--accent-soft); }
 # --- 검색 백엔드: B 구현 전이면 샘플 데이터로 대신 ------------------------------------------
 @st.cache_resource(show_spinner=False)
 def _search_ready() -> bool:
+    """실제 검색을 쓸 수 있는가 = 검색 색인에 조각이 있는가. B의 search는 색인이 비면 오류 없이 []를 돌려주므로
+    구현 여부만으로는 판단할 수 없다 (그대로 두면 모든 질문이 '근거 없음'이 된다)."""
     try:
-        hybrid.search("청년", {}, k=1)
-        return True
-    except NotImplementedError:
+        from src.index import vector_store
+        return vector_store.count() > 0
+    except Exception:            # 미구현·라이브러리 없음·저장소 오류 -> 샘플 미리보기
         return False
-    except Exception:
-        return True              # 구현은 되어 있음 (실제 질문에서 오류를 그대로 보여 준다)
 
 
 @st.cache_resource(show_spinner=False)
@@ -269,7 +269,7 @@ def _sidebar() -> None:
         st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요. "
                    "답변 아래 '이어서 질문하기'로 소득 같은 정보를 덧붙일 수 있어요.")
         if not _search_ready():
-            st.markdown('<div class="demo">🧪 샘플 데이터 미리보기 중 — 검색 모듈이 준비되면 실제 데이터로 바뀝니다.</div>',
+            st.markdown('<div class="demo">🧪 샘플 데이터 미리보기 중 — 검색 색인이 만들어지면 실제 데이터로 바뀝니다.</div>',
                         unsafe_allow_html=True)
         st.write("")
         if st.button("🗑 대화 모두 지우기", use_container_width=True):

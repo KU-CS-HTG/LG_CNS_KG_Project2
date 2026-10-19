@@ -47,3 +47,34 @@ def test_relax_eventually_empty():
             return
         f = nxt
     raise AssertionError("relax가 필터를 모두 풀지 못함")
+
+
+def test_relax_order_and_keeps_today():
+    f = {"age": 27, "region": "서울", "field": "주거", "situation": ["구직"], "today": TODAY}
+    steps = [f]
+    while True:
+        nxt = relax(steps[-1])
+        if nxt == steps[-1]:
+            break
+        steps.append(nxt)
+    removed = [set(a) - set(b) for a, b in zip(steps, steps[1:])]
+    assert removed == [{"field"}, {"region"}, {"age"}, {"situation"}]     # 분야 -> 지역 -> 연령 -> situation
+    assert all(s["today"] == TODAY for s in steps)                         # 신청기한은 풀지 않는다
+    assert steps[-1] == {"today": TODAY}
+
+
+def test_relax_does_not_mutate_input():
+    f = {"region": "서울", "today": TODAY}
+    relax(f)
+    assert f == {"region": "서울", "today": TODAY}
+
+
+def test_is_expired_defaults_to_today(sample_chunks):
+    by_id = {c.service_id: c for c in sample_chunks}
+    assert is_expired(by_id["SAMPLE003"])                 # 기한 2026-05-31: 기준일 생략 시 오늘 기준
+    assert not is_expired(by_id["SAMPLE001"])             # 2099-12-31
+
+
+def test_apply_filters_keeps_order(sample_chunks):
+    kept = apply_filters(sample_chunks, {"today": TODAY})
+    assert kept == [c for c in sample_chunks if c in kept]
