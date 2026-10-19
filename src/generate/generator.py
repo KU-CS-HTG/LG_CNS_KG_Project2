@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from src.common import config
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
@@ -49,6 +50,8 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   사용자가 나이·거주지를 밝히지 않았거나, 지역·연령 정보가 '정보 없음'이거나, 상황이 조금 덜 맞는 정도면
   "{NOT_ELIGIBLE}"이 아니라 "{UNCLEAR}"다.
 - 사용자가 밝히지 않은 사실(소득 수준, 가구 구성, 주택 소유 등)을 사용자가 충족한다고 쓰지 않는다.
+- 사용자가 소득·재산 등을 밝혔더라도, [근거]에 그 기준이 금액이나 비율로 적혀 있지 않으면(기준 이하, 중위소득 등)
+  충족 여부를 판단하지 않는다. 그 조건은 needs_check에 남기고 applicable은 "{LIKELY}"가 될 수 없다.
 - matches에는 사용자 질문의 구절과 근거의 대상 조건이 서로 맞는 쌍만 넣는다.
   said는 사용자 질문 원문에서 글자 그대로 복사한 짧은 구절이어야 한다 (바꿔 쓰거나 근거의 표현을 넣지 않는다).
   condition은 근거 원문에서 글자 그대로 복사한 짧은 구절이다. 맞는 쌍이 없으면 빈 배열이다.
@@ -130,8 +133,8 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict) -> Recomme
     applicable = gen.get("applicable") if said else UNCLEAR   # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다
     if applicable != LIKELY and not needs:
         needs.append("자격 요건 충족 여부")
-    for n in evidence_mod._missing_conditions(chunks):
-        if n not in needs:
+    for n in evidence_mod._missing_conditions(chunks) + _vague_criteria(raw):
+        if n not in needs and not any(n.split()[0] in x for x in needs):
             needs.append(n)
 
     how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
@@ -187,6 +190,19 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
             if c and squash(c) in body and c not in conds:
                 conds.append(c)
     return said, conds
+
+
+def _vague_criteria(sections: dict[str, str]) -> list[str]:
+    """근거에 소득·재산 조건이 있는데 금액·비율 숫자가 없으면 사용자가 소득을 밝혀도 판단할 수 없다 ('기준 이하' 등).
+    LLM이 충족으로 단정하는 일을 코드로 막는다 (프롬프트 규칙만으로는 실행마다 결과가 달랐음)."""
+    text = " ".join(sections.get(s, "") for s in ("지원대상", "선정기준"))
+    out = []
+    for word in ("소득", "재산"):
+        for m in re.finditer(word, text):
+            if not re.search(r"\d", text[m.start():m.start() + 25]):
+                out.append(f"{word} 기준 (자료에 기준 금액 없음)")
+                break
+    return out
 
 
 def _grounded_mismatch(question: str, mismatch) -> bool:

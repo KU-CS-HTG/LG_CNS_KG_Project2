@@ -250,3 +250,12 @@ def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
     ev = evidence.select_evidence(CASES["sr1"]["results"])
     _fake_llm(monkeypatch, {"services": []})                      # 판정은 왔지만 관련 있는 제도가 없음
     assert generator.generate_answer(QUESTION_WITH_RESULTS, ev).no_evidence is True
+
+
+def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 선정기준: '소득이 기준 이하' (금액 없음)
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "가능", "needs_check": [],
+                                          "matches": [{"said": "서울에 사는", "condition": "서울에 거주하며"}]}]})
+    q = QUESTION_WITH_RESULTS + " 소득은 월 150만 원이에요"
+    rec = generator.generate_answer(q, {"SAMPLE001": chunks}).recommendations[0]
+    assert any("소득" in n for n in rec.needs_check)              # 사용자가 소득을 밝혀도 기준 금액이 없으면 단정 안 함
