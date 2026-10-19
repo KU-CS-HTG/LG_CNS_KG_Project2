@@ -25,20 +25,29 @@ log = logging.getLogger(__name__)
 
 NOT_IN_EVIDENCE = "자료에 없음 (상세 링크에서 확인)"
 NO_MATCH_MESSAGE = "질문하신 조건에 맞는 제도를 수집된 자료에서 찾지 못했습니다."
+GENERIC_REASON = "질문하신 내용과 관련된 제도로 찾았어요. 자격은 아래 조건을 확인해 주세요."
 
-# 해당 여부. '해당 없음'은 후보에서 뺀다 (기획서 9.1: 연령·거주지가 맞지 않는 제도는 제외)
-LIKELY, UNCLEAR, NOT_ELIGIBLE = "가능", "확인 필요", "해당 없음"
+# 해당 여부. '해당 없음'(기획서 9.1: 연령·거주지가 맞지 않는 제도는 제외)과 '관련 없음'은 후보에서 뺀다.
+# '관련 없음'이 필요한 이유: 검색은 관련이 없어도 Top-K를 채워 돌려주므로, 질문이 묻는 것이 근거에 없으면
+# 모든 후보가 빠지고 근거 없음 응답이 나가야 한다 (답변 평가 q02·q04에서 발견).
+LIKELY, UNCLEAR, NOT_ELIGIBLE, NOT_RELEVANT = "가능", "확인 필요", "해당 없음", "관련 없음"
 
 SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 질문과 [근거]로 주어진 제도 자료만 보고 JSON 객체 하나를 출력한다.
 
 규칙:
 - [근거]에 적힌 내용만 쓴다. 금액·연령·기간·기관·절차를 지어내거나 일반 지식으로 보충하지 않는다.
 - [근거]에 해당 항목이 없으면 그 값은 "{NOT_IN_EVIDENCE}"로 쓴다.
-- 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
+- 먼저 각 제도가 질문과 관련 있는지 본다. 질문이 묻는 도움·제도와 관련이 없거나, 질문이 특정 제도·정보를 묻는데
+  그 제도·정보가 [근거]에 없으면 applicable은 "{NOT_RELEVANT}"이다. 검색 결과라고 해서 관련 있다고 보지 않는다.
+  질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
+  "{NOT_RELEVANT}"이다. 비슷한 제도로 대신 답하는 것은 추측이다.
+- 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
   "{LIKELY}" = 근거에 적힌 자격 조건을 사용자가 밝힌 정보로 모두 충족함,
   "{UNCLEAR}" = 근거가 부족하거나, 사용자가 밝히지 않은 자격 조건(소득·가구·재산 등)이 하나라도 있음,
-  "{NOT_ELIGIBLE}" = 근거에 적힌 연령 범위나 지역이 사용자가 밝힌 나이·거주지와 명백히 다를 때만.
-  지역·연령 정보가 '정보 없음'이거나 상황이 조금 덜 맞는 정도면 "{NOT_ELIGIBLE}"이 아니라 "{UNCLEAR}"다.
+  "{NOT_ELIGIBLE}" = 근거에 적힌 연령 범위나 지역이 사용자가 질문에서 직접 밝힌 나이·거주지와 명백히 다를 때만.
+  이때 mismatch에 그 근거를 적는다: said는 질문 원문에서 글자 그대로 복사한 나이·거주지 구절, condition은 근거 구절.
+  사용자가 나이·거주지를 밝히지 않았거나, 지역·연령 정보가 '정보 없음'이거나, 상황이 조금 덜 맞는 정도면
+  "{NOT_ELIGIBLE}"이 아니라 "{UNCLEAR}"다.
 - 사용자가 밝히지 않은 사실(소득 수준, 가구 구성, 주택 소유 등)을 사용자가 충족한다고 쓰지 않는다.
 - matches에는 사용자 질문의 구절과 근거의 대상 조건이 서로 맞는 쌍만 넣는다.
   said는 사용자 질문 원문에서 글자 그대로 복사한 짧은 구절이어야 한다 (바꿔 쓰거나 근거의 표현을 넣지 않는다).
@@ -51,6 +60,7 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 {{"situation": 사용자 상황을 쉼표로 이은 짧은 구,
   "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부,
                 "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
+                "mismatch": {{"said": 질문 원문 구절, "condition": 근거 원문 구절}} ("{NOT_ELIGIBLE}"일 때만),
                 "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약, "needs_check": [문자열, ...]}}],
   "follow_up": 더 정확히 안내하려고 사용자에게 되물을 질문 1문장 (필요 없으면 빈 문자열)}}
 [근거]의 모든 제도를 services에 한 번씩 넣는다."""
@@ -62,15 +72,25 @@ def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
 
     try:
         out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence))
-    except Exception as e:  # 네트워크·키·JSON 오류: 근거 원문만으로 안내한다
+    except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("답변 생성 실패, 원문으로 대체: %s", e)
         out = {}
+    # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
+    # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
+    judged = isinstance(out.get("services"), list)
 
-    by_id = {s.get("service_id"): s for s in out.get("services", []) if isinstance(s, dict)}
+    by_id = {s.get("service_id"): s for s in out.get("services") or [] if isinstance(s, dict)}
     recs: list[Recommendation] = []
     for sid, chunks in evidence.items():
-        gen = by_id.get(sid) or {}
-        if gen.get("applicable") == NOT_ELIGIBLE:
+        gen = by_id.get(sid)
+        if gen is None:
+            if judged:
+                continue
+            gen = {}
+        applicable = gen.get("applicable")
+        if applicable == NOT_ELIGIBLE and not _grounded_mismatch(question, gen.get("mismatch")):
+            applicable = UNCLEAR          # 질문에 나이·거주지 근거가 없으면 제외하지 않고 확인 필요로 남긴다
+        if applicable in (NOT_ELIGIBLE, NOT_RELEVANT):
             continue
         recs.append(_to_recommendation(question, chunks, gen))
 
@@ -104,7 +124,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict) -> Recomme
         reason = f"말씀하신 {', '.join(f'‘{s}’' for s in said)} 조건이 이 제도의 대상" \
                  + (f"({', '.join(f'‘{c}’' for c in conds)})" if conds else "") + "에 해당될 수 있어요."
     else:
-        reason = "질문하신 내용과 관련된 제도로 찾았어요. 자격은 아래 조건을 확인해 주세요."
+        reason = GENERIC_REASON
 
     needs = _str_list(gen.get("needs_check"))
     applicable = gen.get("applicable") if said else UNCLEAR   # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다
@@ -167,6 +187,12 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
             if c and squash(c) in body and c not in conds:
                 conds.append(c)
     return said, conds
+
+
+def _grounded_mismatch(question: str, mismatch) -> bool:
+    """'해당 없음' 판정의 근거(사용자가 밝힌 나이·거주지 구절)가 질문 원문에 실제로 있는가."""
+    said = _str(mismatch.get("said")).strip("‘’'\"") if isinstance(mismatch, dict) else ""
+    return bool(said) and "".join(said.split()) in "".join(question.split())
 
 
 def _sections(chunks: list[Chunk]) -> dict[str, str]:
