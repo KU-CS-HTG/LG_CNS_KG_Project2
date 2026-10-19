@@ -1,11 +1,11 @@
-"""결정적 정제. 검증되지 않은 JA* 코드와 자연어 복합 자격조건은 추정하지 않는다."""
+"""결정적 정제. JA* 원시값을 신청자 자격으로 자동 해석하지 않는다."""
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import re
 from datetime import date
+from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlsplit
 
 from src.common import config
@@ -20,15 +20,46 @@ SOURCE_FIELDS = {
 METADATA_KEYS = ("region", "agency", "field", "deadline", "age_min", "age_max", "target_tags")
 
 
+class _TextHTMLParser(HTMLParser):
+    """Keep structural separators, including nested table-cell contents."""
+    blocks = {"p", "div", "li", "ul", "ol", "tr", "table", "thead", "tbody", "tfoot",
+              "section", "article", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6"}
+    inline = {"b", "strong", "em", "i", "span", "a", "u", "s", "small", "sup", "sub", "font"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("td", "th"):
+            self.parts.append("\t")
+        elif tag == "br" or tag in self.blocks:
+            self.parts.append("\n")
+        elif tag not in self.inline:
+            self.parts.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th"):
+            self.parts.append("\t")
+        elif tag in self.blocks:
+            self.parts.append("\n")
+        elif tag != "br" and tag not in self.inline:
+            self.parts.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
 def clean_text(value) -> str:
     if value is None:
         return ""
     if not isinstance(value, (str, int, float)):
         raise ValueError("invalid text value")
     text = str(value).replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"(?i)<(?:br\s*/?|/?(?:p|div|li|tr))\s*>", "\n", text)
-    text = re.sub(r"(?i)</?(?:b|strong|em|i|span|ul|ol|table|tbody|td)(?:\s[^>]*)?>", "", text)
-    text = html.unescape(text).replace("\xa0", " ")
+    parser = _TextHTMLParser()
+    parser.feed(text)
+    parser.close()
+    text = "".join(parser.parts).replace("\xa0", " ")
     return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")).strip()
 
 
@@ -62,7 +93,7 @@ def official_url(value: str) -> str:
 
 
 def verified_eligibility(conditions: dict | None) -> dict:
-    """A 소유 어댑터 계약. 공식 코드북 확인 전 API의 JA* 값은 여기로 변환하지 않는다.
+    """A 소유 어댑터 계약. 신청자/부양자·경계·빈값 의미 검증 전 JA* 값을 변환하지 않는다.
 
     conditions['_verified_eligibility']는 API 원본 필드가 아니다. 별도 검증된
     어댑터/합성 테스트 전용이며 source='applicant', age_ranges, region을 사용한다.

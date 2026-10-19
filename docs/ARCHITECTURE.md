@@ -27,7 +27,7 @@
 ```
 src/
   common/    config.py, schema.py                       # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, normalize, store, chunker, pipeline # A: 수집·정제·SQLite·분할·증분 인계
+  ingest/    client, normalize, merge, storage, store, chunker, pipeline # A
   index/     embedder, vector_store                     # B: ③ 임베딩, ④ 벡터 저장소
   retrieve/  hybrid, filters, baseline                  # B: ⑤ 검색, 정형 필터, 비교 실험용 Baseline
   generate/  condition_extractor, evidence, generator, citation   # C
@@ -99,7 +99,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 
 | 모듈 | 상태 |
 |---|---|
-| `ingest/client.py` | timeout·재시도·페이지 검증·실행별 원본/완전성 구현. 실제 v3 세부 필드·페이지 규칙은 미검증 |
+| `ingest/client.py` | timeout·재시도·원본/완전성 구현. OAS·최초 3건씩의 필드/페이지 관측, 전체 종료·일관성은 미검증 |
 | `ingest/normalize.py`, `store.py`, `chunker.py`, `pipeline.py` | 결정적 정제·잠정 청년 정책·SQLite·트랜잭션 pending·구조 분할·CLI 구현. 상세 운영 계약은 [INGEST_A.md](INGEST_A.md) |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `tests/ingest/` | A 전용 합성 HTTP·임시 DB·가짜 소비자·CLI 검증. A NotImplementedError는 실패 처리, 공용 훅/fixtures 보존 |
@@ -114,7 +114,26 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 
 B의 기존 chunk_id별 upsert 설명만으로는 청크 수 감소 때 잔여 조각이 남는다. **제안:** 서비스 전체 교체/제거 후 Vector/BM25가 동일 버전을 영속 반영하면 service_id+version+event_id로 확인한다. B/C 코드는 수정하지 않았고 실제 연동은 미검증이다. 소비자 동시 실행·버전 fencing·출처 누락 표시와 잠정 청년 포함 정책은 팀 합의가 필요하다.
 
+### 6.2 A 2차 수정
+
+`merge.py`는 공통 필드의 현재 관측·성공 빈 값·키 누락·과거 fallback을 구분한다. 상세 실패 시 현재
+목록의 의미 있는 값이 과거 상세를 대체하고 목록에도 없는 상세 본문은 유지한다. 두 현재 원천 충돌은
+목록 우선/기한 보수적 선택의 명시적 규칙으로 처리하고 `_field_provenance`, `_merge_conflicts`와
+실행별 raw 감사 기록에 남긴다. 수집 시각·원천 수정일시로 최신성을 단정하지 않는다.
+
+`storage.StoragePaths`는 모든 SQLite·잠금·raw·pending 접근에 명시적으로 전달한다. live 기본값을
+유지하면서 fixture/validation은 독립 경로를 쓰며 운영 목적지·별칭·sidecar 중첩을 쓰기 전에 거부한다.
+프로그램 fixture 경로도 CLI와 동일하게 격리한다. pytest는 별도 tmp_path를 사용한다.
+HTMLParser는 td/th 셀 경계와 tr/블록 개행을 보존하고, 수정된 정규 본문은 다음 관측 때 한 번의 전체 교체를 유발할 수 있다.
+
+라이브는 격리 DB에서 1페이지×3건×3엔드포인트만 sample로 확인했다. API 오류·HTML 표는 mock/합성 검증이다.
+JA 기본 라벨을 공식 OAS에서 확인했으나 신청자/부양자·경계·특수값·지역 자격 어댑터는 보류한다.
+B 소비자는 우선 하나를 권장하며 A stale-ack 보호가 B의 stale write까지 막지는 않는다. 기관/URL 품질은
+`get_record()`로 조회하고 인용 후보 보류·표시 정책은 B/C 합의가 필요하다.
+
 ## 7. 변경 이력
+
+- 2026-10-19 A 2차 수정: 현재 목록/과거 상세 충돌, fixture 저장소 격리, HTML 표 경계 보완. 회귀 테스트와 격리 라이브 3건씩의 표본 검증. 전체 API 적합성과 실제 연령/지역·B 색인 통합은 미완료. 기획서 8.3에 설계 변경 기록.
 
 - 2026-10-19 A 구현: client 강화, normalize 추가, SQLite·실행 이력·pending 및 구조 분할·CLI 연결. A 전용 합성 fixture/테스트 추가. API 명세·실측 미검증 때문에 자동 소실 차단, JA* 자동 해석 보류. README·CLAUDE·이 문서·기획서 8.3 동기화. B/C 소유 코드·공용 스키마·설정·기존 fixtures는 보존.
 

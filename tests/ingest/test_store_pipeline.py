@@ -187,27 +187,27 @@ def test_full_preserves_database_history_and_old_ack_cannot_discard_full():
     assert next(e for e in store.get_pending_changes() if e["service_id"] == "B") == removal
 
 
-def test_endpoint_id_join_failed_details_retained_and_fresh_empty_clears(monkeypatch):
+def test_endpoint_id_join_failed_details_retained_and_fresh_empty_clears(monkeypatch, a_storage):
     fetch = pipeline._fixture_fetch(FIXTURE)
-    first_chunks, first_summary = pipeline._execute(fetch_page=fetch)
+    first_chunks, first_summary = pipeline._execute(fetch_page=fetch, storage=a_storage)
     assert first_chunks and first_summary["new"] == 2
-    values = {s["service_id"]: s for s in store.load_services()}
+    values = {s["service_id"]: s for s in store.load_services(storage=a_storage)}
     assert "10만 원" in values["A-SYN-001"]["support_content"]
     assert values["A-SYN-002"]["support_content"] == "상담 지원"
     assert "age_min" not in first_chunks[0].metadata  # JA meaning unverified
     assert first_summary["diagnostics"]["broad_keyword_examples"]
-    tokens = store.get_pending_changes()
+    tokens = store.get_pending_changes(storage=a_storage)
 
     def failed_detail(endpoint, **params):
         if endpoint == "serviceDetail":
             raise client.CollectionError("http_503")
         return fetch(endpoint, **params)
 
-    replay, summary = pipeline._execute(fetch_page=failed_detail)
+    replay, summary = pipeline._execute(fetch_page=failed_detail, storage=a_storage)
     assert summary["status"] == "partial" and summary["changed"] == 0
-    assert replay == first_chunks and store.get_pending_changes() == tokens
-    assert store.load_services(["A-SYN-001"])[0]["_observations"]["serviceDetail"] == "retained"
-    assert store.load_services(["A-SYN-001"])[0]["support_content"] == values["A-SYN-001"]["support_content"]
+    assert replay == first_chunks and store.get_pending_changes(storage=a_storage) == tokens
+    assert store.load_services(["A-SYN-001"], storage=a_storage)[0]["_observations"]["serviceDetail"] == "retained"
+    assert store.load_services(["A-SYN-001"], storage=a_storage)[0]["support_content"] == values["A-SYN-001"]["support_content"]
 
     def empty_detail(endpoint, **params):
         data = fetch(endpoint, **params)
@@ -215,9 +215,9 @@ def test_endpoint_id_join_failed_details_retained_and_fresh_empty_clears(monkeyp
             data = {**data, "data": [{"서비스ID": "A-SYN-002"}, {"서비스ID": "A-SYN-001"}]}
         return data
 
-    pipeline._execute(fetch_page=empty_detail)
-    assert store.load_services(["A-SYN-001"])[0]["support_content"] == ""
-    assert all(not c["text"].endswith("상담 지원") for e in store.get_pending_changes() for c in e["chunks"])
+    pipeline._execute(fetch_page=empty_detail, storage=a_storage)
+    assert store.load_services(["A-SYN-001"], storage=a_storage)[0]["support_content"] == ""
+    assert all(not c["text"].endswith("상담 지원") for e in store.get_pending_changes(storage=a_storage) for c in e["chunks"])
 
 
 def test_pipeline_public_run_and_cli_default_full(monkeypatch, capsys):
@@ -235,19 +235,15 @@ def test_pipeline_public_run_and_cli_default_full(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("extra", [[], ["--full"]])
-def test_module_cli_subprocess_no_credentials(extra):
-    # Child config is redirected before runpy so workspace runtime state is untouched.
-    code = "import runpy,sys; from pathlib import Path; from src.common import config; " \
-        "config.DB_PATH=Path(sys.argv[1]); config.RAW_DIR=Path(sys.argv[2]); " \
-        "sys.argv=['src.ingest.pipeline']+sys.argv[3:]; " \
-        "runpy.run_module('src.ingest.pipeline',run_name='__main__')"
+def test_module_cli_subprocess_no_credentials(extra, tmp_path):
+    db_path, raw_dir = tmp_path / "offline.db", tmp_path / "offline-raw"
     env = {**os.environ, "GOV24_API_KEY": "", "OPENAI_API_KEY": "", "PYTHONIOENCODING": "utf-8"}
-    result = subprocess.run([sys.executable, "-c", code, str(config.DB_PATH), str(config.RAW_DIR),
+    result = subprocess.run([sys.executable, "-m", "src.ingest.pipeline", "--db-path", str(db_path), "--raw-dir", str(raw_dir),
                              "--offline-fixture", str(FIXTURE), *extra],
                             capture_output=True, text=True, encoding="utf-8", env=env, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "상태: complete" in result.stdout
-    assert config.DB_PATH.exists()
+    assert db_path.exists() and not config.DB_PATH.exists()
 
 
 def test_no_a_stubs_remain():

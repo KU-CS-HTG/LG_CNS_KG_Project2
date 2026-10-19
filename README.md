@@ -6,7 +6,10 @@
 - 상세 설계 이유·변경 이력: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - AI 작업 지침(규칙 원문): [`CLAUDE.md`](CLAUDE.md)
 
-> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API 세부 계약은 미검증이고 자동 소실 처리는 차단되어 있습니다. B/C는 스켈레톤입니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
+> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B/C는 스켈레톤입니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
+
+2차 수정에서 과거 상세/현재 목록 병합, fixture 저장소 격리, HTML 표 경계를 보완했습니다.
+격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. 전체 순회·실제 연령/지역 어댑터·B 색인 통합은 미검증입니다.
 
 ## 1. 데이터
 
@@ -310,7 +313,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 ```
 src/
   common/    config.py, schema.py                                  # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, normalize, store, chunker, pipeline           # A
+  ingest/    client, normalize, merge, storage, store, chunker, pipeline # A
   index/     embedder, vector_store                                # B
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
@@ -378,6 +381,8 @@ pip install -r requirements.txt        # 설치
 cp .env.example .env                   # 키 입력: GOV24_API_KEY(Decoding 키), OPENAI_API_KEY
 python -m src.ingest.pipeline          # A: 실제 수집, 기본 증분 (라이브 실행 전 승인)
 python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB·이력·pending 보존
+python -m src.ingest.pipeline --offline-fixture tests/fixtures/a_synthetic_api.json  # 별도 저장소 강제
+python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승인된 격리 라이브 표본
 python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
@@ -441,8 +446,26 @@ def test_예시(fake_search, fake_conditions):
 
 | 모듈 | 상태 |
 |---|---|
-| `src/ingest/` | 수집·정제·SQLite·구조 분할·증분 pending·CLI 구현. 실제 API 세부 계약/JA 코드 의미는 미검증, 자동 소실 차단 |
+| `src/ingest/` | 수집·정제·SQLite·분할·pending·CLI 구현. OAS·첫 페이지 표본 확인, 실제 연령/지역 어댑터·전체 적합성 미검증, 자동 소실 차단 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
 | 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
 | 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
+
+### A 2차 수정의 운영 규칙
+
+현재 상세 수집이 실패하면 현재 목록의 이름·기관·기한·URL 등 유효 관측이 과거 상세보다 우선하며,
+목록에도 없는 본문은 보존합니다. 명시적인 빈 값과 키 누락, 응답 실패를 구분합니다. 두 현재 원천이
+충돌하면 공통 필드는 목록 우선, 명확한 기한은 더 이른 종료일, 모호한 기간은 미확정으로 보존합니다.
+현재 상세가 성공한 네 본문 항목의 누락/빈 값은 기존처럼 제거합니다. 필드별 출처와 충돌은 A 감사
+레코드와 실행 raw의 merge-conflicts.json에 남깁니다. 수정일시가 원천별 최신성 순서를 보장한다고 가정하지 않습니다.
+
+fixture는 `data/a_validation/offline-<id>/`, validation은 `validation-<id>/`의 DB/raw를 사용합니다.
+`--db-path`·`--raw-dir`를 지정해도 운영 목적지의 resolved 별칭·sidecar·lock·raw와 겹치면 쓰기 전에 거부합니다.
+전역 config를 변경하지 않으며 normal live 기본값은 유지합니다. 프로그램 방식은 `pipeline.run_fixture()`입니다.
+HTMLParser는 셀 간 공백·행 간 개행과 셀 내부 줄바꿈을 보존합니다. 이전 표 정제로 내용이 달라졌던
+레코드는 다음 성공 관측 때 해시·서비스 전체 조각이 한 번 갱신될 수 있습니다.
+
+B 소비자는 우선 하나를 권장합니다. 두 색인의 영속 적용 뒤에만 확인 응답해야 하며, A의 stale-ack 차단은
+여러 소비자의 오래된 색인 쓰기까지 막지 못합니다. 기관/URL 품질·출처 조회는 `store.get_record(service_id)`이고
+후보 보류·표시 방침은 B/C 합의 대기입니다. 구체적 매핑과 검증 기록은 [A 운영 계약](docs/INGEST_A.md)에 있습니다.

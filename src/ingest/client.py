@@ -17,7 +17,8 @@ import requests
 from src.common import config
 
 ENDPOINTS = ("serviceList", "serviceDetail", "supportConditions")
-# Each endpoint needs independent official/live pagination and ID verification.
+# First-page IDs/shape observed in pass 2; full traversal/empty-snapshot authority
+# remains unverified. A small smoke sample must never enable disappearance.
 VERIFIED_CONTRACTS = {name: False for name in ENDPOINTS}
 
 
@@ -135,7 +136,8 @@ class Collection:
 
 
 def collect_endpoint(endpoint: str, *, run_id: str, per_page: int = 500,
-                     max_pages: int | None = None, fetch_page=None) -> Collection:
+                     max_pages: int | None = None, fetch_page=None,
+                     raw_dir: Path | None = None) -> Collection:
     """Candidate v3 pagination; an explicit max_pages always means sample."""
     if endpoint not in ENDPOINTS:
         raise ValueError("unknown endpoint")
@@ -147,7 +149,7 @@ def collect_endpoint(endpoint: str, *, run_id: str, per_page: int = 500,
         raise ValueError("invalid run_id")
     result = Collection(endpoint, verified=VERIFIED_CONTRACTS[endpoint],
                         authoritative=endpoint == "serviceList", limited=max_pages is not None)
-    root = config.RAW_DIR / run_id
+    root = (Path(raw_dir) if raw_dir is not None else config.RAW_DIR) / run_id
     accepted: dict[str, dict] = {}
     fingerprints: set[str] = set()
     received, page = 0, 1

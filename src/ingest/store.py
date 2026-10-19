@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.common import config
 from src.common.schema import Chunk
+from src.ingest.storage import StoragePaths, resolve_storage
 from src.ingest.normalize import (  # public compatibility
     build_metadata, clean_service, content_hash, is_youth_service, youth_inclusion_reasons,
 )
@@ -40,9 +40,10 @@ def _now() -> str:
 
 
 @contextmanager
-def connection():
-    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(config.DB_PATH, timeout=30)
+def connection(*, storage: StoragePaths | None = None):
+    paths = storage.validated() if storage is not None else resolve_storage()
+    paths.db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(paths.db_path, timeout=30)
     con.row_factory = sqlite3.Row
     try:
         con.executescript(DDL)
@@ -57,9 +58,10 @@ def connection():
 
 
 @contextmanager
-def ingestion_lock():
+def ingestion_lock(*, storage: StoragePaths | None = None):
     """OS file lock; process death releases it, so a stale file never blocks recovery."""
-    path = Path(str(config.DB_PATH) + ".ingest.lock")
+    paths = storage.validated() if storage is not None else resolve_storage()
+    path = Path(str(paths.db_path) + ".ingest.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+b")
     try:
@@ -85,23 +87,23 @@ def ingestion_lock():
         handle.close()
 
 
-def start_run(run_id: str) -> None:
+def start_run(run_id: str, *, storage: StoragePaths | None = None) -> None:
     """Call only under ingestion_lock; previous running runs were interrupted."""
-    with connection() as con:
+    with connection(storage=storage) as con:
         con.execute(
             "UPDATE ingestion_runs SET status='interrupted', finished_at=? WHERE status='running'", (_now(),)
         )
         con.execute("INSERT INTO ingestion_runs VALUES (?, 'running', ?, NULL, '{}')", (run_id, _now()))
 
 
-def finish_run(run_id: str, status: str, summary: dict) -> None:
-    with connection() as con:
+def finish_run(run_id: str, status: str, summary: dict, *, storage: StoragePaths | None = None) -> None:
+    with connection(storage=storage) as con:
         con.execute("UPDATE ingestion_runs SET status=?, finished_at=?, summary=? WHERE run_id=?",
                     (status, _now(), _json(summary), run_id))
 
 
-def get_run(run_id: str) -> dict | None:
-    with connection() as con:
+def get_run(run_id: str, *, storage: StoragePaths | None = None) -> dict | None:
+    with connection(storage=storage) as con:
         row = con.execute("SELECT * FROM ingestion_runs WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
             return None
@@ -110,9 +112,9 @@ def get_run(run_id: str) -> dict | None:
         return result
 
 
-def get_record(service_id: str) -> dict | None:
+def get_record(service_id: str, *, storage: StoragePaths | None = None) -> dict | None:
     """A audit access; includes inactive records, unlike load_services."""
-    with connection() as con:
+    with connection(storage=storage) as con:
         row = con.execute("SELECT * FROM services WHERE service_id=?", (service_id,)).fetchone()
         if row is None:
             return None
@@ -178,7 +180,9 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
         if reason == "youth_scope_exit":
             # Do not retain non-youth section text/source snapshots. Minimal audit only.
             payload = {key: service.get(key) for key in
-                       ("service_id", "service_name", "agency", "detail_url", "inclusion_reasons", "content_hash")}
+                       ("service_id", "service_name", "agency", "detail_url", "inclusion_reasons", "content_hash", "data_quality")}
+            payload["_field_provenance"] = {key: value for key, value in service.get("_field_provenance", {}).items()
+                                             if key in ("service_name", "agency", "field", "application_period", "detail_url")}
         else:
             payload = service
         con.execute(
@@ -199,11 +203,11 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
     return changed_ids, counts
 
 
-def upsert_services(services: list[dict]) -> list[str]:
+def upsert_services(services: list[dict], *, storage: StoragePaths | None = None) -> list[str]:
     """Normalized input; enforce provisional youth scope; return new/changed active IDs."""
     from src.ingest.pipeline import seoul_today
-    with ingestion_lock():
-        with connection() as con:
+    with ingestion_lock(storage=storage):
+        with connection(storage=storage) as con:
             changed, _ = _apply(con, services, None, seoul_today())
             return changed
 
@@ -232,10 +236,10 @@ def _close_missing(con, listing, run_id: str) -> list[str]:
 
 
 def apply_run(run_id: str, services: list[dict], listing, *, full: bool, today: str,
-              summary: dict) -> dict:
+              summary: dict, storage: StoragePaths | None = None) -> dict:
     """DB records, events and completed run summary commit in a single transaction."""
     from src.ingest.chunker import chunk_service
-    with connection() as con:
+    with connection(storage=storage) as con:
         _, counts = _apply(con, services, run_id, today)
         counts["deferred"] += summary.get("diagnostics", {}).get("invalid_records", 0)
         removed = _close_missing(con, listing, run_id)
@@ -268,17 +272,17 @@ def apply_run(run_id: str, services: list[dict], listing, *, full: bool, today: 
         return result
 
 
-def load_services(service_ids: list[str] | None = None) -> list[dict]:
+def load_services(service_ids: list[str] | None = None, *, storage: StoragePaths | None = None) -> list[dict]:
     """Active youth records only, ordered by ID. [] means no IDs."""
     if service_ids == []:
         return []
-    with connection() as con:
+    with connection(storage=storage) as con:
         rows = con.execute("SELECT * FROM services WHERE status='active' ORDER BY service_id").fetchall()
         wanted = set(service_ids) if service_ids is not None else None
         return [json.loads(row["payload"]) for row in rows if wanted is None or row["service_id"] in wanted]
 
 
-def sql_keyword_search(keywords: list[str], k: int) -> list[dict]:
+def sql_keyword_search(keywords: list[str], k: int, *, storage: StoragePaths | None = None) -> list[dict]:
     """Active records, literal case-insensitive OR LIKE, deterministic ID order, no ranking."""
     if type(k) is not int or k < 0:
         raise ValueError("k must be a nonnegative integer")
@@ -293,7 +297,7 @@ def sql_keyword_search(keywords: list[str], k: int) -> list[dict]:
         escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         clauses.append(f"({expression}) LIKE ? ESCAPE '\\'")
         params.append("%" + escaped + "%")
-    with connection() as con:
+    with connection(storage=storage) as con:
         rows = con.execute(
             "SELECT payload FROM services WHERE status='active' AND (" + " OR ".join(clauses)
             + ") ORDER BY service_id LIMIT ?", (*params, k),
@@ -301,25 +305,25 @@ def sql_keyword_search(keywords: list[str], k: int) -> list[dict]:
         return [json.loads(row["payload"]) for row in rows]
 
 
-def get_pending_changes() -> list[dict]:
+def get_pending_changes(*, storage: StoragePaths | None = None) -> list[dict]:
     """Durable complete-service replacements/removals; reading never acknowledges."""
-    with connection() as con:
+    with connection(storage=storage) as con:
         rows = con.execute("SELECT * FROM pending_changes ORDER BY service_id").fetchall()
         return [{**dict(row), "chunks": json.loads(row["chunks"])} for row in rows]
 
 
-def pending_chunks() -> list[Chunk]:
-    return [Chunk(**chunk) for event in get_pending_changes() for chunk in event["chunks"]]
+def pending_chunks(*, storage: StoragePaths | None = None) -> list[Chunk]:
+    return [Chunk(**chunk) for event in get_pending_changes(storage=storage) for chunk in event["chunks"]]
 
 
-def pending_removal_ids() -> list[str]:
-    return [event["service_id"] for event in get_pending_changes() if event["action"] == "remove"]
+def pending_removal_ids(*, storage: StoragePaths | None = None) -> list[str]:
+    return [event["service_id"] for event in get_pending_changes(storage=storage) if event["action"] == "remove"]
 
 
-def acknowledge_changes(tokens: list[dict]) -> int:
+def acknowledge_changes(tokens: list[dict], *, storage: StoragePaths | None = None) -> int:
     """Acknowledge only after BOTH indexes durably applied this exact event/version."""
     count = 0
-    with connection() as con:
+    with connection(storage=storage) as con:
         for token in tokens:
             count += con.execute(
                 "DELETE FROM pending_changes WHERE service_id=? AND version=? AND event_id=?",

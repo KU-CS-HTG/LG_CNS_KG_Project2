@@ -2,6 +2,7 @@
 import pytest
 
 from src.common import config
+from src.ingest import storage
 
 
 @pytest.fixture(autouse=True)
@@ -9,6 +10,12 @@ def isolated_a(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "services.db")
     monkeypatch.setattr(config, "RAW_DIR", tmp_path / "raw")
     monkeypatch.setattr(config, "GOV24_API_KEY", "synthetic-test-key")
+    monkeypatch.setattr(storage, "validation_root", lambda: tmp_path / "validation")
+
+
+@pytest.fixture
+def a_storage(tmp_path):
+    return storage.StoragePaths(tmp_path / "test-state" / "services.db", tmp_path / "test-state" / "raw", "test").validated()
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)

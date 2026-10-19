@@ -36,6 +36,10 @@
 - 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
 - A 구현 계약: `docs/INGEST_A.md`. `pipeline.run(full=False)`는 기존 `list[Chunk]`를 유지하고 이전 미확인 조각도 재전달한다. B는 `store.get_pending_changes()`의 서비스 전체 교체/제거를 두 색인에 적용한 후 service_id+version+event_id로 `acknowledge_changes()`한다. B 소비자 적용 방식은 합의 대기이며 실제 통합은 미검증이다.
 - `mark_closed()` 단독 호출은 안전하게 아무 작업도 하지 않는다. 내부 `apply_run()`은 검증된 완전 목록으로만 소실을 판정하며, 현재 API 세부 계약 미검증 상태에서는 자동 소실이 차단된다. `--full`은 활성 조각 재생성이고 DB·이력·pending 제거를 보존한다.
+- A 2차 수정: `merge.py`는 현재 관측과 과거 fallback을 구분하며 상세 실패 때 현재 목록의 공통 값이 과거 상세보다 우선한다. 명시적 빈 값·정상 행의 키 누락·응답 실패를 구분하고 필드 출처/충돌을 A 저장소에 남긴다. 두 현재 원천의 우선순위와 기한 충돌 정책은 `docs/INGEST_A.md` 참조. 수정일시를 필드별 최신성 근거로 추정하지 않는다.
+- `storage.StoragePaths`를 전달해 config 전역 변경 없이 실행별 DB/raw를 선택한다. fixture/validation의 운영 DB·raw·sidecar·lock 경로 및 resolved 별칭은 쓰기 전에 거부한다. `run_fixture()`와 CLI에 같은 격리를 적용한다. HTMLParser는 표 셀/행 경계를 보존하며 정제 변경은 다음 관측 시 한 번의 해시/전체 조각 갱신을 유발할 수 있다.
+- 격리 live 표본은 세 엔드포인트 3건씩 확인했으나 전체 종료·빈 스냅샷·실제 연령/지역 어댑터는 미검증이다. JA0110/JA0111 기본 라벨은 OAS에서 확인했어도 신청자/부양자 의미 등을 자동 추정하지 않는다.
+- B 소비자는 우선 하나를 권장한다. 두 색인의 영속 적용 뒤에만 확인하며, stale-ack 차단만으로 병렬 소비자의 stale write를 방지할 수 없다. provenance 품질은 `store.get_record(service_id)`로 조회하고 후보 보류·C 표시 방침은 합의한다.
 
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.
@@ -59,10 +63,12 @@
 pip install -r requirements.txt        # 설치 (.env.example을 .env로 복사 후 키 입력)
 python -m src.ingest.pipeline          # A: 실제 API 수집 (실행 전 승인 필요), 기본 증분
 python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB 초기화 없음
+python -m src.ingest.pipeline --offline-fixture tests/fixtures/a_synthetic_api.json  # 격리된 합성 실행
+python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승인 범위 내 격리 live 표본
 python -m pytest tests/ingest -q -ra   # A: mock HTTP·임시 SQLite, 미구현 skip 금지
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
 ```
-(A 구현 및 합성 테스트 완료. B/C는 `NotImplementedError` 스켈레톤. 실제 API 필드·페이지·JA 코드 의미와 Vector/BM25 통합은 미검증.)
+(A 2차 수정·오프라인 회귀 및 격리 live 표본 검증 완료. B/C는 스켈레톤. 전체 API 적합성·실제 연령/지역 어댑터·Vector/BM25 통합은 미검증.)
