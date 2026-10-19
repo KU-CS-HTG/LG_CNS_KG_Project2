@@ -1,5 +1,5 @@
 """B: retrieve/filters.py. 소프트 필터 규칙(값이 비면 통과, 기한 지난 제도 제외, 결과 없으면 완화)."""
-from src.retrieve.filters import apply_filters, is_expired, relax
+from src.retrieve.filters import apply_filters, field_matches, is_expired, relax
 
 from tests.fixtures import service_ids
 
@@ -38,15 +38,17 @@ def test_empty_filters_keep_non_expired(sample_chunks):
     assert len(_ids(sample_chunks, {"today": TODAY})) >= 8
 
 
-def test_relax_eventually_empty():
-    f = {"region": "서울", "age": 27, "field": "주거", "today": TODAY}
+def test_relax_eventually_stops():
+    """지역·연령을 풀고 나면 더 풀 것이 없어 같은 필터를 돌려준다. field·situation·today는 그대로 남는다."""
+    f = {"region": "서울", "age": 27, "field": "주거", "situation": ["구직"], "today": TODAY}
     for _ in range(10):
         nxt = relax(f)
-        assert len(nxt) <= len(f)
-        if not {k for k in nxt if k != "today"}:
-            return
+        if nxt == f:
+            break
         f = nxt
-    raise AssertionError("relax가 필터를 모두 풀지 못함")
+    else:
+        raise AssertionError("relax가 멈추지 않음")
+    assert f == {"field": "주거", "situation": ["구직"], "today": TODAY}
 
 
 def test_relax_order_and_keeps_today():
@@ -58,9 +60,9 @@ def test_relax_order_and_keeps_today():
             break
         steps.append(nxt)
     removed = [set(a) - set(b) for a, b in zip(steps, steps[1:])]
-    assert removed == [{"field"}, {"region"}, {"age"}, {"situation"}]     # 분야 -> 지역 -> 연령 -> situation
-    assert all(s["today"] == TODAY for s in steps)                         # 신청기한은 풀지 않는다
-    assert steps[-1] == {"today": TODAY}
+    assert removed == [{"region"}, {"age"}]                                # 지역 -> 연령. 분야는 필터가 아니라 풀지 않는다
+    assert all(s["today"] == TODAY and s["field"] == "주거" and s["situation"] == ["구직"] for s in steps)
+    assert steps[-1] == {"field": "주거", "situation": ["구직"], "today": TODAY}
 
 
 def test_relax_does_not_mutate_input():
@@ -78,3 +80,16 @@ def test_is_expired_defaults_to_today(sample_chunks):
 def test_apply_filters_keeps_order(sample_chunks):
     kept = apply_filters(sample_chunks, {"today": TODAY})
     assert kept == [c for c in sample_chunks if c in kept]
+
+
+def test_field_is_not_a_filter(sample_chunks):
+    base = _ids(sample_chunks, {"today": TODAY})
+    assert _ids(sample_chunks, {"field": "주거", "today": TODAY}) == base
+    assert _ids(sample_chunks, {"field": "없는분야", "today": TODAY}) == base
+
+
+def test_field_matches():
+    assert field_matches("주거", "주거") and field_matches("주거·자립", "주거")      # 한쪽이 다른 쪽을 포함하면 맞음
+    assert field_matches("주거", "주거·자립")
+    assert not field_matches("일자리", "주거")
+    assert not field_matches("", "주거") and not field_matches("주거", None) and not field_matches(None, None)

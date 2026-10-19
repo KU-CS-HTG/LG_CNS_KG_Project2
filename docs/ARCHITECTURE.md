@@ -70,7 +70,8 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 임베딩 모델별 컬렉션(`chunks__<모델명>`) | 모델을 바꾸는 실험(bge-m3 ↔ e5)에서 차원 불일치로 저장소가 깨지는 것을 막는다. |
 | `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks`는 B→C에서 미결이던 "같은 서비스의 다른 항목 조각" 조회의 후보. |
 | 검색: RRF(순위 합산, 상수 60, 후보 50개) + 서비스당 조각 1개, `search_with_info`(점수·적용된 필터·완화 여부) | 코사인과 BM25는 점수 단위가 달라 순위로 합친다(튜닝 최소화). 같은 제도의 조각이 Top-K를 채우지 않게 서비스 단위로 줄인다(구조도 '중복 제거', 기획서 8.1). 평가(9.4)에서 `mode`별로 점수를 비교하고, 완화 여부는 C가 안내 문구에 쓸 수 있다. |
-| 필터 완화 순서: 관심 분야 → 지역 → 연령, 신청기한은 풀지 않음 | 분야명은 LLM이 뽑은 값과 데이터 분류가 어긋나기 쉬워 가장 먼저 푼다. 연령은 자격과 직결되어 마지막에 푼다. 종료된 제도를 보여주지 않는 것은 기획서 규칙이라 완화 대상에서 뺀다. |
+| 필터 완화 순서: 지역 → 연령, 신청기한은 풀지 않음. 분야·상황은 필터가 아니라 풀지 않음 | 연령은 자격과 직결되어 마지막에 푼다. 종료된 제도를 보여주지 않는 것은 기획서 규칙이라 완화 대상에서 뺀다. (분야는 처음에는 가장 먼저 푸는 필터였으나 아래 결정으로 필터에서 빠짐) |
+| **관심 분야(`field`)는 필터가 아니라 가산점**: `build_where`·`apply_filters`에서 분야 조건 제거, `hybrid.boost_by_field`가 맞는 분야에 `FIELD_BOOST`(0.002)를 RRF 점수에 더함, `filters.field_matches`(포함 관계) | 분야는 자격이 아니라 관심사다. 화면 테스트에서 질문("월세가 부담되고 취업 준비 중")의 분야가 "주거" 하나로 뽑히자 구직 지원 제도가 필터로 통째로 걸러졌다. 또 LLM이 뽑는 분야 이름과 실제 데이터의 서비스분야 이름이 다르면(예: "주거" vs "주거·자립") 맞지 않는 제도가 모두 사라지고, 분야가 비어 있어 통과하는 제도만 남아 결과가 비지 않으므로 완화도 일어나지 않는 문제가 있다. 가산점은 거르지 않으므로 이름이 달라도 결과가 그대로 나오고 맞으면 앞으로 올라간다. B·C 합의(C는 `Filters`에 `field`를 그대로 보냄). 값은 평가(`run_eval`)로 조정하며 0이면 끈다. 검색어에 분야를 덧붙이는 방법은 복합 질문에서 한쪽으로 쏠릴 수 있어 쓰지 않았다. |
 | `filters.apply_filters`(파이썬)와 `vector_store.build_where`(저장소) 규칙을 따로 두고 일치 테스트 | 저장소 안에서 거르는 것이 빠르지만, Baseline 결과나 후처리는 이미 꺼낸 목록을 거른다. 두 곳의 규칙이 어긋나지 않도록 샘플 데이터에서 결과가 같은지 매개변수 테스트로 확인한다. |
 | `test_vector_store`, 테스트용 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 | 임시 폴더와 글자 2-gram 해시 가짜 임베딩으로 실제 Chroma 동작(upsert·삭제·필터·BM25 갱신)을 모델 없이 검증. `test_retrieval`도 같은 픽스처를 쓴다. |
 | `metrics`: 정답 없는 질문은 계산에서 제외, 평가할 질문이 없거나 질문 수가 안 맞거나 k<1이면 ValueError, 같은 id가 중복되면 처음 자리만 셈, `no_evidence_rate`·`evaluate`·`check_targets` 제공 | 정답이 없는 질문(근거 없음)은 Hit Rate·Recall·MRR이 정의되지 않으므로 분모에서 빼야 지표가 왜곡되지 않는다. 조용히 0을 돌려주면 잘못된 입력(질문·정답 개수 불일치)을 못 잡으므로 오류로 알린다. 근거 없음 질문이 관련 없는 제도를 내보내지 않는지는 `no_evidence_rate`로 따로 보고, 관련도 하한선을 정할 때 쓴다. `evaluate`는 K=3·5·10을 한 번에 계산해 `run_eval`이 쓰기 쉽다. |
@@ -131,11 +132,11 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `index/embedder.py` | 구현됨 (sentence-transformers, bge-m3). 가짜 모델 테스트 통과, 실제 모델은 팀원 PC에서 확인(0.553 > 0.422) |
 | `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델로 샘플 색인·검색 확인 |
-| `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
+| `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화, 분야 가산점). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `eval/run_eval.py` | 구현됨 (모드별 실험·비교표·결과 JSON). 샘플 색인·가짜 임베딩으로 확인, 실제 평가는 질문 세트 정답이 필요 |
 | `eval/metrics.py` | 구현됨 (Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`) |
-| `tests/` | 94개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
+| `tests/` | 125개 통과, 4개는 OPENAI_API_KEY·실제 모델이 필요해 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -156,3 +157,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - 검색 평가 실행 구현(`eval/run_eval.py`): 모드별 실험, K=3/5/10, 범주별·놓친 질문·비교표, 결과 JSON 저장, `--experiment all`, `--today`, `--questions`, `--out-dir`, `--no-save`. `eval/questions.jsonl`에 `filters` 필드 추가(q03). `tests/test_run_eval.py` 추가.
 - `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.
 - `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.
+- 관심 분야를 필터에서 가산점으로 변경(B·C 합의): `vector_store.build_where`와 `filters.apply_filters`에서 field 조건 제거, `filters.relax`는 지역→연령만 풀고 field·situation은 유지(`filters_used`에 그대로 남아 완화 안내에는 지역·연령만 나옴), `filters.field_matches`와 `hybrid.boost_by_field` 추가, `config.FIELD_BOOST`, `schema.Filters` 설명 갱신. 관련 테스트 수정·추가(분야가 달라도 제도가 남는 회귀 테스트 포함). C 코드는 변경 없음.

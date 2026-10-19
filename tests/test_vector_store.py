@@ -136,16 +136,17 @@ def test_where_excludes_expired_always(indexed_sample):
     assert not {"SAMPLE003", "SAMPLE010"} & _ids_matching({})          # today 생략: 오늘 기준
 
 
-def test_where_field(indexed_sample):
-    vs.build_index([Chunk("NOFIELD#지원대상", "NOFIELD", "분야 없는 제도", "지원대상", "분야 없는 제도\n누구나", {}, "u")])
-    ids = _ids_matching({"field": "주거", "today": TODAY})
-    assert "SAMPLE001" in ids
-    assert "NOFIELD" in ids                                  # 분야 값이 없으면 통과 (소프트)
-    assert "SAMPLE004" not in ids                            # 일자리 분야
+def test_where_ignores_field_and_situation(indexed_sample):
+    """관심 분야·상황은 필터가 아니다: 분야가 달라도 제도가 사라지지 않는다 (분야 이름이 데이터와 달라도 안전)."""
+    base = _ids_matching({"today": TODAY})
+    assert _ids_matching({"field": "주거", "today": TODAY}) == base
+    assert _ids_matching({"field": "존재하지않는분야", "situation": ["구직"], "today": TODAY}) == base
+    assert "SAMPLE004" in _ids_matching({"field": "주거", "today": TODAY})        # 일자리 분야 제도도 남는다
 
 
 def test_where_shape():
     assert vs.build_where({"today": TODAY}) == {"deadline_int": {"$gte": 20261019}}
+    assert vs.build_where({"field": "주거", "situation": ["구직"], "today": TODAY}) == {"deadline_int": {"$gte": 20261019}}
     w = vs.build_where({"age": 27, "today": TODAY})
     assert w == {"$and": [{"age_min": {"$lte": 27}}, {"age_max": {"$gte": 27}}, {"deadline_int": {"$gte": 20261019}}]}
 
