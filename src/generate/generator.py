@@ -42,8 +42,11 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 - [근거]에 적힌 내용만 쓴다. 금액·연령·기간·기관·절차를 지어내거나 일반 지식으로 보충하지 않는다.
 - [근거]에 해당 항목이 없으면 그 값은 "{NOT_IN_EVIDENCE}"로 쓴다.
 - 먼저 각 제도가 질문과 관련 있는지 본다. 질문이 묻는 도움·제도와 관련이 없거나, 질문이 특정 제도·정보를 묻는데
-  그 제도·정보가 [근거]에 없으면 applicable은 "{NOT_RELEVANT}"이다. 검색 결과라고 해서 관련 있다고 보지 않는다.  질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
+  그 제도·정보가 [근거]에 없으면 applicable은 "{NOT_RELEVANT}"이다. 검색 결과라고 해서 관련 있다고 보지 않는다.
+  질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
   "{NOT_RELEVANT}"이다. 비슷한 제도로 대신 답하는 것은 추측이다.
+- 각 제도의 meets_need: [사용자가 원하는 도움]이 주어지면, 그 제도의 지원내용이 그중 하나라도 직접 도와주면 true,
+  아니면 false다. 지역·나이·신분이 맞는다는 것은 meets_need의 근거가 아니다. [사용자가 원하는 도움]이 없으면 true다.
 - 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
   "{LIKELY}" = 근거에 적힌 자격 조건을 사용자가 밝힌 정보로 모두 충족함,
   "{UNCLEAR}" = 근거가 부족하거나, 사용자가 밝히지 않은 자격 조건(소득·가구·재산 등)이 하나라도 있음,
@@ -66,7 +69,7 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 
 출력 형식:
 {{"situation": 사용자 상황을 쉼표로 이은 짧은 구,
-  "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부,
+  "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부, "meets_need": true 또는 false,
                 "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
                 "mismatch": {{"said": 질문 원문 구절, "condition": 근거 원문 구절}} ("{NOT_ELIGIBLE}"일 때만),
                 "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약, "needs_check": [문자열, ...]}}],
@@ -75,17 +78,37 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 
 
 def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
+    return _generate(question, evidence, [])
+
+
+def _needs_from(conditions: dict) -> list[str]:
+    """사용자가 원하는 도움 = 질문에서 직접 말한 도움(help) + 처지(situation). 직접 말한 도움이 없으면
+    (받을 수 있는 지원을 넓게 묻는 질문) 비워서 거르지 않는다.
+
+    - 답변 생성 프롬프트 안에서 LLM이 needs를 직접 뽑게 했더니 흔들렸다 (관람비 질문에 빈 값, 넓은 질문에 값).
+    - field만으로는 '직접 말한 도움'(등록금 -> 교육)과 '처지로 짐작한 분야'(취업준비생 -> 일자리)를 구분할 수 없다.
+    그래서 조건 추출에서 질문 원문 구절로 검증된 help를 쓴다."""
+    help_ = conditions.get("help") or []
+    if not help_:
+        return []
+    situation = [s for s in conditions.get("situation") or [] if s in condition_extractor.SITUATION_DEFS]
+    return list(help_) + [f"{s}({condition_extractor.SITUATION_DEFS[s]})" for s in situation]
+
+
+def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str]) -> Answer:
     if not evidence:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
     try:
-        out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence))
+        out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("답변 생성 실패, 원문으로 대체: %s", e)
         out = {}
     # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
     # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
     judged = isinstance(out.get("services"), list)
+    # 원하는 도움을 주는 제도인지는 구조화된 값(meets_need)으로 받아 코드로 적용한다
+    # (applicable의 '관련 없음' 규칙만으로는 지역·나이만 맞는 제도가 섞였음: 공연 관람비 질문에 청년월세)
 
     by_id = {s.get("service_id"): s for s in out.get("services") or [] if isinstance(s, dict)}
     recs: list[Recommendation] = []
@@ -100,6 +123,8 @@ def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
             applicable = UNCLEAR          # 질문에 나이·거주지 근거가 없으면 제외하지 않고 확인 필요로 남긴다
         if applicable in (NOT_ELIGIBLE, NOT_RELEVANT):
             continue
+        if needs and gen.get("meets_need") is False:
+            continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
         recs.append(_to_recommendation(question, chunks, gen))
 
     if not recs:
@@ -108,7 +133,7 @@ def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
     return Answer(text=text, recommendations=recs)
 
 
-def _build_prompt(question: str, evidence: dict[str, list[Chunk]]) -> str:
+def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[str] | None = None) -> str:
     blocks = []
     for sid, chunks in evidence.items():
         c0, meta, sections = chunks[0], _merged_meta(chunks), _sections(chunks)
@@ -120,7 +145,10 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]]) -> str:
         for s in SECTIONS:
             lines.append(f"- {s}: {sections.get(s, '(자료 없음)')}")
         blocks.append("\n".join(lines))
-    return f"[사용자 질문]\n{question}\n\n" + "\n\n".join(blocks)
+    head = f"[사용자 질문]\n{question}\n\n"
+    if needs:
+        head += "[사용자가 원하는 도움]\n" + "\n".join(f"- {n}" for n in needs) + "\n\n"
+    return head + "\n\n".join(blocks)
 
 
 def _to_recommendation(question: str, chunks: list[Chunk], gen: dict) -> Recommendation:
@@ -190,12 +218,19 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
         if not isinstance(m, dict):
             continue
         s, c = _str(m.get("said")).strip("‘’'\""), _str(m.get("condition")).strip("‘’'\"")
-        if _AGE_RE.search(c) and not re.search(r"\d", s):
-            continue                      # 나이 조건은 나이로만 맞춘다 ('대학생' -> '만 19~34세' 같은 추론 차단)
-        if s and len(squash(s)) <= MAX_SAID_CHARS and squash(s) in q and s not in said:
+        age_only = len(squash(_AGE_RE.sub("", s)).replace("만", "")) <= 1     # '27살', '만 27세'처럼 나이뿐인 구절
+        if (_AGE_RE.search(c) and not re.search(r"\d", s)) or (age_only and not _AGE_RE.search(c)):
+            continue                      # 나이는 나이끼리만 짝짓는다 ('대학생'↔'만 19~34세', '27살'↔'구직자' 차단)
+        # 짝의 양쪽이 모두 검증돼야 쓴다: 질문 구절은 질문 원문에, 근거 구절은 근거 원문에 있어야 한다
+        # (근거에 없는 나이 조건과 짝지은 '27살'이 이유에 혼자 남던 문제)
+        if not (s and c and len(squash(s)) <= MAX_SAID_CHARS and squash(s) in q and squash(c) in body):
+            continue
+        if s not in said:
             said.append(s)
-            if c and squash(c) in body and c not in conds:
-                conds.append(c)
+        if c not in conds:
+            conds.append(c)
+    # 다른 구절에 포함되는 구절은 뺀다 ('서울에 사는 27살 취업준비생', '27살' -> 앞의 것만)
+    said = [s for s in said if not any(s != o and squash(s) in squash(o) for o in said)]
     return said, conds
 
 
@@ -267,7 +302,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
     result = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K)
     selected = evidence_mod.select_evidence(result.chunks)
-    answer = generate_answer(question, selected)
+    answer = _generate(question, selected, _needs_from(conditions))
     notice = _relaxed_notice(filters, result.filters_used) if result.relaxed else ""
     if notice and not answer.no_evidence:
         answer.text = f"{notice}\n\n{answer.text}"

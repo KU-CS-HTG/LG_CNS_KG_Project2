@@ -71,6 +71,8 @@ JSON 객체 하나만 출력한다. 사용할 수 있는 키는 아래뿐이다.
 {_defs(SITUATION_DEFS)}
 - field: 사용자가 가장 도움받고 싶은 분야 하나. 아래 목록의 이름 중 하나:
 {_defs(FIELD_DEFS)}
+- help: 사용자가 질문에서 직접 말한 원하는 도움·부담을 질문 원문에서 글자 그대로 복사한 짧은 구절의 배열.
+  처지(신분·상황)는 넣지 않는다. 원하는 도움을 말하지 않고 받을 수 있는 지원을 넓게 물으면 빈 배열이다.
 
 규칙:
 - 질문에 근거가 없는 키는 아예 넣지 않는다. 추측하지 않는다.
@@ -161,6 +163,21 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
                 picked.append(s.strip())
         if picked:
             out["situation"] = picked
+
+    # help: 질문에서 직접 말한 원하는 도움 (C 내부용. B에게 넘기는 Filters에는 들어가지 않는다).
+    # 질문 원문에 실제로 있는 짧은 구절만 받는다 (나이와 같은 원리로 추측 차단)
+    help_ = raw.get("help")
+    if isinstance(help_, str):
+        help_ = [help_]
+    if isinstance(help_, list) and question is not None:
+        q = "".join(question.split())
+        picked = []
+        for h in help_:
+            h = h.strip() if isinstance(h, str) else ""
+            if h and len("".join(h.split())) <= 20 and "".join(h.split()) in q and h not in picked:
+                picked.append(h)
+        if picked:
+            out["help"] = picked
     return out
 
 

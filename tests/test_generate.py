@@ -374,3 +374,56 @@ def test_field_is_not_a_filter_with_real_b_search(indexed_sample, fake_condition
     assert {"구직촉진수당", "서울 청년수당"} & set(names)              # 다른 분야 제도도 후보에 남는다
     assert generator.RELAXED_MARK not in answer.text
 
+
+
+# --- 원하는 도움을 주지 않는 제도 거르기 (needs · meets_need) --------------------------
+def test_needs_from_conditions():
+    needs = generator._needs_from
+    assert needs({"help": ["관람비"], "field": "문화"}) == ["관람비"]
+    got = needs({"help": ["월세가 부담돼요"], "field": "주거", "situation": ["구직"]})
+    assert got[0] == "월세가 부담돼요" and got[1].startswith("구직")         # 월세 고민 + 구직 중: 둘 다
+    assert needs({"field": "일자리", "situation": ["구직"]}) == []            # 직접 말한 도움 없음(처지로 짐작한 분야): 거르지 않음
+    assert needs({"age": 27, "region": "서울"}) == []                         # 넓게 묻는 질문
+
+
+def test_help_must_be_quoted_from_question():
+    norm = condition_extractor._normalize_conditions
+    q = "대학 등록금이 부담돼요. 받을 수 있는 장학금이 있나요?"
+    assert norm({"help": ["등록금", "장학금", "생활비"]}, question=q)["help"] == ["등록금", "장학금"]   # 질문에 없는 '생활비'는 버림
+    assert "help" not in norm({"help": []}, question=q)
+
+
+def test_service_not_meeting_need_is_dropped(fake_search, fake_conditions, monkeypatch):
+    case = fake_search("sr1")
+    fake_conditions({"conditions": {"field": "문화", "help": ["관람비"]}})    # 원하는 도움: 관람비
+    seen = {}
+
+    def _chat(system, user):
+        seen["prompt"] = user
+        return {"services": [{"service_id": c.service_id, "applicable": "확인 필요", "meets_need": False}
+                             for c in case["results"]]}
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+    answer = generator.answer_question(case["question"])
+    assert "[사용자가 원하는 도움]" in seen["prompt"]                          # 코드가 만든 도움 목록을 LLM에 준다
+    assert answer.no_evidence                                                # 지역·나이만 맞는 제도는 안내하지 않음
+
+
+def test_meets_need_ignored_when_no_needs(fake_search, fake_conditions, monkeypatch):
+    case = fake_search("sr1")
+    fake_conditions({"conditions": {"age": 27, "region": "서울"}})           # 넓게 묻는 질문: 원하는 도움 없음
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {"services": [
+        {"service_id": c.service_id, "applicable": "확인 필요", "meets_need": False} for c in case["results"]]})
+    assert not generator.answer_question(case["question"]).no_evidence      # 거르지 않는다
+
+
+
+def test_reason_age_pairs_only_with_age_and_no_overlap(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "확인 필요", "matches": [
+        {"said": "서울에 사는 27살", "condition": "서울에 거주하며"},
+        {"said": "27살", "condition": "무주택 청년"},                    # 나이 구절 ↔ 나이 아닌 조건 -> 버림
+        {"said": "서울에", "condition": "서울에 거주하며"},               # 다른 구절에 포함 -> 버림
+    ]}]})
+    reason = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0].reason
+    assert reason.count("‘") == 2 and "‘서울에 사는 27살’" in reason      # 질문 구절 1개 + 근거 구절 1개
