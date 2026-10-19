@@ -64,8 +64,37 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `tests/conftest.py`: `NotImplementedError`를 skip으로 변환 | 스켈레톤 단계에서는 미구현 테스트가 실패로 보이지 않고, 구현하는 순간 같은 테스트가 실제 검증을 시작한다. |
 | `tests/fixtures/sample_search_results.json` + `fake_search`·`fake_conditions` 픽스처 | B가 끝나기 전에 C가 자기 코드를 검증하도록 B→C 인계 데이터(Top-5 조각, 근거 없음 사례)를 미리 정해 두고 `hybrid.search`·`extract_conditions`를 가짜로 바꿔 끼운다. 이를 위해 C는 다른 모듈 함수를 모듈 속성으로 호출한다(`generator.py` 주석에 규칙 명시). |
 | `test_generate` | C 코드(조건→필터, 근거 선별, 인용, 근거 없음 응답, 전체 흐름). LLM이 필요한 실제 생성 테스트는 `OPENAI_API_KEY`가 있을 때만 실행. |
+| `embedder`: 모델 지연 로딩, L2 정규화, `kind`(passage/query)별 e5 접두 자동 처리, `embed_query`·`embedding_dim` 제공 | 모델 로딩은 수 초~수십 초 걸리므로 처음 쓸 때 한 번만 한다. 정규화하면 벡터 저장소가 내적/코사인 어느 쪽이든 같은 결과를 낸다. e5는 접두가 없으면 품질이 떨어지는데, 호출하는 쪽이 모델을 몰라도 되게 이 모듈이 처리한다(모델 교체 실험이 쉬움). 시그니처 `embed_texts(texts, kind="passage")`는 기존 호출과 호환된다. |
+| 벡터 저장소: Chroma(정식 벡터 DB), 소프트 필터는 저장 시 대체값(지역 `""`, 연령 -1/999, 기한 99999999)으로 처리, `build_where` | 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓰기로 했다(규모가 작아 numpy+SQLite도 가능하나 확장성 우선). Chroma 필터에는 "값이 없으면 통과"가 없어서, 빈 값을 통과하는 값으로 미리 바꿔 저장하는 방식으로 기획서 8.1의 소프트 필터를 구현했다. 읽을 때는 원래대로(키 생략) 되돌린다. |
+| BM25: `rank_bm25` + 글자 2-gram, 색인은 Chroma 텍스트에서 파생·버전 파일로 갱신 | Chroma에 BM25가 없다. 한국어는 조사 때문에 단어 단위가 불리하고 trigram은 두 글자 단어를 못 찾으므로 2-gram. 저장소가 둘로 나뉘지만 BM25 색인은 파생물이라 `index_version` 파일이 바뀌면 다시 만들어 동기화 문제를 피한다. |
+| 임베딩 모델별 컬렉션(`chunks__<모델명>`) | 모델을 바꾸는 실험(bge-m3 ↔ e5)에서 차원 불일치로 저장소가 깨지는 것을 막는다. |
+| `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks`는 B→C에서 미결이던 "같은 서비스의 다른 항목 조각" 조회의 후보. |
+| 검색: RRF(순위 합산, 상수 60, 후보 50개) + 서비스당 조각 1개, `search_with_info`(점수·적용된 필터·완화 여부) | 코사인과 BM25는 점수 단위가 달라 순위로 합친다(튜닝 최소화). 같은 제도의 조각이 Top-K를 채우지 않게 서비스 단위로 줄인다(구조도 '중복 제거', 기획서 8.1). 평가(9.4)에서 `mode`별로 점수를 비교하고, 완화 여부는 C가 안내 문구에 쓸 수 있다. |
+| 필터 완화 순서: 관심 분야 → 지역 → 연령, 신청기한은 풀지 않음 | 분야명은 LLM이 뽑은 값과 데이터 분류가 어긋나기 쉬워 가장 먼저 푼다. 연령은 자격과 직결되어 마지막에 푼다. 종료된 제도를 보여주지 않는 것은 기획서 규칙이라 완화 대상에서 뺀다. |
+| `filters.apply_filters`(파이썬)와 `vector_store.build_where`(저장소) 규칙을 따로 두고 일치 테스트 | 저장소 안에서 거르는 것이 빠르지만, Baseline 결과나 후처리는 이미 꺼낸 목록을 거른다. 두 곳의 규칙이 어긋나지 않도록 샘플 데이터에서 결과가 같은지 매개변수 테스트로 확인한다. |
+| `test_vector_store`, 테스트용 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 | 임시 폴더와 글자 2-gram 해시 가짜 임베딩으로 실제 Chroma 동작(upsert·삭제·필터·BM25 갱신)을 모델 없이 검증. `test_retrieval`도 같은 픽스처를 쓴다. |
+| `metrics`: 정답 없는 질문은 계산에서 제외, 평가할 질문이 없거나 질문 수가 안 맞거나 k<1이면 ValueError, 같은 id가 중복되면 처음 자리만 셈, `no_evidence_rate`·`evaluate`·`check_targets` 제공 | 정답이 없는 질문(근거 없음)은 Hit Rate·Recall·MRR이 정의되지 않으므로 분모에서 빼야 지표가 왜곡되지 않는다. 조용히 0을 돌려주면 잘못된 입력(질문·정답 개수 불일치)을 못 잡으므로 오류로 알린다. 근거 없음 질문이 관련 없는 제도를 내보내지 않는지는 `no_evidence_rate`로 따로 보고, 관련도 하한선을 정할 때 쓴다. `evaluate`는 K=3·5·10을 한 번에 계산해 `run_eval`이 쓰기 쉽다. |
+| `run_eval`: 검색 함수를 주입(`SearchFn`)하고 `run_experiment`·`format_report`·`comparison_table`·`save_result`로 분리 | 집계·출력·저장을 검색 구현과 떼어 놓아 가짜 검색 함수로 계산을 검증할 수 있다(실제 색인·모델 없이). `main`은 이를 묶는 얇은 껍데기. |
+| 질문에 `filters`(정답 조건)를 직접 적음 | 검색 평가에 LLM 조건 추출의 오류가 섞이지 않게 한다(조건 추출은 C가 따로 평가). `hybrid_filter` 실험에서만 쓴다. |
+| 질문 세 종류(평가 대상 / 근거 없음 / 정답 미지정)와 정답이 하나도 없을 때의 오류 | 정답 미지정 질문이 지표를 조용히 낮추지 않게 제외하고 개수를 경고한다. 정답이 전혀 없으면 0점이 아니라 "정답을 채우세요"라고 알려 준다. |
+| 질문마다 가장 큰 K(10)만큼 가져와 K=3·5·10을 한 번에 계산 | 실험마다 검색을 세 번 돌리지 않는다. `--k`는 표에서 강조할 K. |
+| `--today` 옵션, 결과 JSON에 설정(모델·RRF·기준일) 저장 | 신청기한 때문에 날짜가 바뀌면 결과가 달라지므로 기준일을 고정해 재현하고, 나중에 실험을 비교할 때 어떤 설정이었는지 남긴다. |
+| 놓친 질문 목록(정답 순위·실제 검색 결과)과 범주별 표 | 점수만으로는 원인을 알 수 없다. 약한 질문 유형과 실패 사례를 바로 보여 분할·필터·임베딩·BM25 중 무엇을 손볼지 정하는 근거가 된다. |
+| `--experiment all`이 기획서 9.4용 마크다운 표를 출력, 구현 전 baseline은 건너뜀 | 비교 실험 결과를 9.4에 그대로 옮겨 적도록 한다. |
+| `test_run_eval`(질문 세트 파일 형식 점검 포함) | 가짜 검색으로 집계를, 샘플 색인으로 `main` 전체 흐름을 검증한다. 팀이 `questions.jsonl`을 고친 뒤 id 중복·필드 누락·근거 없음 질문의 정답 여부가 깨지지 않았는지도 확인한다. |
+| `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
+
+### 3.0 기획서 8.3 기록용 (벡터 저장소)
+
+| 선택/변경 항목 | 발견한 문제 | 선택 이유 | 결과 |
+|---|---|---|---|
+| 벡터 저장소 = Chroma | 수천~수만 조각이라 어떤 방식도 가능하나 이후 청년 외 데이터로 확장 예정 | 확장성과 정식 벡터 DB 사용 | (수집 후 규모·검색 성능 기록) |
+| 소프트 필터를 저장 시 대체값으로 처리 | Chroma 필터는 값이 없는 항목을 통과시키는 조건을 표현하기 어려움 | 빈 값을 통과하는 값으로 저장해 where 조건만으로 처리 | 테스트에서 연령·지역·기한·분야 규칙 확인 |
+| BM25 = rank_bm25 + 글자 2-gram | Chroma에 BM25가 없고, 한국어는 조사·두 글자 단어 문제 | 추가 설치 없이 한국어 기본 대응, 필요 시 형태소 분석기로 교체 | Baseline 실험에서 비교 |
+
+기획서 8.3 기록용 (⑤ 검색): 선택/변경 항목 "Hybrid 결합 방식 = RRF(상수 60, 후보 50개), 서비스 단위 중복 제거", 발견한 문제 "코사인·BM25 점수 단위가 달라 직접 합치기 어렵고, 조각 단위 Top-K는 같은 제도로 채워짐", 선택 이유 "순위만 써서 튜닝 최소화, 서비스당 1개로 제한", 결과 "(실제 데이터에서 Vector 단독·BM25 단독과 Hit Rate/MRR 비교 기록)".
 
 ### 3.1 데이터 범위: 청년층 우선
 
@@ -100,8 +129,13 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 모듈 | 상태 |
 |---|---|
 | `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
+| `index/embedder.py` | 구현됨 (sentence-transformers, bge-m3). 가짜 모델 테스트 통과, 실제 모델은 팀원 PC에서 확인(0.553 > 0.422) |
+| `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델로 샘플 색인·검색 확인 |
+| `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 샘플 데이터 검증 4개 통과, 나머지 23개는 구현 전(또는 OPENAI_API_KEY 없음)이라 skip |
+| `eval/run_eval.py` | 구현됨 (모드별 실험·비교표·결과 JSON). 샘플 색인·가짜 임베딩으로 확인, 실제 평가는 질문 세트 정답이 필요 |
+| `eval/metrics.py` | 구현됨 (Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`) |
+| `tests/` | 94개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -114,3 +148,11 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - `README.md` §2.2 추가: A→B, C→B, B→C 인계 데이터를 한눈에 보는 도식·예시·상호 보장 사항. 구조 변경 없음. (B→C 결과에 한 서비스의 여러 항목이 필요할 때의 조회 방식은 B·C 합의 사항으로 남김)
 - C용 테스트 기반 추가: `tests/fixtures/sample_search_results.json`, `fake_search`·`fake_conditions`, `tests/test_generate.py`. `generator.py`에 모듈 속성 호출 규칙 주석 추가. README 8장 '테스트'를 B용/C용으로 나눔.
 - 데이터 범위를 청년층으로 한정(§3.1): `config.YOUTH_AGE_RANGE`·`YOUTH_KEYWORDS`, `ingest.store.is_youth_service`(스켈레톤), `pipeline`에 청년 필터 단계 명시. README §1.1 추가, 2.1 예시 수치를 범위에 맞게 조정, §2.2·테스트 절에 상호 링크.
+- ③ 임베딩 구현(`index/embedder.py`): `embed_texts(texts, kind="passage")`, `embed_query`, `embedding_dim`, `python -m src.index.embedder` 스모크 테스트. `config`에 `EMBEDDING_DEVICE/BATCH_SIZE/MAX_SEQ_LENGTH` 추가, `requirements.txt`에 sentence-transformers·numpy 추가, `tests/test_embedder.py` 추가.
+- ④ 벡터 저장소 구현(`index/vector_store.py`): Chroma + BM25(글자 2-gram), 저장 시 대체값으로 소프트 필터 처리(`build_where`), 증분 색인·삭제·`get_service_chunks`·`clear_index`, `python -m src.index.vector_store --sample --query ...`. `config.INDEX_BATCH_SIZE`, `requirements.txt`에 chromadb·rank_bm25 추가, `tests/test_vector_store.py`와 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 추가, `test_retrieval`이 이를 사용하도록 변경.
+- ⑤ 검색 구현(`retrieve/filters.py`, `retrieve/hybrid.py`): RRF 하이브리드, 서비스당 1개, `search_with_info`, 분야→지역→연령 순 완화, `python -m src.retrieve.hybrid`. `config`에 `HYBRID_CANDIDATES`·`RRF_K`·`HYBRID_WEIGHTS` 추가. `test_retrieval`·`test_filters` 확장(RRF, 모드, 완화, 파이썬/저장소 필터 일치).
+- 검색 지표 구현(`eval/metrics.py`): `hit_rate_at_k`, `recall_at_k`, `mrr`, `no_evidence_rate`, `evaluate`, `check_targets`. `test_metrics`에 경계 조건(정답 없는 질문, 중복, k 범위, 오류) 추가.
+- `python -m eval.metrics` 자체 점검 추가(손계산 예시와 비교, 불일치 시 종료 코드 1).
+- 검색 평가 실행 구현(`eval/run_eval.py`): 모드별 실험, K=3/5/10, 범주별·놓친 질문·비교표, 결과 JSON 저장, `--experiment all`, `--today`, `--questions`, `--out-dir`, `--no-save`. `eval/questions.jsonl`에 `filters` 필드 추가(q03). `tests/test_run_eval.py` 추가.
+- `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.
+- `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.

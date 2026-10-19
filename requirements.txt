@@ -1,3 +1,7 @@
 requests
 python-dotenv
 pytest
+sentence-transformers
+numpy
+chromadb
+rank_bm25
