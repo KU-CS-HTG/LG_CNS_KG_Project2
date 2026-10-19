@@ -1,6 +1,9 @@
 requests
 python-dotenv
+pydantic>=2
+rank-bm25
 langchain-core
 langchain-openai
 langchain-chroma
+langchain-text-splitters
 streamlit

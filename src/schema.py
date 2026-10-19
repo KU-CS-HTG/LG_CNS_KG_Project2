@@ -1,25 +1,24 @@
-"""팀 공통 데이터 형식 — 세 모듈(수집·검색·생성)이 이 형식으로 주고받는다.
-
-data/processed/services.jsonl 의 한 줄 = Service 하나.
-"""
+"""팀 공통 데이터 형식 — 수집·검색·생성 모듈이 이 형식으로 주고받는다."""
+from dataclasses import dataclass, field
 from typing import TypedDict
 
 
 class Service(TypedDict):
+    """data/processed/services.jsonl 의 한 줄 = SQLite services 테이블의 한 행."""
     service_id: str
     name: str            # 서비스명
-    summary: str         # 서비스목적요약 (한 줄 요약)
+    summary: str         # 서비스목적요약
     agency: str          # 소관기관
-    region: str          # "전국" 또는 "서울특별시" 등
+    region: str          # "전국" 또는 "서울특별시" 등 (src/regions.py 기준 이름)
     min_age: int         # 조건 없으면 0
     max_age: int         # 조건 없으면 200
-    category: str        # 서비스분야 (예: 주거·자립)
-    support_type: str    # 지원유형 (예: 현금)
-    target: str          # 지원대상 (텍스트)
-    criteria: str        # 선정기준 (텍스트)
-    content: str         # 지원내용 (텍스트)
+    category: str        # 서비스분야
+    support_type: str    # 지원유형
+    target: str          # 지원대상
+    criteria: str        # 선정기준
+    content: str         # 지원내용
     how_to_apply: str    # 신청방법
-    deadline: str        # 신청기한
+    deadline: str        # 신청기한 (자유 텍스트)
     reception: str       # 접수기관
     contact: str         # 전화문의
     url: str             # 상세 페이지
@@ -27,43 +26,51 @@ class Service(TypedDict):
     source: str          # "gov24" / (확장 시) "bizinfo"
 
 
-class UserProfile(TypedDict):
-    age: int
-    region: str          # 예: "서울특별시"
+# 구조 기반 분할: 이 항목들이 각각 하나의 청크(길면 여러 개)가 된다.
+CHUNK_FIELDS = {
+    "summary": "요약",
+    "target": "지원대상",
+    "criteria": "선정기준",
+    "content": "지원내용",
+    "how_to_apply": "신청방법",
+}
 
 
-def to_document_text(s: Service) -> str:
-    """임베딩·LLM 근거로 쓸 본문: 비정형 텍스트 필드를 합친다.
-
-    샘플 데이터처럼 일부 필드가 없을 수 있어 .get()으로 꺼내고, 빈 항목은 뺀다.
-    """
-    sections = [
-        ("서비스명", s.get("name")),
-        ("요약", s.get("summary")),
-        ("지원대상", s.get("target")),
-        ("선정기준", s.get("criteria")),
-        ("지원내용", s.get("content")),
-        ("신청방법", s.get("how_to_apply")),
-        ("신청기한", s.get("deadline")),
-        ("접수기관", s.get("reception")),
-        ("문의", s.get("contact")),
-    ]
-    return "\n".join(f"[{label}] {value}" for label, value in sections if value)
+@dataclass
+class Conditions:
+    """사용자 조건. None = 모름 → 그 조건으로는 거르지 않는다(소프트 필터)."""
+    age: int | None = None
+    region: str | None = None
 
 
-def to_metadata(s: Service) -> dict:
-    """필터링·화면 표시에 쓸 정형 필드 (Chroma 메타데이터는 str/int/float/bool만 가능)."""
-    return {
-        "service_id": s["service_id"],
-        "name": s["name"],
-        "agency": s["agency"],
-        "region": s["region"],
-        "min_age": int(s["min_age"]),
-        "max_age": int(s["max_age"]),
-        "category": s.get("category", ""),
-        "support_type": s.get("support_type", ""),
-        "url": s["url"],
-        # 샘플 데이터처럼 필드가 없으면 1단계 기본값 사용
-        "user_type": s.get("user_type", "개인"),
-        "source": s.get("source", "gov24"),
-    }
+def age_text(min_age: int, max_age: int) -> str:
+    """0~200(조건 없음 기본값)을 사람이 읽는 표현으로."""
+    if min_age <= 0 and max_age >= 200:
+        return "연령 제한 없음"
+    if max_age >= 200:
+        return f"{min_age}세 이상"
+    if min_age <= 0:
+        return f"{max_age}세 이하"
+    return f"{min_age}~{max_age}세"
+
+
+@dataclass
+class Evidence:
+    field: str           # 예: "선정기준"
+    text: str
+
+
+@dataclass
+class ServiceHit:
+    """검색 결과 1건 = 서비스 1개 (청크 여러 개가 걸려도 서비스 단위로 합침)."""
+    service_id: str
+    name: str
+    agency: str
+    region: str
+    min_age: int
+    max_age: int
+    deadline: str
+    how_to_apply: str
+    url: str
+    score: float = 0.0
+    evidence: list[Evidence] = field(default_factory=list)

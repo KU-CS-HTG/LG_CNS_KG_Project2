@@ -5,35 +5,53 @@
 """
 import streamlit as st
 
-from src.generator import generate
+from src import conditions
+from src.config import DEFAULT_MODE, DEFAULT_TOP_K, SEARCH_MODES
+from src.generator import describe, generate
+from src.regions import SIDO
 from src.retriever import search
+from src.schema import age_text
 
-REGIONS = ["서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
-           "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
-           "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
-           "경상남도", "제주특별자치도"]
+AUTO = "(질문에서 자동 추출)"
 
 st.set_page_config(page_title="정부 지원제도 맞춤 안내", page_icon="🧾")
 st.title("🧾 나에게 맞는 정부 지원제도")
+st.caption("생활 상황을 평소 말투로 적어 주세요. 예: 서울 사는 27살 취준생인데 월세가 부담돼요")
 
 with st.sidebar:
-    st.header("내 정보")
-    age = st.number_input("나이", min_value=0, max_value=120, value=25)
-    region = st.selectbox("거주지", REGIONS)
+    st.header("내 정보 (선택)")
+    st.caption("입력하면 질문에서 뽑은 값보다 우선합니다.")
+    use_age = st.checkbox("나이 직접 입력")
+    age = st.number_input("나이", min_value=0, max_value=120, value=25, disabled=not use_age)
+    region = st.selectbox("거주지", [AUTO, *SIDO])
 
-question = st.text_input("궁금한 내용", placeholder="예: 취업 준비 중인데 받을 수 있는 지원금 있어?")
+    st.header("검색 설정")
+    mode = st.selectbox("검색 방식", SEARCH_MODES, index=SEARCH_MODES.index(DEFAULT_MODE))
+    k = st.slider("최대 제도 수", 3, 10, DEFAULT_TOP_K)
 
-if st.button("찾아보기") and question:
-    user = {"age": int(age), "region": region}
+question = st.text_area("궁금한 내용", height=80)
+
+if st.button("찾아보기", type="primary") and question.strip():
     try:
+        with st.spinner("조건 확인 중..."):
+            extracted = conditions.extract(question)
+            cond = conditions.merge(
+                extracted,
+                override_age=int(age) if use_age else None,
+                override_region=None if region == AUTO else region,
+            )
+        st.info(f"적용 조건: {describe(cond)}  ·  검색 방식: {mode}")
         with st.spinner("검색 중..."):
-            docs = search(question, user)
-            answer = generate(question, user, docs)
-    except Exception as e:  # 키 누락, 벡터DB 미생성 등을 화면에 표시
+            hits = search(question, cond, mode=mode, k=k)
+        with st.spinner("답변 작성 중..."):
+            answer = generate(question, cond, hits)
+    except Exception as e:  # 키 누락, DB·벡터DB 미생성 등을 화면에 표시
         st.error(f"오류: {e}")
     else:
         st.markdown(answer)
-        with st.expander(f"근거 문서 {len(docs)}건"):
-            for d in docs:
-                st.markdown(f"**{d.metadata['name']}** · {d.metadata['agency']} "
-                            f"· {d.metadata['min_age']}~{d.metadata['max_age']}세 · {d.metadata['region']}")
+        with st.expander(f"근거 문서 {len(hits)}건"):
+            for i, h in enumerate(hits, 1):
+                st.markdown(f"**[{i}] {h.name}** · {h.agency} · {h.region} · "
+                            f"{age_text(h.min_age, h.max_age)} · [상세]({h.url})")
+                for e in h.evidence:
+                    st.caption(f"({e.field}) {e.text[:200]}")

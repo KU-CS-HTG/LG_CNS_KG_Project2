@@ -1,0 +1,3 @@
+# 로컬 임베딩(BAAI/bge-m3)을 쓸 때만 추가 설치. PyTorch가 같이 설치되어 용량이 큼(수 GB).
+langchain-huggingface
+sentence-transformers
