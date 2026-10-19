@@ -40,13 +40,17 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   "{NOT_ELIGIBLE}" = 근거에 적힌 연령 범위나 지역이 사용자가 밝힌 나이·거주지와 명백히 다를 때만.
   지역·연령 정보가 '정보 없음'이거나 상황이 조금 덜 맞는 정도면 "{NOT_ELIGIBLE}"이 아니라 "{UNCLEAR}"다.
 - 사용자가 밝히지 않은 사실(소득 수준, 가구 구성, 주택 소유 등)을 사용자가 충족한다고 쓰지 않는다.
-- reason에는 근거의 자격 조건 중 사용자가 밝힌 정보와 맞는 점만 쓴다. 맞는 점이 없으면 질문과 관련된 이유를 쓴다.
+- matches에는 사용자 질문의 구절과 근거의 대상 조건이 서로 맞는 쌍만 넣는다.
+  said는 사용자 질문 원문에서 글자 그대로 복사한 짧은 구절이어야 한다 (바꿔 쓰거나 근거의 표현을 넣지 않는다).
+  condition은 근거 원문에서 글자 그대로 복사한 짧은 구절이다. 맞는 쌍이 없으면 빈 배열이다.
+- 소득·재산·가구처럼 질문에 없는 조건은 matches에 넣지 말고 needs_check로 보낸다.
 - needs_check에는 사용자가 밝히지 않았거나 근거로 판단할 수 없는 자격 조건을 짧은 명사구로 모두 적는다.
 - 모든 문장은 한국어 존댓말로 짧게 쓴다.
 
 출력 형식:
 {{"situation": 사용자 상황을 쉼표로 이은 짧은 구,
-  "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부, "reason": 해당 가능 이유(1~2문장),
+  "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부,
+                "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
                 "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약, "needs_check": [문자열, ...]}}],
   "follow_up": 더 정확히 안내하려고 사용자에게 되물을 질문 1문장 (필요 없으면 빈 문자열)}}
 [근거]의 모든 제도를 services에 한 번씩 넣는다."""
@@ -68,7 +72,7 @@ def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
         gen = by_id.get(sid) or {}
         if gen.get("applicable") == NOT_ELIGIBLE:
             continue
-        recs.append(_to_recommendation(chunks, gen))
+        recs.append(_to_recommendation(question, chunks, gen))
 
     if not recs:
         return Answer(text=f"{NO_MATCH_MESSAGE}\n{NO_EVIDENCE_MESSAGE}", no_evidence=True)
@@ -91,13 +95,20 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]]) -> str:
     return f"[사용자 질문]\n{question}\n\n" + "\n\n".join(blocks)
 
 
-def _to_recommendation(chunks: list[Chunk], gen: dict) -> Recommendation:
+def _to_recommendation(question: str, chunks: list[Chunk], gen: dict) -> Recommendation:
     """LLM 출력이 없거나 빠진 항목은 조각 원문으로 채운다."""
     meta = _merged_meta(chunks)
     raw = _sections(chunks)
+    said, conds = _grounded_matches(question, chunks, gen.get("matches"))
+    if said:
+        reason = f"말씀하신 {', '.join(f'‘{s}’' for s in said)} 조건이 이 제도의 대상" \
+                 + (f"({', '.join(f'‘{c}’' for c in conds)})" if conds else "") + "에 해당될 수 있어요."
+    else:
+        reason = "질문하신 내용과 관련된 제도로 찾았어요. 자격은 아래 조건을 확인해 주세요."
 
     needs = _str_list(gen.get("needs_check"))
-    if gen.get("applicable") != LIKELY and not needs:
+    applicable = gen.get("applicable") if said else UNCLEAR   # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다
+    if applicable != LIKELY and not needs:
         needs.append("자격 요건 충족 여부")
     for n in evidence_mod._missing_conditions(chunks):
         if n not in needs:
@@ -110,7 +121,7 @@ def _to_recommendation(chunks: list[Chunk], gen: dict) -> Recommendation:
     return Recommendation(
         service_name=chunks[0].service_name,
         agency=meta.get("agency") or citation.UNKNOWN_AGENCY,
-        reason=_str(gen.get("reason")) or "질문과 관련된 제도로 검색되었습니다. 자격은 아래 조건을 확인해 주세요.",
+        reason=reason,
         benefit=_str(gen.get("benefit")) or raw.get("지원내용") or NOT_IN_EVIDENCE,
         how_to_apply=how,
         needs_check=needs,
@@ -138,6 +149,24 @@ def _render(recs: list[Recommendation], situation: str, follow_up: str) -> str:
         parts.append(f"더 정확히 안내해 드리려면: {follow_up}")
     parts.append(f"※ {DISCLAIMER}")
     return "\n\n".join(parts)
+
+
+def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list[str], list[str]]:
+    """LLM이 준 (질문 구절, 근거 구절) 중 질문 원문에 실제로 있는 구절만 남긴다 (나이 검증과 같은 원리).
+    LLM이 제도의 대상 조건을 사용자가 말한 것처럼 옮겨 적는 일을 막는다."""
+    squash = lambda s: "".join(s.split())  # noqa: E731
+    q, body = squash(question), squash(" ".join(citation._body_text(c) for c in chunks))
+    said: list[str] = []
+    conds: list[str] = []
+    for m in matches if isinstance(matches, list) else []:
+        if not isinstance(m, dict):
+            continue
+        s, c = _str(m.get("said")).strip("‘’'\""), _str(m.get("condition")).strip("‘’'\"")
+        if s and squash(s) in q and s not in said:
+            said.append(s)
+            if c and squash(c) in body and c not in conds:
+                conds.append(c)
+    return said, conds
 
 
 def _sections(chunks: list[Chunk]) -> dict[str, str]:

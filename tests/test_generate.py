@@ -160,3 +160,23 @@ def test_generate_answer_all_excluded_is_no_evidence(monkeypatch):
     _fake_llm(monkeypatch, {"services": [{"service_id": s, "applicable": "해당 없음"} for s in ev]})
     answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
     assert answer.no_evidence is True and answer.recommendations == [] and NO_EVIDENCE_MESSAGE in answer.text
+
+
+def test_reason_uses_only_phrases_from_question(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "가능", "matches": [
+        {"said": "서울에 사는", "condition": "서울에 거주하며"},
+        {"said": "저소득 구직자", "condition": "저소득 구직자"},     # 질문에 없는 구절 -> 버림
+    ]}]})
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
+    assert "서울에 사는" in rec.reason and "저소득" not in rec.reason
+
+
+def test_no_grounded_match_downgrades_to_needs_check(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "가능", "needs_check": [],
+                                          "matches": [{"said": "무주택 청년", "condition": "무주택 청년"}]}]})
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
+    assert rec.needs_check                                            # '가능'이라 하지 않고 확인 필요
