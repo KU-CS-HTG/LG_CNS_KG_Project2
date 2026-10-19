@@ -75,6 +75,16 @@ def get_chunks(ids: list[str]) -> list[sqlite3.Row]:
         return conn.execute(f"SELECT * FROM chunks WHERE service_id IN ({marks})", ids).fetchall()
 
 
+def categories() -> list[str]:
+    """DB에 실제로 있는 서비스분야 목록 (조건 추출 프롬프트에 선택지로 제공)."""
+    with closing(connect()) as conn:
+        rows = conn.execute("SELECT DISTINCT category FROM services WHERE category != ''").fetchall()
+    found = set()
+    for r in rows:
+        found.update(c.strip() for c in r["category"].split(","))   # 'A, B'처럼 여러 분야인 경우
+    return sorted(c for c in found if c)
+
+
 def all_chunks() -> list[sqlite3.Row]:
     with closing(connect()) as conn:
         return conn.execute("SELECT * FROM chunks").fetchall()

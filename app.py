@@ -33,16 +33,18 @@ question = st.text_area("궁금한 내용", height=80)
 
 if st.button("찾아보기", type="primary") and question.strip():
     try:
-        with st.spinner("조건 확인 중..."):
-            extracted = conditions.extract(question)
+        with st.spinner("질문 분석 중..."):
+            plan = conditions.analyze(question)
             cond = conditions.merge(
-                extracted,
+                plan.conditions,
                 override_age=int(age) if use_age else None,
                 override_region=None if region == AUTO else region,
             )
-        st.info(f"적용 조건: {describe(cond)}  ·  검색 방식: {mode}")
+        st.info(f"적용 조건: {describe(cond)}  ·  분야: {plan.category or '없음'}  ·  검색 방식: {mode}\n\n"
+                f"검색어: {plan.search_query}")
         with st.spinner("검색 중..."):
-            hits = search(question, cond, mode=mode, k=k)
+            # 원문 대신 재작성된 검색어 사용 → 자기소개(나이·신분)가 검색 점수를 흐리지 않게
+            hits = search(plan.search_query, cond, mode=mode, k=k, category=plan.category)
         with st.spinner("답변 작성 중..."):
             answer = generate(question, cond, hits)
     except Exception as e:  # 키 누락, DB·벡터DB 미생성 등을 화면에 표시

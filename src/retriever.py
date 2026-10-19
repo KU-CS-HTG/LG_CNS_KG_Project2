@@ -7,7 +7,7 @@ import re
 from functools import lru_cache
 
 from src import db
-from src.config import CHROMA_DIR, COLLECTION_NAME, DEFAULT_TOP_K, RRF_K, SEARCH_MODES
+from src.config import CATEGORY_BONUS, CHROMA_DIR, COLLECTION_NAME, DEFAULT_TOP_K, RRF_K, SEARCH_MODES
 from src.regions import NATIONWIDE
 from src.schema import Conditions, Evidence, ServiceHit
 
@@ -74,7 +74,8 @@ def _to_hits(ranked_chunks: list[dict], k: int) -> list[ServiceHit]:
         hits.append(ServiceHit(
             service_id=sid, name=r["name"], agency=r["agency"], region=r["region"],
             min_age=r["min_age"], max_age=r["max_age"], deadline=r["deadline"],
-            how_to_apply=r["how_to_apply"], url=r["url"], score=scores[sid], evidence=evidence[sid],
+            how_to_apply=r["how_to_apply"], url=r["url"], category=r["category"] or "",
+            score=scores[sid], evidence=evidence[sid],
         ))
         if len(hits) == k:
             break
@@ -157,11 +158,26 @@ def _rank_hybrid(question: str, cond: Conditions, n: int) -> list[dict]:
     return sorted(fused.values(), key=lambda c: -c["score"])
 
 
-def search(question: str, cond: Conditions, mode: str = "hybrid", k: int = DEFAULT_TOP_K) -> list[ServiceHit]:
+def _boost_category(hits: list[ServiceHit], category: str | None, k: int) -> list[ServiceHit]:
+    """분야 가산점(소프트): 순위 점수 1/(RRF_K+순위)에 분야가 맞으면 CATEGORY_BONUS를 더해 재정렬.
+
+    하드 필터가 아니라서 분야 분류가 애매한 제도도 순위가 충분히 높으면 그대로 남는다.
+    """
+    if not category:
+        return hits[:k]
+    rescored = [(1.0 / (RRF_K + i) + (CATEGORY_BONUS if category in h.category else 0.0), h)
+                for i, h in enumerate(hits, start=1)]
+    return [h for _, h in sorted(rescored, key=lambda x: -x[0])][:k]
+
+
+def search(question: str, cond: Conditions, mode: str = "hybrid", k: int = DEFAULT_TOP_K,
+           category: str | None = None) -> list[ServiceHit]:
     if mode not in SEARCH_MODES:
         raise ValueError(f"mode는 {SEARCH_MODES} 중 하나여야 합니다: {mode}")
+    pool = k * 3 if category else k     # 가산점으로 순위를 바꾸려면 후보를 넉넉히
     if mode == "sql":
-        return _search_sql(question, cond, k)
-    n = k * 8   # 서비스로 묶으면 줄어들기 때문에 청크는 넉넉히 가져온다
-    ranker = {"bm25": _rank_bm25, "vector": _rank_vector, "hybrid": _rank_hybrid}[mode]
-    return _to_hits(ranker(question, cond, n), k)
+        hits = _search_sql(question, cond, pool)
+    else:
+        ranker = {"bm25": _rank_bm25, "vector": _rank_vector, "hybrid": _rank_hybrid}[mode]
+        hits = _to_hits(ranker(question, cond, pool * 8), pool)   # 청크→서비스로 묶이면 줄어들어 8배로 가져옴
+    return _boost_category(hits, category, k)

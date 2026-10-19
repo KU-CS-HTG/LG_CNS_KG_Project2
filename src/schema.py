@@ -43,6 +43,14 @@ class Conditions:
     region: str | None = None
 
 
+@dataclass
+class QueryPlan:
+    """질문 분석 결과: 누구인가(조건) + 무엇이 필요한가(검색어·분야)."""
+    conditions: Conditions
+    search_query: str            # 자기소개(나이·지역·신분)를 뺀 '필요'만 담은 검색어
+    category: str | None = None  # DB의 서비스분야 중 하나 (가산점용)
+
+
 def age_text(min_age: int, max_age: int) -> str:
     """0~200(조건 없음 기본값)을 사람이 읽는 표현으로."""
     if min_age <= 0 and max_age >= 200:
@@ -72,5 +80,6 @@ class ServiceHit:
     deadline: str
     how_to_apply: str
     url: str
+    category: str = ""
     score: float = 0.0
     evidence: list[Evidence] = field(default_factory=list)

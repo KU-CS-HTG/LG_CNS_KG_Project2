@@ -31,6 +31,9 @@ DEFAULT_TOP_K = 5
 CHUNK_SIZE = 800          # 긴 항목(선정기준 등)을 Recursive로 자를 기준 글자 수
 CHUNK_OVERLAP = 100
 RRF_K = 60                # Hybrid의 Reciprocal Rank Fusion 상수
+# 분야가 맞는 제도에 더하는 점수. 1/(60+1)=0.0164(1위)와 1/(60+15)=0.0133(15위)의 차이 정도라,
+# 분야가 맞으면 최대 10여 계단 올라갈 수 있다. 0이면 가산점 끔 (실험 비교용)
+CATEGORY_BONUS = 0.003
 
 
 def require(key_name: str, value: str) -> str:

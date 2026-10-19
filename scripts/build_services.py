@@ -41,6 +41,22 @@ def clean_text(value) -> str:
     return text.strip()
 
 
+def clean_multi(value) -> str:
+    """'기타 온라인신청||방문신청||직접입력' → '온라인신청, 방문신청'
+
+    API가 여러 값을 '||'로 이어 붙이고, 입력 양식의 자리표시자('직접입력', '기타')가 섞여 온다.
+    """
+    parts = []
+    for p in clean_text(value).split("||"):
+        p = re.sub(r"^기타\s*", "", p.strip())
+        if p and p != "직접입력" and p not in parts:
+            parts.append(p)
+    return ", ".join(parts)
+
+
+MULTI_VALUE_FIELDS = ("how_to_apply", "category", "support_type")
+
+
 def to_int(value, default: int) -> int:
     try:
         return int(value)
@@ -72,6 +88,8 @@ def from_api() -> list[dict]:
             no_cond += 1
             cond = {}
         s = {k: clean_text(raw.get(v)) for k, v in FIELD.items()}
+        for k in MULTI_VALUE_FIELDS:
+            s[k] = clean_multi(raw.get(FIELD[k]))
         s["region"] = region_of_agency(s["agency"], clean_text(raw.get(AGENCY_TYPE_FIELD)))
         s["min_age"] = to_int(cond.get(AGE_MIN_FIELD), 0)
         s["max_age"] = to_int(cond.get(AGE_MAX_FIELD), 200)
