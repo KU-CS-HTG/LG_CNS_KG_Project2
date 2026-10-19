@@ -16,6 +16,14 @@ QUESTION_WITH_RESULTS = CASES["sr1"]["question"]
 QUESTION_NO_EVIDENCE = CASES["sr2"]["question"]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_store(request, monkeypatch):
+    """C 테스트가 실제 저장소(data/vectorstore)를 열지 않게, 서비스 전체 항목 조회를 기본으로 '없음'으로 둔다.
+    B의 실제 색인(indexed_sample)을 쓰는 통합 테스트는 그대로 둔다."""
+    if "indexed_sample" not in request.fixturenames:
+        monkeypatch.setattr("src.index.vector_store.get_service_chunks", lambda service_id: [])
+
+
 # --- 조건 -> 필터 (C -> B 인계) ------------------------------------------------
 def test_to_filters_keeps_given_and_omits_missing():
     f = condition_extractor.to_filters(CASES["sr1"]["conditions"])
@@ -259,3 +267,56 @@ def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
     q = QUESTION_WITH_RESULTS + " 소득은 월 150만 원이에요"
     rec = generator.generate_answer(q, {"SAMPLE001": chunks}).recommendations[0]
     assert any("소득" in n for n in rec.needs_check)              # 사용자가 소득을 밝혀도 기준 금액이 없으면 단정 안 함
+
+
+
+# --- 서비스 전체 항목 (B의 vector_store.get_service_chunks) ------------------------
+def test_select_evidence_expands_to_all_sections(monkeypatch, sample_chunks):
+    by_service = {}
+    for c in sample_chunks:
+        by_service.setdefault(c.service_id, []).append(c)
+    monkeypatch.setattr("src.index.vector_store.get_service_chunks", lambda sid: list(by_service.get(sid, [])))
+    grouped = evidence.select_evidence(CASES["sr1"]["results"])          # 검색 결과는 서비스당 조각 1개
+    for sid, chunks in grouped.items():
+        assert [c.section for c in chunks] == ["지원대상", "선정기준", "지원내용", "신청방법"]   # 4항목 모두, 중복 없이
+        assert len({c.chunk_id for c in chunks}) == len(chunks)
+
+
+def test_select_evidence_works_when_store_fails(monkeypatch):
+    def _fail(sid):
+        raise RuntimeError("no store")
+    monkeypatch.setattr("src.index.vector_store.get_service_chunks", _fail)
+    grouped = evidence.select_evidence(CASES["sr1"]["results"])
+    assert grouped and all(len(cs) == 1 for cs in grouped.values())   # 검색 조각만으로 계속
+
+
+def test_answer_question_with_real_b_search(indexed_sample, fake_conditions, monkeypatch):
+    """B의 실제 hybrid.search·get_service_chunks(가짜 임베딩 색인) + C. LLM은 실패시켜 원문 대체 경로로 본다."""
+    fake_conditions(CASES["sr1"])
+    _fake_llm(monkeypatch, RuntimeError("no llm"))
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    assert not answer.no_evidence and 1 <= len(answer.recommendations) <= config.MAX_RECOMMENDATIONS
+    names = [r.service_name for r in answer.recommendations]
+    assert "청년월세 지원(부산)" not in names and "지난 청년 일자리 체험 사업" not in names   # 지역·기한 필터 (B)
+    rent = next(r for r in answer.recommendations if r.service_name == "청년월세 지원(서울)")
+    assert len(rent.citations) == 4 and "자료에 없음" not in rent.benefit   # 서비스 전체 항목이 근거로 들어감
+
+
+# --- 답변 평가 실행 (eval.answer_eval.evaluate) -----------------------------------
+def test_answer_eval_runner(fake_search, fake_conditions, monkeypatch):
+    from eval import answer_eval
+
+    def _chat(system, user):                    # 생성·채점 LLM을 프롬프트별로 고정
+        if system == answer_eval.FAITHFULNESS_PROMPT:
+            return {"verdicts": [{"id": i, "supported": True} for i in range(1, 50)]}
+        if system == answer_eval.CORRECTNESS_PROMPT:
+            return {"verdict": "충족"}
+        raise RuntimeError("generator: 원문 대체 경로")
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+    case = fake_search("sr1")
+    fake_conditions(case)
+    result = answer_eval.evaluate([{"id": "t1", "question": case["question"], "expected_answer": "주거 지원 안내",
+                                    "expect_no_answer": False}])
+    assert result["counts"] == {"total": 1, "scored": 1, "errors": 0}
+    assert result["metrics"]["citation_accuracy"] == 1.0 and result["metrics"]["answer_correctness"] == 1.0
+    assert "답변 평가" in answer_eval.format_report(result)

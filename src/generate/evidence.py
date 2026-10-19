@@ -5,9 +5,13 @@
 """
 from __future__ import annotations
 
+import logging
+
 from src.common import config
 from src.common.schema import SECTIONS, Chunk
+from src.index import vector_store   # 모듈 속성으로 호출한다 (테스트에서 가짜로 바꿔 끼우기 위함)
 
+log = logging.getLogger(__name__)
 _SECTION_ORDER = {s: i for i, s in enumerate(SECTIONS)}
 
 
@@ -29,13 +33,18 @@ def select_evidence(chunks: list[Chunk], max_services: int = config.MAX_RECOMMEN
 
 
 def _expand_service(service_id: str, hits: list[Chunk]) -> list[Chunk]:
-    """같은 서비스의 나머지 항목 조각을 더한다.
+    """같은 서비스의 나머지 항목 조각을 더한다 (B의 vector_store.get_service_chunks, CLAUDE.md 인터페이스 B -> C 제안).
 
-    TODO(A·B 합의): B는 서비스당 조각 1개만 넘기므로, 답변을 충실하게 하려면 지원대상·선정기준·지원내용·신청방법
-    전체가 필요하다. B의 get_chunks_by_service(또는 A의 DB 조회)가 정해지면 여기서만 바꾼다.
-    지금은 검색으로 받은 조각만 쓴다.
+    B는 서비스당 조각 1개만 넘기는데, 조각 1개로 답하면 '지원내용: 자료에 없음'처럼 답이 빈약해진다
+    (MinKyu-v1 실험). 그래서 지원대상·선정기준·지원내용·신청방법 전체를 가져온다.
+    색인이 비었거나 저장소를 열 수 없으면 검색으로 받은 조각만 쓴다 (서비스가 멈추지 않게).
     """
-    return hits
+    try:
+        more = vector_store.get_service_chunks(service_id)
+    except Exception as e:  # 저장소 없음·라이브러리 없음 등
+        log.warning("서비스 전체 항목 조회 실패(%s), 검색 조각만 사용: %s", service_id, e)
+        return hits
+    return hits + [c for c in more if c.service_id == service_id]
 
 
 def _missing_conditions(chunks: list[Chunk]) -> list[str]:
