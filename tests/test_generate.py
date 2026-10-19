@@ -7,7 +7,7 @@ import pytest
 from src.common import config
 from src.common.schema import Answer
 from src.generate import condition_extractor, evidence, generator
-from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, build_citations
+from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE, build_citations
 
 from tests.fixtures import load_search_cases
 
@@ -22,6 +22,44 @@ def test_to_filters_keeps_given_and_omits_missing():
     assert f["age"] == 27 and f["region"] == "서울" and f["field"] == "주거"
     empty = condition_extractor.to_filters({})
     assert "age" not in empty and "region" not in empty        # 못 찾은 항목은 키 생략
+
+
+# --- 조건 추출: LLM 출력 정리 (LLM 없이) -----------------------------------------
+def test_normalize_conditions_drops_invalid_values():
+    raw = {"age": "27", "region": "서울특별시", "field": "주거", "situation": ["구직", "우주여행", "구직"],
+           "hobby": "등산"}
+    assert condition_extractor._normalize_conditions(raw) == {
+        "age": 27, "region": "서울", "field": "주거", "situation": ["구직"]}   # 목록 밖 값·모르는 키는 버림
+    assert condition_extractor._normalize_conditions({"region": "화성", "field": "여행", "age": True}) == {}
+
+
+def test_normalize_conditions_birth_year_to_age():
+    from datetime import date
+    got = condition_extractor._normalize_conditions({"birth_year": 1999}, today=date(2026, 10, 19))
+    assert got == {"age": 27}
+
+
+def test_normalize_conditions_grounds_age_in_question():
+    from datetime import date
+    norm = condition_extractor._normalize_conditions
+    assert norm({"age": 28}, question="20대 후반인데 창업 지원금 있나요?") == {}           # 추측한 나이는 버림
+    assert norm({"age": 26}, today=date(2026, 10, 19), question="97년생이에요") == {"age": 29}  # 출생연도는 코드가 계산
+    assert norm({"age": 27}, question="서울에 사는 27살이에요") == {"age": 27}
+
+
+def test_extract_conditions_returns_empty_on_llm_error(monkeypatch):
+    def _fail(*a, **k):
+        raise RuntimeError("network down")
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _fail)
+    assert condition_extractor.extract_conditions("서울 사는 27살이에요") == {}   # 서비스가 멈추지 않는다
+
+
+@pytest.mark.skipif(not config.OPENAI_API_KEY, reason="OPENAI_API_KEY 없음")
+def test_extract_conditions_with_llm():
+    got = condition_extractor.extract_conditions(QUESTION_WITH_RESULTS)
+    assert got.get("age") == 27 and got.get("region") == "서울"
+    assert got.get("field") == "주거" and "구직" in got.get("situation", [])
+    assert condition_extractor.extract_conditions(QUESTION_NO_EVIDENCE).get("age") is None   # 추측 금지
 
 
 # --- 근거 선별 (B -> C 인계를 받는 곳) ----------------------------------------
@@ -53,6 +91,7 @@ def test_generate_answer_without_evidence():
     assert isinstance(answer, Answer)
     assert answer.no_evidence is True and answer.recommendations == []
     assert NO_EVIDENCE_MESSAGE in answer.text                    # 모른다고 답하고 담당 기관 안내
+    assert SCOPE_NOTICE in answer.text                           # 청년 대상 범위 안내 (README 1.1)
 
 
 def test_answer_question_no_evidence_end_to_end(fake_search, fake_conditions):
@@ -79,3 +118,144 @@ def test_answer_question_with_results(fake_search, fake_conditions):
     unclear = [r for r in answer.recommendations if "생활안정" in r.service_name]   # SAMPLE011: 값이 빈 제도
     assert all(r.needs_check for r in unclear)                   # 단정하지 않고 '확인 필요'
 
+
+
+# --- 생성: LLM 출력을 가짜로 고정 (LLM 없이) -------------------------------------
+def _fake_llm(monkeypatch, out):
+    def _chat(system, user):
+        if isinstance(out, Exception):
+            raise out
+        return out
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+
+
+def test_generate_answer_excludes_not_eligible_and_fills_from_chunks(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    first, second = list(ev)[:2]
+    _fake_llm(monkeypatch, {"situation": "서울 거주, 27세", "follow_up": "가구 소득은 어느 정도인가요?", "services": [
+        {"service_id": first, "applicable": "가능", "reason": "이유", "benefit": "혜택", "how_to_apply": "온라인",
+         "needs_check": []},
+        {"service_id": second, "applicable": "해당 없음",              # 질문에 근거가 있는 불일치면 후보에서 뺀다
+         "mismatch": {"said": "서울에 사는", "condition": "부산에 거주"}},
+    ] + [{"service_id": s, "applicable": "확인 필요"} for s in list(ev)[2:]]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    names = [r.service_name for r in answer.recommendations]
+    assert ev[second][0].service_name not in names and len(names) == len(ev) - 1
+    rec = answer.recommendations[0]
+    assert rec.service_name == ev[first][0].service_name and rec.agency == ev[first][0].metadata["agency"]  # 코드가 채움
+    assert rec.citations and all(any(c.quote in ch.text for ch in ev[first]) for c in rec.citations)
+    assert "신청기한" in rec.how_to_apply
+    assert "가구 소득" in answer.text and DISCLAIMER in answer.text
+
+
+def test_generate_answer_falls_back_when_llm_fails(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    _fake_llm(monkeypatch, RuntimeError("network down"))
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    assert answer.no_evidence is False and len(answer.recommendations) == len(ev)   # 원문만으로 안내
+    assert all(r.citations and r.needs_check for r in answer.recommendations)        # 판단 못 했으니 확인 필요
+    assert DISCLAIMER in answer.text
+
+
+def test_generate_answer_all_excluded_is_no_evidence(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    _fake_llm(monkeypatch, {"services": [{"service_id": s, "applicable": "관련 없음"} for s in ev]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    assert answer.no_evidence is True and answer.recommendations == [] and NO_EVIDENCE_MESSAGE in answer.text
+    assert SCOPE_NOTICE in answer.text
+
+
+def test_reason_uses_only_phrases_from_question(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "가능", "matches": [
+        {"said": "서울에 사는", "condition": "서울에 거주하며"},
+        {"said": "저소득 구직자", "condition": "저소득 구직자"},     # 질문에 없는 구절 -> 버림
+    ]}]})
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
+    assert "서울에 사는" in rec.reason and "저소득" not in rec.reason
+
+
+def test_no_grounded_match_downgrades_to_needs_check(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "가능", "needs_check": [],
+                                          "matches": [{"said": "무주택 청년", "condition": "무주택 청년"}]}]})
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
+    assert rec.needs_check                                            # '가능'이라 하지 않고 확인 필요
+
+
+# --- 답변 평가 (eval/answer_eval.py, C 담당) ---------------------------------------
+def _sample_answer(monkeypatch):
+    """sr1 근거로 LLM 없이 만든 답변 (LLM 실패 경로 = 조각 원문만 사용) + 근거 문자열."""
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    _fake_llm(monkeypatch, RuntimeError("no llm"))
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    return answer, "\n".join(c.text for cs in ev.values() for c in cs)
+
+
+def test_citation_accuracy_checks_quotes_against_evidence(monkeypatch):
+    from dataclasses import replace
+    from eval import answer_eval
+    answer, ev_text = _sample_answer(monkeypatch)
+    assert answer_eval.citation_accuracy(answer, ev_text) == 1.0            # 인용은 조각에서 만들므로 모두 정확
+    rec = answer.recommendations[0]
+    fake = replace(rec, citations=[replace(rec.citations[0], quote="월 100만 원을 평생 지급")])
+    broken = Answer(text=answer.text, recommendations=[fake] + answer.recommendations[1:])
+    n = sum(len(r.citations) for r in broken.recommendations)
+    assert answer_eval.citation_accuracy(broken, ev_text) == (n - 1) / n     # 근거에 없는 인용 1개는 틀림
+    assert answer_eval.citation_accuracy(Answer(text="", no_evidence=True), "") == 1.0
+
+
+def test_correctness_for_no_answer_questions():
+    from eval import answer_eval
+    q = {"question": QUESTION_NO_EVIDENCE, "expect_no_answer": True}
+    assert answer_eval.answer_correctness(Answer(text=NO_EVIDENCE_MESSAGE, no_evidence=True), q) == 1.0
+    q2 = {"question": QUESTION_WITH_RESULTS, "expect_no_answer": False, "expected_answer": "주거 지원 안내"}
+    assert answer_eval.answer_correctness(Answer(text=NO_EVIDENCE_MESSAGE, no_evidence=True), q2) == 0.0
+
+
+def test_faithfulness_counts_supported_claims(monkeypatch):
+    from eval import answer_eval
+    answer, ev_text = _sample_answer(monkeypatch)
+    n = len(answer_eval._claims(answer))
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {
+        "verdicts": [{"id": i, "supported": i != 1} for i in range(1, n + 1)]})
+    assert answer_eval.faithfulness(answer, ev_text) == (n - 1) / n
+    assert answer_eval.faithfulness(Answer(text=NO_EVIDENCE_MESSAGE, no_evidence=True), "") == 1.0
+
+
+@pytest.mark.skipif(not config.OPENAI_API_KEY, reason="OPENAI_API_KEY 없음")
+def test_faithfulness_with_llm_catches_made_up_claim():
+    from eval import answer_eval
+    from src.common.schema import Recommendation
+    ev_text = "청년월세 지원(서울)\n서울에 거주하며 월세로 사는 만 19~34세 무주택 청년\n청년월세 지원(서울)\n월 월세의 일부를 일정 기간 지원"
+    def ans(benefit):
+        return Answer(text="", recommendations=[Recommendation(
+            service_name="청년월세 지원(서울)", agency="서울특별시", reason="", benefit=benefit, how_to_apply="")])
+    assert answer_eval.faithfulness(ans("월세의 일부를 일정 기간 지원합니다."), ev_text) == 1.0
+    assert answer_eval.faithfulness(ans("매달 50만 원을 2년 동안 현금으로 지급합니다."), ev_text) == 0.0
+
+
+def test_not_eligible_without_question_evidence_is_kept_as_needs_check(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "해당 없음",
+                                          "mismatch": {"said": "부산 거주", "condition": "서울에 거주"}}]})  # 질문에 없는 구절
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]})
+    assert len(answer.recommendations) == 1 and answer.recommendations[0].needs_check   # 빼지 않고 확인 필요
+
+
+def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    _fake_llm(monkeypatch, {"services": []})                      # 판정은 왔지만 관련 있는 제도가 없음
+    assert generator.generate_answer(QUESTION_WITH_RESULTS, ev).no_evidence is True
+
+
+def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 선정기준: '소득이 기준 이하' (금액 없음)
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "가능", "needs_check": [],
+                                          "matches": [{"said": "서울에 사는", "condition": "서울에 거주하며"}]}]})
+    q = QUESTION_WITH_RESULTS + " 소득은 월 150만 원이에요"
+    rec = generator.generate_answer(q, {"SAMPLE001": chunks}).recommendations[0]
+    assert any("소득" in n for n in rec.needs_check)              # 사용자가 소득을 밝혀도 기준 금액이 없으면 단정 안 함
