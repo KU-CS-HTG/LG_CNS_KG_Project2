@@ -28,20 +28,20 @@ def test_to_filters_keeps_given_and_omits_missing():
 def test_normalize_conditions_drops_invalid_values():
     raw = {"age": "27", "region": "서울특별시", "field": "주거", "situation": ["구직", "우주여행", "구직"],
            "hobby": "등산"}
-    assert condition_extractor.normalize_conditions(raw) == {
+    assert condition_extractor._normalize_conditions(raw) == {
         "age": 27, "region": "서울", "field": "주거", "situation": ["구직"]}   # 목록 밖 값·모르는 키는 버림
-    assert condition_extractor.normalize_conditions({"region": "화성", "field": "여행", "age": True}) == {}
+    assert condition_extractor._normalize_conditions({"region": "화성", "field": "여행", "age": True}) == {}
 
 
 def test_normalize_conditions_birth_year_to_age():
     from datetime import date
-    got = condition_extractor.normalize_conditions({"birth_year": 1999}, today=date(2026, 10, 19))
+    got = condition_extractor._normalize_conditions({"birth_year": 1999}, today=date(2026, 10, 19))
     assert got == {"age": 27}
 
 
 def test_normalize_conditions_grounds_age_in_question():
     from datetime import date
-    norm = condition_extractor.normalize_conditions
+    norm = condition_extractor._normalize_conditions
     assert norm({"age": 28}, question="20대 후반인데 창업 지원금 있나요?") == {}           # 추측한 나이는 버림
     assert norm({"age": 26}, today=date(2026, 10, 19), question="97년생이에요") == {"age": 29}  # 출생연도는 코드가 계산
     assert norm({"age": 27}, question="서울에 사는 27살이에요") == {"age": 27}
@@ -50,7 +50,7 @@ def test_normalize_conditions_grounds_age_in_question():
 def test_extract_conditions_returns_empty_on_llm_error(monkeypatch):
     def _fail(*a, **k):
         raise RuntimeError("network down")
-    monkeypatch.setattr("src.generate.llm.chat_json", _fail)
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _fail)
     assert condition_extractor.extract_conditions("서울 사는 27살이에요") == {}   # 서비스가 멈추지 않는다
 
 

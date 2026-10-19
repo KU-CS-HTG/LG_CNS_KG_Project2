@@ -25,10 +25,10 @@ def select_evidence(chunks: list[Chunk], max_services: int = config.MAX_RECOMMEN
             hits[c.service_id] = []
         hits[c.service_id].append(c)
 
-    return {sid: _sort_sections(_dedupe(expand_service(sid, group))) for sid, group in hits.items()}
+    return {sid: _sort_sections(_dedupe(_expand_service(sid, group))) for sid, group in hits.items()}
 
 
-def expand_service(service_id: str, hits: list[Chunk]) -> list[Chunk]:
+def _expand_service(service_id: str, hits: list[Chunk]) -> list[Chunk]:
     """같은 서비스의 나머지 항목 조각을 더한다.
 
     TODO(A·B 합의): B는 서비스당 조각 1개만 넘기므로, 답변을 충실하게 하려면 지원대상·선정기준·지원내용·신청방법
@@ -38,7 +38,7 @@ def expand_service(service_id: str, hits: list[Chunk]) -> list[Chunk]:
     return hits
 
 
-def missing_conditions(chunks: list[Chunk]) -> list[str]:
+def _missing_conditions(chunks: list[Chunk]) -> list[str]:
     """정형 조건 값이 비어 있어 단정할 수 없는 항목 ("확인 필요"로 표시할 목록, 사용자 문구)."""
     meta: dict = {}
     for c in chunks:                       # 조각마다 메타데이터가 다를 수 있으므로 값이 있는 쪽을 모은다

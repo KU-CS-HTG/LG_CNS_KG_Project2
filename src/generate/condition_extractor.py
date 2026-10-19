@@ -5,12 +5,13 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import date
 
+from src.common import config
 from src.common.schema import Filters
-from src.generate import llm
 
 log = logging.getLogger(__name__)
 
@@ -78,22 +79,45 @@ JSON 객체 하나만 출력한다. 사용할 수 있는 키는 아래뿐이다.
 - 조건이 하나도 없으면 빈 객체를 출력한다."""
 
 
+_client = None
+
+
+def _chat_json(system: str, user: str) -> dict:
+    """gpt-4o-mini를 JSON 모드로 호출해 dict를 돌려준다. 클라이언트는 처음 쓸 때 만든다."""
+    global _client
+    if _client is None:
+        if not config.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다 (.env 확인).")
+        from openai import OpenAI
+        _client = OpenAI(api_key=config.OPENAI_API_KEY, timeout=30)
+    resp = _client.chat.completions.create(
+        model=config.GENERATION_MODEL,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+    )
+    data = json.loads(resp.choices[0].message.content or "{}")
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON 객체가 아닌 응답: {data!r}")
+    return data
+
+
 def extract_conditions(question: str) -> dict:
     """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거"}
 
     LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게)."""
     try:
-        raw = llm.chat_json(SYSTEM_PROMPT, question)
+        raw = _chat_json(SYSTEM_PROMPT, question)
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("조건 추출 실패, 조건 없이 진행: %s", e)
         return {}
-    return normalize_conditions(raw, question=question)
+    return _normalize_conditions(raw, question=question)
 
 
 _BIRTH_YEAR_RE = re.compile(r"(?<!\d)(\d{2}|\d{4})\s*년\s*생")
 
 
-def normalize_conditions(raw: dict, today: date | None = None, question: str | None = None) -> dict:
+def _normalize_conditions(raw: dict, today: date | None = None, question: str | None = None) -> dict:
     """LLM 출력을 정해진 키·값 목록으로 정리한다. 목록 밖의 값이나 형식이 틀린 값은 버린다.
 
     question을 주면 나이를 질문 원문과 대조한다 (LLM이 '20대 후반'을 28로 추측하거나 출생연도로 직접 계산해
@@ -119,7 +143,7 @@ def normalize_conditions(raw: dict, today: date | None = None, question: str | N
     if age is not None and 0 <= age <= 120:
         out["age"] = age
 
-    region = normalize_region(raw.get("region"))
+    region = _normalize_region(raw.get("region"))
     if region:
         out["region"] = region
 
@@ -140,7 +164,7 @@ def normalize_conditions(raw: dict, today: date | None = None, question: str | N
     return out
 
 
-def normalize_region(value) -> str | None:
+def _normalize_region(value) -> str | None:
     """'서울특별시'·'서울시'·'서울' -> '서울'. 목록에 없으면 None."""
     if not isinstance(value, str):
         return None
@@ -166,7 +190,7 @@ def _to_int(value) -> int | None:
     return None
 
 
-def to_filters(conditions: dict, today: str | None = None) -> Filters:
+def to_filters(conditions: dict) -> Filters:
     """추출된 조건을 B의 검색 필터로 변환. 값이 비었거나 형식이 맞지 않는 항목은 키를 생략한다."""
     filters: Filters = {}
 
@@ -189,5 +213,5 @@ def to_filters(conditions: dict, today: str | None = None) -> Filters:
         if situation:
             filters["situation"] = situation
 
-    filters["today"] = today or conditions.get("today") or date.today().isoformat()
+    filters["today"] = date.today().isoformat()   # 신청기한이 지난 제도 제외 기준일
     return filters
