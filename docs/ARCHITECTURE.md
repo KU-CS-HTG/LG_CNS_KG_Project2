@@ -98,3 +98,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - B용 테스트 기반 추가: `tests/`(샘플 조각·질의, pytest 뼈대), `pytest.ini`, `requirements.txt`에 pytest. `test_retrieval`의 색인 저장 경로 분리는 B가 결정할 사항으로 남김.
 - 루트 `README.md` 추가(CLAUDE.md와 이 문서의 내용을 합친 팀 안내). 문서 동기화 대상에 README 포함.
 - `README.md`에 단계별 입출력 예시(§2.1)와 단계 표(오프라인/온라인 분리) 추가. 구조 변경 없음.
+- `README.md` §2.2 추가: A→B, C→B, B→C 인계 데이터를 한눈에 보는 도식·예시·상호 보장 사항. 구조 변경 없음. (B→C 결과에 한 서비스의 여러 항목이 필요할 때의 조회 방식은 B·C 합의 사항으로 남김)

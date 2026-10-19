@@ -208,6 +208,84 @@ Filters: {"age": 27, "region": "서울", "field": "주거", "situation": ["구�
 수집된 자료에서 근거를 찾지 못했습니다. 담당 기관 또는 정부24 등 공식 사이트에서 확인해 주세요.
 ```
 
+### 2.2 팀 간 인계 데이터 — A → B, C ↔ B
+
+2.1의 예시 중 **사람과 사람 사이를 넘어가는 부분**만 따로 모았습니다. 두 곳 모두 같은 타입 `Chunk`(`src/common/schema.py`)를 주고받고, 달라지는 것은 **개수**(전체 vs 질문과 관련된 몇 개)입니다.
+
+```
+ A (src/ingest)                 B (src/index, src/retrieve)                 C (src/generate)
+ ┌───────────────┐  list[Chunk]  ┌──────────────────────────┐  list[Chunk]  ┌───────────────────┐
+ │ pipeline.run()│ ────────────▶ │ build_index(chunks)      │               │ answer_question() │
+ │ 수만 개, 전부 │  (1) 색인용   │        ⋮                 │ ◀──────────── │  Filters          │
+ └───────────────┘               │ search(query, filters)   │  (2) 필터     └───────────────────┘
+                                 │                          │ ────────────▶          │
+                                 └──────────────────────────┘  (3) Top-5, 이 질문에 맞는 것만
+```
+
+| | 누가 → 누구에게 | 무엇을 | 언제 | 개수 |
+|---|---|---|---|---|
+| (1) | A → B | `list[Chunk]` (`pipeline.run()`의 반환값) | 데이터가 바뀔 때(기본 1일 1회) | 신규·변경분 수백 ~ 전체 수만 개 |
+| (2) | C → B | `Filters` (질문에서 뽑은 조건) | 질문마다 | 1개 |
+| (3) | B → C | `list[Chunk]` (`search()`의 반환값) | 질문마다 | 최대 5개(서비스당 1개) |
+
+#### (1) A → B: 색인용 조각
+
+A가 B에게 주는 것은 **정제·분할이 끝난, 서비스 전체의 조각 목록**입니다. B는 이것을 그대로 `vector_store.build_index(chunks)`에 넣습니다.
+
+```python
+# A가 만들어서 넘긴다 — pipeline.run() 의 반환값 (일부)
+[
+  Chunk(chunk_id="SVC000123#지원대상", service_id="SVC000123", service_name="청년월세 지원(서울)",
+        section="지원대상",
+        text="청년월세 지원(서울)\n서울에 거주하며 월세로 사는 만 19~34세 무주택 청년",
+        metadata={"region": "서울", "agency": "서울특별시", "field": "주거",
+                  "deadline": "2026-12-31", "age_min": 19, "age_max": 34, "target_tags": ["청년"]},
+        detail_url="https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SVC000123"),
+  Chunk(chunk_id="SVC000123#선정기준", ... 같은 서비스의 다른 항목 ...),
+  Chunk(chunk_id="SVC000456#지원대상", service_id="SVC000456", service_name="구직촉진수당",
+        section="지원대상", text="구직촉진수당\n취업을 준비하는 저소득 구직자",
+        metadata={"agency": "고용노동부", "field": "일자리", "age_min": 15, "age_max": 69},  # region·deadline 없음 = 값이 비어 있음
+        detail_url="https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SVC000456"),
+  ...
+]
+```
+
+- **A가 보장할 것**: `chunk_id`는 전체에서 유일(`{service_id}#{section}`), `text` 맨 앞에 서비스명, `section`은 4개 항목 중 하나, 값을 모르는 `metadata` 키는 **생략**(추측해서 채우지 않음).
+- **B가 가정해도 되는 것**: 위 규칙이 지켜진다는 점, 같은 `service_id`의 조각이 여러 개라는 점. 반대로 **가정하면 안 되는 것**: 모든 조각에 `region`·`deadline`·`age_min`이 있다는 점(비어 있으면 필터에서 제외하지 않고 통과시킴).
+- 둘이 함께 확인하는 방법: A가 실제 조각 몇 건을 `tests/fixtures/sample_chunks.json`과 같은 형식으로 저장해 B에게 주면, B는 `python -m pytest`에서 그 파일로 바로 시험할 수 있습니다.
+
+#### (2) C → B: 필터
+
+C는 질문에서 뽑은 조건을 `Filters`로 바꿔서 B에게 줍니다. **값을 못 찾은 키는 생략**합니다.
+
+```python
+{"age": 27, "region": "서울", "field": "주거", "situation": ["구직"], "today": "2026-10-19"}
+```
+
+#### (3) B → C: 이 질문에 맞는 조각 Top-5
+
+B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제거를 거친 조각 목록**입니다. 타입은 (1)과 같고, 서비스당 1개로 줄어 있습니다.
+
+```python
+# B: hybrid.search("월세가 부담돼요 ...", filters, k=5)  →  C가 받는 값
+[
+  Chunk(chunk_id="SVC000123#지원대상", service_name="청년월세 지원(서울)", section="지원대상",
+        text="청년월세 지원(서울)\n서울에 거주하며 월세로 사는 만 19~34세 무주택 청년", ...),
+  Chunk(chunk_id="SVC000456#지원대상", service_name="구직촉진수당", section="지원대상",
+        text="구직촉진수당\n취업을 준비하는 저소득 구직자",
+        metadata={"agency": "고용노동부", "field": "일자리", "age_min": 15, "age_max": 69}, ...),  # region·deadline 없음
+  Chunk(chunk_id="SVC000789#선정기준", service_name="서울 청년수당", section="선정기준", ...),
+  Chunk(chunk_id="SVC000321#지원대상", service_name="주거급여", section="지원대상", ...),
+  Chunk(chunk_id="SVC000654#지원내용", service_name="국민내일배움카드", section="지원내용", ...),
+]   # 관련도 높은 순
+```
+
+- **B가 보장할 것**: 순서는 관련도 순, 같은 서비스의 조각은 중복 제거, 신청기한이 지난 제도는 없음, 결과가 없으면 필터를 풀어 다시 검색한 뒤 돌려줌(그래도 없으면 빈 리스트).
+- **C가 가정해도 되는 것**: 각 `Chunk`에 서비스명·소관기관(`metadata["agency"]`)·상세 링크(`detail_url`)가 있다는 점. **가정하면 안 되는 것**: 모든 조건이 충족됐다는 점. 위의 구직촉진수당처럼 `region`·`deadline`이 비어 있으면 C는 단정하지 않고 "확인 필요"로 표시합니다.
+- C는 이 목록에서 같은 서비스의 다른 항목(선정기준, 신청방법 등)이 더 필요하면 `service_id`로 조각을 더 요청하거나 DB를 조회해야 합니다. 어느 쪽으로 할지는 B·C가 합의해서 정합니다. (근거 선별 단계가 이 문제를 다룹니다.)
+
+> 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
+
 ## 3. 디렉터리 구조와 담당
 
 ```
