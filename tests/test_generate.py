@@ -22,6 +22,11 @@ def _no_real_store(request, monkeypatch):
     B의 실제 색인(indexed_sample)을 쓰는 통합 테스트는 그대로 둔다."""
     if "indexed_sample" not in request.fixturenames:
         monkeypatch.setattr("src.index.vector_store.get_service_chunks", lambda service_id: [])
+        # C는 완화 정보 때문에 search_with_info를 부른다. 공용 fake_search는 search만 바꾸므로,
+        # search_with_info가 (가짜일 수 있는) search를 그대로 쓰게 이어 준다 (완화 없음으로).
+        from src.retrieve import hybrid
+        monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
+                            hybrid.SearchResult(hybrid.search(q, f, k, mode), [], dict(f), False))
 
 
 # --- 조건 -> 필터 (C -> B 인계) ------------------------------------------------
@@ -332,3 +337,35 @@ def test_reason_rejects_long_phrase_and_cross_type_age_match(monkeypatch):
     ]}]})
     rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
     assert "‘27살’" in rec.reason and "취업준비생" not in rec.reason and "받을 수 있는" not in rec.reason
+
+
+
+# --- 필터 완화 안내 (B의 search_with_info.relaxed) ----------------------------------
+def test_relaxed_notice_when_b_dropped_filters(fake_conditions, monkeypatch):
+    from src.retrieve import hybrid
+    fake_conditions(CASES["sr1"])                                      # age 27, 서울, 주거, 구직
+    used = {"age": 27, "region": "서울", "situation": ["구직"], "today": "2026-10-19"}   # B가 field를 풀었다
+    monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
+                        hybrid.SearchResult(list(CASES["sr1"]["results"]), [], used, True))
+    _fake_llm(monkeypatch, RuntimeError("no llm"))
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    first = answer.text.splitlines()[0]
+    assert generator.RELAXED_MARK in first and "관심 분야(주거)" in first and "지역" not in first
+
+
+def test_no_relaxed_notice_on_no_evidence(fake_conditions, monkeypatch):
+    from src.retrieve import hybrid
+    fake_conditions(CASES["sr1"])
+    monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
+                        hybrid.SearchResult([], [], {"today": "2026-10-19"}, True))
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    assert answer.no_evidence and generator.RELAXED_MARK not in answer.text   # 근거 없음이면 완화 안내는 붙이지 않음
+
+
+def test_relaxed_notice_with_real_b_search(indexed_sample, fake_conditions, monkeypatch):
+    """샘플에는 '문화' 분야가 없어 B가 실제로 field 조건을 풀고 다시 찾는다."""
+    fake_conditions({"conditions": {"field": "문화"}})
+    _fake_llm(monkeypatch, RuntimeError("no llm"))
+    answer = generator.answer_question("청년 지원 제도가 있나요?")
+    assert not answer.no_evidence and "관심 분야(문화)" in answer.text.splitlines()[0]
+

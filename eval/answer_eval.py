@@ -22,9 +22,7 @@ from pathlib import Path
 from src.common import config
 from src.common.schema import Answer
 from src.generate import condition_extractor, generator
-from src.generate import evidence as evidence_mod
 from src.generate.generator import GENERIC_REASON, NOT_IN_EVIDENCE
-from src.retrieve import hybrid
 
 FAITHFULNESS_PROMPT = """너는 RAG 답변 채점자다. [근거]와 번호가 붙은 [주장]들이 주어진다.
 각 주장이 [근거]만으로 뒷받침되는지 판정해 JSON 객체 하나를 출력한다.
@@ -110,13 +108,9 @@ def _squash(s: str) -> str:
 
 # --- 실행 (질문 세트 전체 채점) ---------------------------------------------------
 def answer_with_evidence(question: str) -> tuple[Answer, str]:
-    """generator.answer_question과 같은 단계를 밟되, 생성에 넘긴 근거(evidence_text)도 함께 돌려준다.
-    (answer_question은 Answer만 돌려주므로 Faithfulness·Citation Accuracy 채점용으로 단계를 직접 부른다.)"""
-    conditions = condition_extractor.extract_conditions(question)
-    filters = condition_extractor.to_filters(conditions)
-    chunks = hybrid.search(question, filters, k=config.DEFAULT_TOP_K)
-    selected = evidence_mod.select_evidence(chunks)
-    answer = generator.generate_answer(question, selected)
+    """generator.answer_question과 같은 흐름으로 답하고, 생성에 넘긴 근거(evidence_text)도 함께 돌려준다.
+    (answer_question은 Answer만 돌려주므로 Faithfulness·Citation Accuracy 채점용으로 근거까지 받는다.)"""
+    answer, selected = generator._answer_with_evidence(question)
     return answer, "\n".join(c.text for cs in selected.values() for c in cs)
 
 

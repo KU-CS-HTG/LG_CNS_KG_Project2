@@ -119,6 +119,8 @@ a.btn:hover { background:var(--accent-soft); }
 [data-testid="stSidebar"] button:disabled { opacity:1 !important; color:var(--accent) !important; border-color:var(--accent) !important;
   background:var(--accent-soft) !important; font-weight:700; }
 [data-testid="stSidebar"] [class*="st-key-thread"] button p { text-align:left; }
+.relaxed { font-size:.88rem; line-height:1.55; border-radius:12px; padding:.6rem .85rem; margin:.1rem 0 .8rem;
+  background:var(--warn-soft); border:1px solid rgba(217,119,6,.25); }
 .demo { font-size:.82rem; border-radius:10px; padding:.5rem .75rem; background:var(--warn-soft); color:var(--warn); font-weight:600; }
 </style>
 """
@@ -157,20 +159,34 @@ def _demo_search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_f
         age = filters.get("age")
         if age is not None and ((m.get("age_min") or 0) > age or age > (m.get("age_max") or 200)):
             continue
+        if filters.get("field") and m.get("field") and m["field"] != filters["field"]:   # B와 같은 소프트 필터
+            continue
         by_service.setdefault(c.service_id, []).append(c)
     scored = sorted(by_service.values(), key=lambda cs: -max(len(q & grams(re.sub(r"\s+", "", c.text))) for c in cs))
     return [c for cs in scored[:k] for c in cs]
 
 
+def _demo_search_with_info(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter"):
+    """미리보기용 search_with_info: B와 같은 순서(filters.relax)로 결과가 없으면 조건을 하나씩 푼다."""
+    from src.retrieve import filters as rules
+    current, relaxed = dict(filters), False
+    while True:
+        chunks = _demo_search(query, current, k, mode)
+        softer = rules.relax(current)
+        if chunks or softer == current:
+            return hybrid.SearchResult(chunks, [], current, relaxed)
+        current, relaxed = softer, True
+
+
 def _ask(question: str) -> Answer:
     if _search_ready():
         return generator.answer_question(question)
-    original = hybrid.search
-    hybrid.search = _demo_search
+    original = hybrid.search, hybrid.search_with_info
+    hybrid.search, hybrid.search_with_info = _demo_search, _demo_search_with_info
     try:
         return generator.answer_question(question)
     finally:
-        hybrid.search = original
+        hybrid.search, hybrid.search_with_info = original
 
 
 # --- 렌더링 ----------------------------------------------------------------------------
@@ -223,6 +239,9 @@ def _render_answer(answer: Answer, show_follow: bool = True) -> None:
                     unsafe_allow_html=True)
         return
     situation, follow = _parse_text(answer.text)
+    relaxed = next((line for line in answer.text.splitlines() if generator.RELAXED_MARK in line), "")
+    if relaxed:                                  # B가 결과가 없어 조건을 푼 경우 (소프트 필터를 투명하게)
+        st.markdown(f'<div class="relaxed">🔎 {_e(relaxed)}</div>', unsafe_allow_html=True)
     chips = "".join(f'<span class="chip">{_e(s.strip())}</span>' for s in situation.split(",") if s.strip())
     st.markdown(f'<div class="summary">{chips}<span>상황에 맞는 지원제도 <b>{len(answer.recommendations)}개</b>를 찾았어요.</span></div>',
                 unsafe_allow_html=True)

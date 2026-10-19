@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 NOT_IN_EVIDENCE = "자료에 없음 (상세 링크에서 확인)"
 NO_MATCH_MESSAGE = "질문하신 조건에 맞는 제도를 수집된 자료에서 찾지 못했습니다."
 GENERIC_REASON = "질문하신 내용과 관련된 제도로 찾았어요. 자격은 아래 조건을 확인해 주세요."
+RELAXED_MARK = "조건을 넓혀 찾았어요"   # 필터 완화 안내 문구 (UI가 이 문구가 든 줄을 찾아 따로 보여 준다)
 MAX_SAID_CHARS = 20   # 이유에 쓰는 질문 구절 최대 길이(공백 제외). 질문 문장을 통째로 옮기는 것을 막는다
 _AGE_RE = re.compile(r"\d+\s*(세|살)")
 
@@ -41,8 +42,7 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 - [근거]에 적힌 내용만 쓴다. 금액·연령·기간·기관·절차를 지어내거나 일반 지식으로 보충하지 않는다.
 - [근거]에 해당 항목이 없으면 그 값은 "{NOT_IN_EVIDENCE}"로 쓴다.
 - 먼저 각 제도가 질문과 관련 있는지 본다. 질문이 묻는 도움·제도와 관련이 없거나, 질문이 특정 제도·정보를 묻는데
-  그 제도·정보가 [근거]에 없으면 applicable은 "{NOT_RELEVANT}"이다. 검색 결과라고 해서 관련 있다고 보지 않는다.
-  질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
+  그 제도·정보가 [근거]에 없으면 applicable은 "{NOT_RELEVANT}"이다. 검색 결과라고 해서 관련 있다고 보지 않는다.  질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
   "{NOT_RELEVANT}"이다. 비슷한 제도로 대신 답하는 것은 추측이다.
 - 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
   "{LIKELY}" = 근거에 적힌 자격 조건을 사용자가 밝힌 정보로 모두 충족함,
@@ -255,10 +255,33 @@ def _str_list(v) -> list[str]:
 def answer_question(question: str) -> Answer:
     """온라인 전체 흐름: 조건 추출 -> 검색(필터 완화 재시도) -> 근거 선별 -> 생성. app은 이 함수만 호출한다.
 
-    필터 완화(filters.relax) 재검색은 B의 hybrid.search 안에서 한다 (중복 구현하지 않음).
+    필터 완화(filters.relax) 재검색은 B의 hybrid.search_with_info 안에서 한다 (중복 구현하지 않음).
     """
+    return _answer_with_evidence(question)[0]
+
+
+def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]]:
+    """answer_question의 본체. 생성에 넘긴 근거도 함께 돌려준다 (답변 평가가 같은 흐름으로 채점하도록)."""
     conditions = condition_extractor.extract_conditions(question)
     filters = condition_extractor.to_filters(conditions)
-    chunks = hybrid.search(question, filters, k=config.DEFAULT_TOP_K)
-    selected = evidence_mod.select_evidence(chunks)
-    return generate_answer(question, selected)
+    # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
+    result = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K)
+    selected = evidence_mod.select_evidence(result.chunks)
+    answer = generate_answer(question, selected)
+    notice = _relaxed_notice(filters, result.filters_used) if result.relaxed else ""
+    if notice and not answer.no_evidence:
+        answer.text = f"{notice}\n\n{answer.text}"
+    return answer, selected
+
+
+_RELAX_LABELS = {"field": "관심 분야", "region": "지역", "age": "나이"}
+
+
+def _relaxed_notice(asked: dict, used: dict) -> str:
+    """B가 결과가 없어 푼 조건을 사용자 문구로 알린다 (소프트 필터를 투명하게)."""
+    dropped = [f"{label}({asked[key]}{'세' if key == 'age' else ''})"
+               for key, label in _RELAX_LABELS.items() if key in asked and key not in used]
+    if not dropped:
+        return ""
+    return f"말씀하신 {', '.join(dropped)} 조건에 맞는 제도를 찾지 못해 {RELAXED_MARK}. " \
+           "아래 제도가 그 조건과 다를 수 있으니 확인해 주세요."
