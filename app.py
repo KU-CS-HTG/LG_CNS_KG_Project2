@@ -7,7 +7,7 @@ import streamlit as st
 
 from src import conditions
 from src.config import DEFAULT_MODE, DEFAULT_TOP_K, SEARCH_MODES
-from src.generator import describe, generate, place_text
+from src.generator import describe, generate_stream, place_text
 from src.regions import SIDO
 from src.retriever import search
 from src.schema import age_text
@@ -47,13 +47,12 @@ if st.button("찾아보기", type="primary") and question.strip():
         with st.spinner("검색 중..."):
             # 원문 대신 재작성된 검색어 사용 → 자기소개(나이·신분)가 검색 점수를 흐리지 않게
             hits = search(plan.search_query, cond, mode=mode, k=k, category=plan.category)
-        with st.spinner("답변 작성 중..."):
-            answer = generate(question, cond, hits)
+        st.divider()
+        st.write_stream(generate_stream(question, cond, hits))   # 생성되는 대로 바로 표시
     except Exception as e:  # 키 누락, DB·벡터DB 미생성 등을 화면에 표시
         st.error(f"오류: {e}")
     else:
-        st.markdown(answer)
-        with st.expander(f"근거 문서 {len(hits)}건"):
+        with st.expander(f"검색된 근거 문서 {len(hits)}건"):
             for i, h in enumerate(hits, 1):
                 st.markdown(f"**[{i}] {h.name}** · {h.agency} · {place_text(h)} · "
                             f"{age_text(h.min_age, h.max_age)} · [상세]({h.url})")
