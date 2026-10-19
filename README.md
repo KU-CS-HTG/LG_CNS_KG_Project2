@@ -179,21 +179,27 @@ Filters: {"age": 27, "region": "서울", "field": "주거", "situation": ["구�
 
 #### ⑤ 검색 — `hybrid.search(query, filters, k=5)`
 
-정형 필터 후 Vector + BM25 결과를 합쳐 서비스 단위로 중복을 제거한 `list[Chunk]`를 돌려줍니다.
+정형 필터 후 Vector + BM25 결과를 합쳐 **서비스당 조각 1개**로 줄인 `list[Chunk]`를 관련도 순으로 돌려줍니다.
 
 ```
-[retrieve] 필터 적용: 후보 조각 7,400 → 1,130 (기한 지난 제도 제외, 값이 빈 항목은 통과)
-[retrieve] Hybrid Top-5 (서비스 중복 제거 후)
+python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울
 
-순위  service_id   서비스명               섹션       점수
- 1    SVC000123    청년월세 지원(서울)    지원대상   0.91
- 2    SVC000456    구직촉진수당           지원대상   0.84
- 3    SVC000789    서울 청년수당          선정기준   0.80
- 4    SVC000321    주거급여               지원대상   0.76
- 5    SVC000654    국민내일배움카드       지원내용   0.71
+[hybrid_filter] 필터: {'age': 27, 'region': '서울', 'today': '2026-10-19'}
+ 1.  0.0320  SVC000123  청년월세 지원(서울)   [지원내용]  서울
+ 2.  0.0164  SVC000456  구직촉진수당          [지원대상]  전국
+ 3.  0.0149  SVC000789  서울 청년수당         [선정기준]  서울
+ 4.  0.0137  SVC000321  주거급여              [지원대상]  전국
+ 5.  0.0130  SVC000654  국민내일배움카드      [지원내용]  -        ← 지역 값이 비어 있어 통과 (C가 "확인 필요"로 표시)
 ```
 
-결과가 없으면 `filters.relax()`로 필터를 한 단계씩 풀어 다시 검색합니다 (로그에 `[retrieve] 결과 없음 → 필터 완화: field 제거`처럼 표시).
+점수는 RRF 점수라 값이 작은 것이 정상입니다(1위가 두 검색 모두 1위면 약 0.033). 비교는 순서로 하세요.
+
+- **합치는 방법(RRF)**: Vector와 BM25는 점수 단위(코사인 vs BM25)가 달라 점수를 더하지 않고 **순위**만 씁니다. 점수 = Σ 가중치 / (60 + 순위). 후보는 각 검색에서 50개씩 가져오고, 서비스 중복 제거 후 Top-K를 채웁니다. 상수와 가중치는 `config.RRF_K`, `HYBRID_CANDIDATES`, `HYBRID_WEIGHTS`에서 실험으로 조정합니다.
+- **서비스당 1개**: 같은 제도의 조각은 가장 높은 것 하나만 남깁니다. 그렇지 않으면 Top-5가 한두 제도의 조각으로 채워집니다.
+- **필터(소프트)**: 값이 비어 있는 제도는 통과, **신청기한이 지난 제도는 항상 제외**합니다. 저장소 안에서 `vector_store.build_where`로 거르고, 이미 꺼낸 목록은 `filters.apply_filters`로 거르며 두 규칙은 같습니다(테스트로 확인).
+- **필터 완화**: 결과가 없으면 **관심 분야 → 지역 → 연령** 순으로 하나씩 풀어 다시 찾습니다(신청기한은 풀지 않음). 끝까지 없으면 빈 리스트이고, C는 이를 "근거 없음"으로 처리합니다. 완화 여부는 `hybrid.search_with_info(...)`가 돌려주는 `relaxed`, `filters_used`로 볼 수 있습니다(C가 "조건을 완화해 찾았다"고 안내할 때 쓸 수 있음).
+- **`mode`(평가 실험용)**: `vector`·`bm25`·`hybrid`는 **필터를 쓰지 않고** 검색하고, `hybrid_filter`(서비스 기본값)만 필터와 완화를 적용합니다. 값은 코사인·BM25·RRF 점수입니다.
+- 지역은 문자열이 정확히 같아야 합니다("서울" ≠ "서울특별시"). 지역명 정규화는 A가 메타데이터를 만들 때 맞춥니다.
 
 #### 근거 선별 — `evidence.select_evidence(chunks)`
 
@@ -370,6 +376,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 증분 수집(`store.upsert_services`가 변경분 반환), 종료 서비스는 색인에서 제거 | 기획서 7장: 정기 수집 후 변경분만 재색인. |
 | 구조 기반 분할 + 서비스명 접두 | 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고, 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
+| Hybrid는 RRF(순위 합산)로 합치고 서비스당 조각 1개로 줄임, 결과가 없으면 분야→지역→연령 순으로 완화 | 점수 단위가 다른 두 검색을 순위로 합치면 튜닝이 거의 필요 없다. 서비스 단위로 줄여야 Top-5가 서로 다른 제도 5개가 된다. 완화 순서는 덜 중요한 조건부터이며 신청기한은 풀지 않는다(종료된 제도를 보여주면 안 됨). |
 | 벡터 저장소는 Chroma, 소프트 필터는 저장할 때 빈 값을 대체값으로 바꿔 처리 | 나중에 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓴다. Chroma는 "값이 없으면 통과"를 쿼리로 표현하기 어려워, 색인 시 빈 값을 통과하는 값으로 저장해 해결했다. |
 | BM25는 `rank_bm25` + 글자 2-gram, 색인은 저장된 텍스트에서 자동 재생성 | 한국어 조사·두 글자 단어를 다루면서 추가 설치(형태소 분석기)가 필요 없다. Chroma에 BM25가 없어 따로 두되, 색인 버전 파일로 동기화한다. 부족하면 `kiwipiepy`로 교체하고 Baseline 실험에서 비교한다. |
 | `retrieve/baseline.py`, `search(mode=...)` | Baseline → Vector → Hybrid → Hybrid+필터 비교 실험으로 하이브리드 효과를 검증한다. `mode` 기본값이 서비스 경로라 시그니처는 호환된다. |
@@ -394,6 +401,7 @@ cp .env.example .env                   # 키 입력: GOV24_API_KEY(Decoding 키)
 python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
 python -m src.index.embedder           # B: 임베딩 모델 동작 확인 (첫 실행 시 모델 약 2.2GB 다운로드)
 python -m src.index.vector_store --sample --query "월세가 부담돼요"   # B: 샘플 조각 색인 + 검색 확인 (A가 끝나면 --sample 없이 pipeline 결과를 색인, --full은 전체 재색인)
+python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울   # B: 하이브리드 검색 확인 (먼저 색인 필요)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
@@ -458,6 +466,7 @@ def test_예시(fake_search, fake_conditions):
 | `src/ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `src/index/embedder.py` | 구현됨 (B). 가짜 모델 테스트 통과, 실제 bge-m3는 팀원 PC에서 `python -m src.index.embedder`로 확인(월세 질문 ↔ 청년월세 0.553 > 기초연금 0.422) |
-| `src/index/vector_store.py` | 구현됨 (B). Chroma + BM25, 임시 폴더·가짜 임베딩으로 테스트 통과. 실제 모델·실제 데이터로는 미확인 |
-| `tests/` | 35개 통과(샘플 데이터 4 + 임베딩 8 + 벡터 저장소 23), 22개는 구현 전·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소 테스트는 skip. 전부 돌리려면 `pip install -r requirements.txt` |
+| `src/index/vector_store.py` | 구현됨 (B). Chroma + BM25, 임시 폴더·가짜 임베딩으로 테스트 통과. 실제 모델로 샘플 색인·검색 확인 |
+| `src/retrieve/filters.py`, `hybrid.py` | 구현됨 (B). RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화. 가짜 임베딩 테스트 통과, 실제 모델·실제 데이터 품질은 미확인 |
+| `tests/` | 67개 통과, 11개는 구현 전(C·평가)·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소·검색 테스트는 skip되므로 전부 돌리려면 `pip install -r requirements.txt` |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |

@@ -69,6 +69,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | BM25: `rank_bm25` + 글자 2-gram, 색인은 Chroma 텍스트에서 파생·버전 파일로 갱신 | Chroma에 BM25가 없다. 한국어는 조사 때문에 단어 단위가 불리하고 trigram은 두 글자 단어를 못 찾으므로 2-gram. 저장소가 둘로 나뉘지만 BM25 색인은 파생물이라 `index_version` 파일이 바뀌면 다시 만들어 동기화 문제를 피한다. |
 | 임베딩 모델별 컬렉션(`chunks__<모델명>`) | 모델을 바꾸는 실험(bge-m3 ↔ e5)에서 차원 불일치로 저장소가 깨지는 것을 막는다. |
 | `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks`는 B→C에서 미결이던 "같은 서비스의 다른 항목 조각" 조회의 후보. |
+| 검색: RRF(순위 합산, 상수 60, 후보 50개) + 서비스당 조각 1개, `search_with_info`(점수·적용된 필터·완화 여부) | 코사인과 BM25는 점수 단위가 달라 순위로 합친다(튜닝 최소화). 같은 제도의 조각이 Top-K를 채우지 않게 서비스 단위로 줄인다(구조도 '중복 제거', 기획서 8.1). 평가(9.4)에서 `mode`별로 점수를 비교하고, 완화 여부는 C가 안내 문구에 쓸 수 있다. |
+| 필터 완화 순서: 관심 분야 → 지역 → 연령, 신청기한은 풀지 않음 | 분야명은 LLM이 뽑은 값과 데이터 분류가 어긋나기 쉬워 가장 먼저 푼다. 연령은 자격과 직결되어 마지막에 푼다. 종료된 제도를 보여주지 않는 것은 기획서 규칙이라 완화 대상에서 뺀다. |
+| `filters.apply_filters`(파이썬)와 `vector_store.build_where`(저장소) 규칙을 따로 두고 일치 테스트 | 저장소 안에서 거르는 것이 빠르지만, Baseline 결과나 후처리는 이미 꺼낸 목록을 거른다. 두 곳의 규칙이 어긋나지 않도록 샘플 데이터에서 결과가 같은지 매개변수 테스트로 확인한다. |
 | `test_vector_store`, 테스트용 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 | 임시 폴더와 글자 2-gram 해시 가짜 임베딩으로 실제 Chroma 동작(upsert·삭제·필터·BM25 갱신)을 모델 없이 검증. `test_retrieval`도 같은 픽스처를 쓴다. |
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
@@ -81,6 +84,8 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 벡터 저장소 = Chroma | 수천~수만 조각이라 어떤 방식도 가능하나 이후 청년 외 데이터로 확장 예정 | 확장성과 정식 벡터 DB 사용 | (수집 후 규모·검색 성능 기록) |
 | 소프트 필터를 저장 시 대체값으로 처리 | Chroma 필터는 값이 없는 항목을 통과시키는 조건을 표현하기 어려움 | 빈 값을 통과하는 값으로 저장해 where 조건만으로 처리 | 테스트에서 연령·지역·기한·분야 규칙 확인 |
 | BM25 = rank_bm25 + 글자 2-gram | Chroma에 BM25가 없고, 한국어는 조사·두 글자 단어 문제 | 추가 설치 없이 한국어 기본 대응, 필요 시 형태소 분석기로 교체 | Baseline 실험에서 비교 |
+
+기획서 8.3 기록용 (⑤ 검색): 선택/변경 항목 "Hybrid 결합 방식 = RRF(상수 60, 후보 50개), 서비스 단위 중복 제거", 발견한 문제 "코사인·BM25 점수 단위가 달라 직접 합치기 어렵고, 조각 단위 Top-K는 같은 제도로 채워짐", 선택 이유 "순위만 써서 튜닝 최소화, 서비스당 1개로 제한", 결과 "(실제 데이터에서 Vector 단독·BM25 단독과 Hit Rate/MRR 비교 기록)".
 
 ### 3.1 데이터 범위: 청년층 우선
 
@@ -116,9 +121,10 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `index/embedder.py` | 구현됨 (sentence-transformers, bge-m3). 가짜 모델 테스트 통과, 실제 모델은 팀원 PC에서 확인(0.553 > 0.422) |
-| `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델·데이터 미확인 |
+| `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델로 샘플 색인·검색 확인 |
+| `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 35개 통과(샘플 데이터 4 + 임베딩 8 + 벡터 저장소 23), 22개는 구현 전·키 없음·실제 모델 미사용이라 skip |
+| `tests/` | 67개 통과, 11개는 구현 전(C·평가)·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -133,3 +139,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - 데이터 범위를 청년층으로 한정(§3.1): `config.YOUTH_AGE_RANGE`·`YOUTH_KEYWORDS`, `ingest.store.is_youth_service`(스켈레톤), `pipeline`에 청년 필터 단계 명시. README §1.1 추가, 2.1 예시 수치를 범위에 맞게 조정, §2.2·테스트 절에 상호 링크.
 - ③ 임베딩 구현(`index/embedder.py`): `embed_texts(texts, kind="passage")`, `embed_query`, `embedding_dim`, `python -m src.index.embedder` 스모크 테스트. `config`에 `EMBEDDING_DEVICE/BATCH_SIZE/MAX_SEQ_LENGTH` 추가, `requirements.txt`에 sentence-transformers·numpy 추가, `tests/test_embedder.py` 추가.
 - ④ 벡터 저장소 구현(`index/vector_store.py`): Chroma + BM25(글자 2-gram), 저장 시 대체값으로 소프트 필터 처리(`build_where`), 증분 색인·삭제·`get_service_chunks`·`clear_index`, `python -m src.index.vector_store --sample --query ...`. `config.INDEX_BATCH_SIZE`, `requirements.txt`에 chromadb·rank_bm25 추가, `tests/test_vector_store.py`와 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 추가, `test_retrieval`이 이를 사용하도록 변경.
+- ⑤ 검색 구현(`retrieve/filters.py`, `retrieve/hybrid.py`): RRF 하이브리드, 서비스당 1개, `search_with_info`, 분야→지역→연령 순 완화, `python -m src.retrieve.hybrid`. `config`에 `HYBRID_CANDIDATES`·`RRF_K`·`HYBRID_WEIGHTS` 추가. `test_retrieval`·`test_filters` 확장(RRF, 모드, 완화, 파이썬/저장소 필터 일치).

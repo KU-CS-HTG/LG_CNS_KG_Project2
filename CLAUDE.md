@@ -31,7 +31,7 @@
 ## 모듈 간 인터페이스 (제안 — 팀 합의 후 확정, 바꿀 때는 이 파일부터 고친다)
 - A → B: 조각 단위 레코드 `{chunk_id, service_id, service_name, section, text, metadata, detail_url}`
 - C → B: `Filters`(나이·지역·분야·상황·기준일, 값이 없으면 키 생략)
-- B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용)
+- B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용). 서비스당 조각 1개·관련도 순, 결과가 없으면 필터를 풀어 재검색(분야→지역→연령), 그래도 없으면 `[]`. 완화 여부가 필요하면 `hybrid.search_with_info(...)`(점수·`filters_used`·`relaxed` 포함)
 - (제안) B → C: `vector_store.get_service_chunks(service_id) -> list[Chunk]` — 검색 결과에 없던 같은 서비스의 다른 항목 조각이 필요할 때. 필터는 `vector_store.build_where(filters)`로 저장소 조건이 된다.
 - C의 최종 출력: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
 - 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
@@ -59,6 +59,7 @@ pip install -r requirements.txt        # 설치 (.env.example을 .env로 복사 
 python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
 python -m src.index.embedder           # B: 임베딩 모델 동작 확인 (첫 실행 시 모델 다운로드)
 python -m src.index.vector_store --sample --query "월세가 부담돼요"   # B: 샘플 색인 + 검색 확인 (--full: 전체 재색인)
+python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울   # B: 하이브리드 검색 확인
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)

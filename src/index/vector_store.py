@@ -144,7 +144,7 @@ def build_where(filters: Filters) -> dict | None:
     - age: 연령 하한 <= 나이 <= 연령 상한 (한쪽이라도 비어 있으면 그쪽은 통과)
     - region: 사용자 지역, "전국", 지역 값 없음 중 하나
     - field: 사용자 관심 분야 또는 분야 값 없음
-    - today: 이 날짜 이후까지 신청 가능한 제도만 (없으면 오늘). situation은 필터가 아니라 검색어 쪽에서 반영한다.
+    - today: 이 날짜 이후까지 신청 가능한 제도만 (없으면 오늘). situation은 필터로 쓰지 않는다(질문 문장에 이미 담겨 검색에 반영됨).
     """
     conds: list[dict] = []
     age = filters.get("age")

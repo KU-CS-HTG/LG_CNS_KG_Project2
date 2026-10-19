@@ -24,6 +24,9 @@ INDEX_BATCH_SIZE = 64            # 벡터 저장소에 한 번에 임베딩해 �
 EMBEDDING_MAX_SEQ_LENGTH = 512   # 조각은 MAX_CHUNK_CHARS(1000자) 이내라 512 토큰이면 대부분 충분 (bge-m3는 최대 8192)
 GENERATION_MODEL = "gpt-4o-mini"
 DEFAULT_TOP_K = 5                # 평가에서 3 / 5 / 10 비교
+HYBRID_CANDIDATES = 50           # Vector·BM25 각각에서 가져올 후보 수 (서비스 중복 제거 후 Top-K를 채우기 위해 넉넉히)
+RRF_K = 60                       # Reciprocal Rank Fusion 상수 (순위 합산 시 상위 순위의 영향 정도)
+HYBRID_WEIGHTS = (1.0, 1.0)      # (Vector, BM25) 가중치. 실험으로 조정
 MAX_RECOMMENDATIONS = 5          # 답변에 담는 제도 수 상한 (3~5개)
 MAX_CHUNK_CHARS = 1000           # 긴 항목 Recursive 분할 기준 (수집 후 길이 측정해 조정)
 
