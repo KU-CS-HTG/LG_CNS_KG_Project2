@@ -1,7 +1,7 @@
 """샘플 데이터가 데이터 계약(src/common/schema.py)을 지키는지 확인. 항상 실행된다."""
 from src.common.schema import SECTIONS
 
-from tests.fixtures import load_sample_queries
+from tests.fixtures import load_sample_queries, load_search_cases, service_ids
 
 METADATA_KEYS = {"region", "agency", "field", "deadline", "age_min", "age_max", "target_tags"}
 
@@ -33,3 +33,15 @@ def test_queries_reference_existing_services(sample_chunks):
         if "expect_top1" in q:
             refs.add(q["expect_top1"])
         assert refs <= known, q["id"]
+
+
+def test_search_cases_follow_b_to_c_contract():
+    """B -> C 샘플이 인계 규칙(서비스당 1개, 최대 5개)을 지키는지 확인."""
+    cases = load_search_cases()
+    assert {"sr1", "sr2"} <= {c["id"] for c in cases}
+    for c in cases:
+        ids = service_ids(c["results"])
+        assert len(c["results"]) <= 5
+        assert len(ids) == len(c["results"])               # 서비스당 조각 1개 (중복 제거됨)
+        assert {"today"} <= set(c["filters"])
+    assert any(not c["results"] for c in cases)            # 근거 없음 사례 포함

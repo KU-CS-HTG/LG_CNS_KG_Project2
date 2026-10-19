@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from src.common.schema import Answer, Chunk
 
+# 테스트 규칙: B가 끝나기 전에도 시험할 수 있도록(tests/conftest.py의 fake_search, fake_conditions)
+# 다른 모듈의 함수는 `from src.retrieve import hybrid; hybrid.search(...)`,
+# `condition_extractor.extract_conditions(...)`처럼 모듈 속성으로 호출한다. (`from ... import search` 금지)
+
 
 def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
     raise NotImplementedError

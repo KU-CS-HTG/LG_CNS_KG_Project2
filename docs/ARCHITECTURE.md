@@ -33,7 +33,7 @@ src/
   generate/  condition_extractor, evidence, generator, citation   # C
 app/         main.py                                    # C: UI
 eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
-tests/       pytest. fixtures/(가상 샘플 조각·질의), conftest.py, test_*.py
+tests/       pytest. fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ```
@@ -62,6 +62,8 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `tests/fixtures/sample_chunks.json` (가상 조각 48개 = 12개 제도 x 4항목) | A가 끝나기 전에 B가 자기 코드를 검증하도록 `Chunk` 계약대로 만든 가짜 데이터. 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상을 일부러 섞었다. 실제 제도 내용이 아니며 A의 실제 조각이 나오면 일부를 교체한다. |
 | `tests/fixtures/sample_queries.json` | 검색 기대값(`expect_top1`, `expect_in_top5`, `expect_not_in_results`)과 필터 `today`를 고정해 시간이 지나도 결과가 변하지 않게 한다. |
 | `tests/conftest.py`: `NotImplementedError`를 skip으로 변환 | 스켈레톤 단계에서는 미구현 테스트가 실패로 보이지 않고, 구현하는 순간 같은 테스트가 실제 검증을 시작한다. |
+| `tests/fixtures/sample_search_results.json` + `fake_search`·`fake_conditions` 픽스처 | B가 끝나기 전에 C가 자기 코드를 검증하도록 B→C 인계 데이터(Top-5 조각, 근거 없음 사례)를 미리 정해 두고 `hybrid.search`·`extract_conditions`를 가짜로 바꿔 끼운다. 이를 위해 C는 다른 모듈 함수를 모듈 속성으로 호출한다(`generator.py` 주석에 규칙 명시). |
+| `test_generate` | C 코드(조건→필터, 근거 선별, 인용, 근거 없음 응답, 전체 흐름). LLM이 필요한 실제 생성 테스트는 `OPENAI_API_KEY`가 있을 때만 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
 
@@ -88,7 +90,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 샘플 데이터 검증 3개 통과, 나머지 16개는 구현 전이라 skip |
+| `tests/` | 샘플 데이터 검증 4개 통과, 나머지 23개는 구현 전(또는 OPENAI_API_KEY 없음)이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -99,3 +101,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - 루트 `README.md` 추가(CLAUDE.md와 이 문서의 내용을 합친 팀 안내). 문서 동기화 대상에 README 포함.
 - `README.md`에 단계별 입출력 예시(§2.1)와 단계 표(오프라인/온라인 분리) 추가. 구조 변경 없음.
 - `README.md` §2.2 추가: A→B, C→B, B→C 인계 데이터를 한눈에 보는 도식·예시·상호 보장 사항. 구조 변경 없음. (B→C 결과에 한 서비스의 여러 항목이 필요할 때의 조회 방식은 B·C 합의 사항으로 남김)
+- C용 테스트 기반 추가: `tests/fixtures/sample_search_results.json`, `fake_search`·`fake_conditions`, `tests/test_generate.py`. `generator.py`에 모듈 속성 호출 규칙 주석 추가. README 8장 '테스트'를 B용/C용으로 나눔.

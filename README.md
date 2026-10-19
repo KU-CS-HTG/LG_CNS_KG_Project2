@@ -297,7 +297,7 @@ src/
   generate/  condition_extractor, evidence, generator, citation    # C
 app/         main.py                                               # C: UI
 eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
-tests/       fixtures/(가상 샘플 조각·질의), conftest.py, test_*.py
+tests/       fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ```
@@ -368,11 +368,46 @@ Windows PowerShell에서 환경변수를 직접 설정한다면 `export` 대신 
 
 ### 테스트
 
-A의 구현이 끝나기 전에도 B가 자기 코드를 검증할 수 있도록 `tests/fixtures/`에 가상 샘플 조각(12개 제도 × 4항목 = 48개)과 샘플 질의를 두었습니다.
+앞 담당자의 구현이 끝나기 전에도 뒤 담당자가 자기 코드를 시험할 수 있도록, 인계 지점마다 `tests/fixtures/`에 **가상 샘플 데이터**를 두었습니다. 실제 제도 내용이 아니며, 실제 출력이 나오면 일부를 교체합니다.
 
-- 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상이 섞여 있습니다. 실제 제도 내용이 아니며, A의 실제 조각이 나오면 일부를 교체합니다.
-- 구현 전(`NotImplementedError`) 테스트는 실패가 아니라 skip으로 표시되고, 구현하면 같은 테스트가 자동으로 실제 검증을 시작합니다.
+| 누가 시험하나 | 앞 단계가 없을 때 대신 쓰는 것 | 샘플 파일 |
+|---|---|---|
+| B (A 없이) | 가짜 조각 `Chunk` 48개 | `sample_chunks.json`, `sample_queries.json` |
+| C (B 없이) | 가짜 검색 결과 + 가짜 조건 추출 | `sample_search_results.json`, `fake_search`·`fake_conditions` 픽스처 |
+
+구현 전(`NotImplementedError`) 테스트는 실패가 아니라 skip으로 표시되고, 구현하면 같은 테스트가 자동으로 실제 검증을 시작합니다. `python -m pytest -rs`로 실행합니다.
+
+#### B가 A의 구현 없이 테스트하기
+
+A의 구현이 끝나기 전에도 B가 자기 코드를 검증할 수 있도록 가상 샘플 조각(12개 제도 × 4항목 = 48개)과 샘플 질의를 두었습니다.
+
+- 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상이 섞여 있습니다.
+- 시험 대상: `filters`(소프트 필터·기한 제외·완화), `metrics`(지표 계산), `vector_store`·`hybrid`(색인 후 검색 기대값). 테스트 파일은 `test_filters.py`, `test_metrics.py`, `test_retrieval.py`입니다.
 - `test_retrieval.py`의 색인 저장 경로 분리는 B가 결정합니다.
+
+#### C가 B의 구현 없이 테스트하기
+
+B의 구현(색인·검색)이 끝나기 전에도 C가 자기 코드를 검증할 수 있도록, **B가 C에게 줄 검색 결과**를 미리 정해 둔 샘플(`sample_search_results.json`)을 두었습니다. 2.2의 (3) B → C 인계 데이터와 같은 모양입니다.
+
+| 사례 | 질문 | B가 줬다고 가정하는 결과 | 확인하려는 것 |
+|---|---|---|---|
+| `sr1` | "서울에 사는 27살 취업준비생인데 월세가 부담돼요…" | 조각 5개(서비스당 1개, 관련도 순). 그중 `SAMPLE011`은 지역·연령 값이 비어 있음 | 근거 선별, 인용, 값이 빈 제도의 "확인 필요" 표시, 면책 문구 |
+| `sr2` | "내년에 새로 생길 예정인 청년 지원금은…" | 빈 리스트 | 근거 없음 → 추측하지 않고 모른다고 답함 (`no_evidence=True`) |
+
+C가 쓰는 도구는 두 가지입니다 (`tests/conftest.py`).
+
+```python
+def test_예시(fake_search, fake_conditions):
+    case = fake_search("sr1")          # hybrid.search를 sr1의 가짜 결과로 바꾼다 (B 없이)
+    fake_conditions(case)              # extract_conditions도 고정한다 (LLM 없이)
+    answer = generator.answer_question(case["question"])
+    assert case["calls"][0]["filters"]["region"] == "서울"   # C가 B에게 넘긴 필터를 확인할 수 있다
+```
+
+- **시험 대상**: `condition_extractor.to_filters`, `evidence.select_evidence`(3~5개 제도로 제한), `citation.build_citations`(서비스명·소관기관·근거 문구·링크), `generator`(근거 없음 응답, 전체 흐름). 테스트 파일은 `test_generate.py`입니다.
+- **LLM 없이 되는 것**: 조건→필터 변환, 근거 선별, 인용, 근거 없음 응답(LLM을 부르지 않는 경로). **LLM이 필요한 것**: 실제 답변 생성은 `OPENAI_API_KEY`가 없으면 skip됩니다.
+- **지켜야 할 코드 규칙**: 가짜로 바꿔 끼울 수 있도록, C는 다른 모듈의 함수를 `hybrid.search(...)`, `condition_extractor.extract_conditions(...)`처럼 **모듈 속성으로 호출**합니다. `from src.retrieve.hybrid import search`처럼 이름만 가져오면 가짜가 적용되지 않습니다.
+- B의 실제 결과가 나오면 `sample_search_results.json`의 `result_chunk_ids`를 실제 검색 결과로 교체하고, B가 보장하는 규칙(서비스당 1개, 최대 5개, 기한 지난 제도 없음)이 지켜지는지 함께 확인합니다.
 
 ## 9. 작업 규칙
 
@@ -387,5 +422,5 @@ A의 구현이 끝나기 전에도 B가 자기 코드를 검증할 수 있도록
 |---|---|
 | `src/ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 샘플 데이터 검증 3개 통과, 나머지 16개는 구현 전이라 skip |
+| `tests/` | 샘플 데이터 검증 4개 통과, 나머지 23개는 구현 전(또는 OPENAI_API_KEY 없음)이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |

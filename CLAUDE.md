@@ -25,7 +25,7 @@
 | A (데이터·색인) 담당자: | ① 로드, ② 분할, 메타데이터 설계, 정기 수집 | `src/ingest/` |
 | B (임베딩·검색) 담당자: | ③ 임베딩, ④ 벡터 저장소, ⑤ 검색, 정형 필터, Baseline, 검색 평가 | `src/index/`, `src/retrieve/`, `eval/metrics.py`·`eval/run_eval.py` |
 | C (생성·서비스) 담당자: | 조건 추출, 근거 선별, ⑥ 생성, 인용 형식, UI, 답변 평가 | `src/generate/`, `app/`, `eval/answer_eval.py` |
-- 테스트(`tests/`)는 각자 자기 모듈의 `test_*.py`를 관리하고, 샘플 데이터(`tests/fixtures/`)는 A의 실제 조각이 나오면 A·B가 함께 실제 데이터로 보강한다.
+- 테스트(`tests/`)는 각자 자기 모듈의 `test_*.py`를 관리하고, 샘플 데이터(`tests/fixtures/`)는 A의 실제 조각이 나오면 A·B가, B의 실제 검색 결과가 나오면 B·C가 함께 실제 데이터로 보강한다. C는 다른 모듈 함수를 모듈 속성(`hybrid.search(...)`)으로 호출한다(테스트에서 가짜로 바꿔 끼우기 위함).
 - 평가 질문 세트(`eval/questions.jsonl`)와 8.3 기술 선택 기록은 전원이 함께 작성한다.
 
 ## 모듈 간 인터페이스 (제안 — 팀 합의 후 확정, 바꿀 때는 이 파일부터 고친다)
@@ -58,7 +58,7 @@ pip install -r requirements.txt        # 설치 (.env.example을 .env로 복사 
 python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
-python -m pytest -rs                   # 테스트 (미구현은 skip. A 없이도 tests/fixtures 샘플로 B 검증 가능)
+python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
 ```
 (스켈레톤 단계라 대부분 `NotImplementedError`. 구현하면서 갱신할 것)
