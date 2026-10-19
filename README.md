@@ -392,6 +392,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
   - **Hit Rate@K**: 정답이 하나라도 상위 K개 안에 있는 질문의 비율 / **Recall@K**: 질문별 (상위 K개 안의 정답 수 ÷ 전체 정답 수)의 평균 / **MRR**: 질문별 1 ÷ (첫 정답의 순위)의 평균 (정답이 없으면 0)
   - 채점 단위는 조각이 아니라 `service_id`입니다. `hybrid.search`가 이미 서비스당 1개로 줄여 주므로 결과의 `service_id`를 순서대로 넣으면 됩니다.
   - 정답이 없는 질문(`expect_no_answer`)은 검색 지표에서 **제외**하고(분모에 안 넣음), 대신 `no_evidence_rate`로 따로 봅니다(그런 질문에서 검색이 빈 결과를 돌려준 비율. 관련도 하한선을 정할 때 쓸 지표).
+  - 확인: `python -m eval.metrics`(손으로 계산한 예시와 일치하는지 출력)와 `python -m pytest tests/test_metrics.py`
   - 사용: `evaluate(retrieved, relevant)`가 K=3·5·10 지표를 한 번에 계산하고 `check_targets(...)`가 잠정 목표 달성 여부를 알려 줍니다. 예: 두 질문의 결과가 `[["a","b","c"], ["x","a"]]`, 정답이 `[{"b"}, {"a"}]`이면 Hit Rate@3 = 1.0, MRR = (1/2 + 1/2) ÷ 2 = 0.5.
 - 답변: Answer Correctness, Faithfulness, Citation Accuracy
 - 실험 순서: Baseline(SQL+키워드) → Vector → BM25 → Hybrid → Hybrid+정형 필터 → 최종. 결과는 `eval/results/`에 저장하고 요약을 기획서 9.4에 기록합니다. Top-K는 3 / 5 / 10을 비교합니다.

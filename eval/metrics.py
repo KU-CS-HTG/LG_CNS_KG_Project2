@@ -83,3 +83,27 @@ def evaluate(retrieved: Sequence[Sequence[str]], relevant: Sequence[set[str]], k
 def check_targets(results: dict[str, float], targets: dict[str, float] = TARGETS) -> dict[str, bool]:
     """잠정 목표 달성 여부. results에 없는 지표(예: k=5를 계산하지 않음)는 결과에서 빠진다."""
     return {name: results[name] >= goal for name, goal in targets.items() if name in results}
+
+
+if __name__ == "__main__":
+    # 손으로 계산할 수 있는 예시로 구현을 확인한다: python -m eval.metrics
+    retrieved = [["a", "b", "c"], ["x", "a"], ["m", "n", "o"]]
+    relevant = [{"b"}, {"a", "z"}, {"q"}]
+    expected = {
+        "hit_rate@1": 0.0,        # 1위가 정답인 질문 없음
+        "hit_rate@3": 2 / 3,      # 질문 1·2는 상위 3개 안에 정답, 3은 없음
+        "recall@3": 1.5 / 3,      # (1/1 + 1/2 + 0) / 3
+        "mrr": (1 / 2 + 1 / 2 + 0) / 3,   # 첫 정답이 2위, 2위, 없음
+    }
+    got = {
+        "hit_rate@1": hit_rate_at_k(retrieved, relevant, 1),
+        "hit_rate@3": hit_rate_at_k(retrieved, relevant, 3),
+        "recall@3": recall_at_k(retrieved, relevant, 3),
+        "mrr": mrr(retrieved, relevant),
+    }
+    ok = True
+    for name, want in expected.items():
+        match = abs(got[name] - want) < 1e-9
+        ok &= match
+        print(f"{'OK ' if match else 'FAIL'} {name:11s} 계산 {got[name]:.4f}  / 손계산 {want:.4f}")
+    raise SystemExit(0 if ok else 1)
