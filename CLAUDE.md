@@ -62,6 +62,6 @@ python -m src.index.vector_store --sample --query "월세가 부담돼요"   # B
 python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울   # B: 하이브리드 검색 확인
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
-python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
+python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요
 ```
 (스켈레톤 단계라 대부분 `NotImplementedError`. 구현하면서 갱신할 것)

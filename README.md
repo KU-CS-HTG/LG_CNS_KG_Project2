@@ -396,7 +396,53 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
   - 사용: `evaluate(retrieved, relevant)`가 K=3·5·10 지표를 한 번에 계산하고 `check_targets(...)`가 잠정 목표 달성 여부를 알려 줍니다. 예: 두 질문의 결과가 `[["a","b","c"], ["x","a"]]`, 정답이 `[{"b"}, {"a"}]`이면 Hit Rate@3 = 1.0, MRR = (1/2 + 1/2) ÷ 2 = 0.5.
 - 답변: Answer Correctness, Faithfulness, Citation Accuracy
 - 실험 순서: Baseline(SQL+키워드) → Vector → BM25 → Hybrid → Hybrid+정형 필터 → 최종. 결과는 `eval/results/`에 저장하고 요약을 기획서 9.4에 기록합니다. Top-K는 3 / 5 / 10을 비교합니다.
-- 질문 세트: `eval/questions.jsonl` (30개 내외 목표, **청년 상황형 질문 중심** — 1.1 참고). 필드는 `id, category, question, relevant_service_ids, expected_answer, expect_no_answer`입니다. 정답 서비스는 수집 후 팀원이 지정하며, `todo`가 있는 항목은 수집 데이터에 있는지 확인 후 수정합니다.
+- 질문 세트: `eval/questions.jsonl` (30개 내외 목표, **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
+
+  | 필드 | 설명 |
+  |---|---|
+  | `id`, `category`, `question` | 식별자, 범주(상황형·제도명 아는 질문·지역·연령 조건·근거 없음 등), 질문 |
+  | `relevant_service_ids` | 정답 `service_id` 목록. 수집 후 팀원이 데이터에서 직접 확인해 채움 |
+  | `expected_answer` | 기대하는 답변(사람이 읽는 설명, 답변 평가용) |
+  | `expect_no_answer` | 근거가 없어 "모른다"고 답해야 하는 질문이면 `true` |
+  | `filters` (선택) | 이 질문의 정형 조건. LLM 조건 추출과 분리해서 검색만 평가하려고 정답 조건을 직접 적음. 예: `{"age": 27, "region": "서울"}` (`hybrid_filter` 실험에서만 사용) |
+  | `todo` (선택) | 정답을 아직 못 정한 항목의 메모 |
+
+  질문은 세 종류로 나뉩니다: **평가 대상**(정답 있음 → Hit Rate·Recall·MRR 계산), **근거 없음**(`expect_no_answer` → 검색 지표에서 제외, `no_evidence_rate`로 따로 봄), **정답 미지정**(정답도 `expect_no_answer`도 없음 → 제외하고 몇 개인지 경고).
+
+### 7.1 검색 평가 실행 — `python -m eval.run_eval`
+
+```
+python -m eval.run_eval --experiment hybrid_filter --k 5
+python -m eval.run_eval --experiment all --today 2026-10-19       # 전체 비교표 (재현하려면 --today 고정)
+```
+
+사전 조건: 색인이 있어야 하고(`python -m src.index.vector_store ...`), 질문 세트에 정답이 채워져 있어야 합니다. 정답이 하나도 없으면 "정답이 지정된 질문이 없습니다"라고 알려 주고 멈춥니다. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
+
+출력 예 (예상 형식, 수치는 예시):
+
+```
+=== hybrid_filter  (K=5, 평가 28문항 / 근거 없음 3 / 정답 미지정 2) ===
+  K=3   Hit Rate 0.786   Recall 0.690
+  K=5   Hit Rate 0.857   Recall 0.744
+  K=10  Hit Rate 0.929   Recall 0.821
+  MRR   0.671
+  잠정 목표(Top-5): hit_rate@5 달성(목표 0.80), recall@5 달성(목표 0.70), mrr 달성(목표 0.60)
+  근거 없음 질문에서 빈 결과를 돌려준 비율: 0.33  (높을수록 좋음)
+  ! 정답 미지정 2문항은 평가에서 제외됨: q29, q30
+  범주별:
+    상황형            n=14  Hit@5 0.86  Recall@5 0.71  MRR 0.65
+    제도명 아는 질문  n=8   Hit@5 1.00  Recall@5 1.00  MRR 0.88
+  Top-5에서 놓친 질문 4개:
+    [q07] 월세가 부담되고 취업을 준비...  정답 ['SVC000123'] → 7위; 검색 SVC000456, SVC000789, ...
+```
+
+- **한 번에 K=3·5·10**을 계산합니다. 질문마다 가장 큰 K(10)만큼 가져오므로 `--k`는 표에서 강조할 K입니다.
+- **놓친 질문 목록**이 핵심입니다. 정답이 몇 위였는지와 실제로 검색된 제도를 보여 줘서 원인(분할·필터·임베딩·BM25)을 찾는 출발점이 됩니다.
+- **범주별 표**로 어떤 종류의 질문이 약한지 봅니다.
+- `--experiment all`은 마지막에 **기획서 9.4에 옮겨 적을 마크다운 비교표**를 출력합니다.
+- 결과는 `eval/results/<실험>_k<K>_<날짜-시각>.json`에 저장됩니다(설정·질문별 검색 결과·적용된 필터 포함). 9.4에 기록한 결과만 커밋하고 나머지는 올리지 않는 것을 권장합니다. `--no-save`로 저장을 끌 수 있습니다.
+- `--today`를 주면 신청기한 기준일이 고정되어 같은 데이터에서 결과가 재현됩니다.
+- 답변 평가(Answer Correctness·Faithfulness·Citation Accuracy)는 C가 `eval/answer_eval.py`와 연결합니다.
 
 ## 8. 시작하기
 
@@ -409,7 +455,7 @@ python -m src.index.vector_store --sample --query "월세가 부담돼요"   # B
 python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울   # B: 하이브리드 검색 확인 (먼저 색인 필요)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
-python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
+python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
 ```
 
 모델 다운로드 시 나오는 `Warning: You are sending unauthenticated requests to the HF Hub` 경고는 무시해도 됩니다. 없애려면 `.env`에 `HF_TOKEN=<Hugging Face 토큰>`을 넣거나(다운로드도 빨라짐), 모델을 이미 받은 뒤라면 `HF_HUB_OFFLINE=1`을 넣으세요(`.env.example` 참고).
@@ -471,10 +517,11 @@ def test_예시(fake_search, fake_conditions):
 | 모듈 | 상태 |
 |---|---|
 | `src/ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
-| `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
+| `src/common/config.py`, `src/common/schema.py` | 구현됨 |
+| `eval/run_eval.py` | 구현됨 (B). 모드별 실험·K=3/5/10·범주별·놓친 질문·비교표·결과 JSON 저장. 샘플 색인과 가짜 임베딩으로 끝까지 확인. 질문 세트의 정답이 비어 있어 실제 평가는 아직 못 돌림 |
 | `src/index/embedder.py` | 구현됨 (B). 가짜 모델 테스트 통과, 실제 bge-m3는 팀원 PC에서 `python -m src.index.embedder`로 확인(월세 질문 ↔ 청년월세 0.553 > 기초연금 0.422) |
 | `src/index/vector_store.py` | 구현됨 (B). Chroma + BM25, 임시 폴더·가짜 임베딩으로 테스트 통과. 실제 모델로 샘플 색인·검색 확인 |
 | `eval/metrics.py` | 구현됨 (B). Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`, 손으로 계산한 값과 경계 조건 테스트 통과 |
 | `src/retrieve/filters.py`, `hybrid.py` | 구현됨 (B). RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화. 가짜 임베딩 테스트 통과, 실제 모델·실제 데이터 품질은 미확인 |
-| `tests/` | 77개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소·검색 테스트는 skip되므로 전부 돌리려면 `pip install -r requirements.txt` |
+| `tests/` | 92개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소·검색 테스트는 skip되므로 전부 돌리려면 `pip install -r requirements.txt` |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |

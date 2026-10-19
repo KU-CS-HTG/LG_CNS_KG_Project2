@@ -74,6 +74,14 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `filters.apply_filters`(파이썬)와 `vector_store.build_where`(저장소) 규칙을 따로 두고 일치 테스트 | 저장소 안에서 거르는 것이 빠르지만, Baseline 결과나 후처리는 이미 꺼낸 목록을 거른다. 두 곳의 규칙이 어긋나지 않도록 샘플 데이터에서 결과가 같은지 매개변수 테스트로 확인한다. |
 | `test_vector_store`, 테스트용 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 | 임시 폴더와 글자 2-gram 해시 가짜 임베딩으로 실제 Chroma 동작(upsert·삭제·필터·BM25 갱신)을 모델 없이 검증. `test_retrieval`도 같은 픽스처를 쓴다. |
 | `metrics`: 정답 없는 질문은 계산에서 제외, 평가할 질문이 없거나 질문 수가 안 맞거나 k<1이면 ValueError, 같은 id가 중복되면 처음 자리만 셈, `no_evidence_rate`·`evaluate`·`check_targets` 제공 | 정답이 없는 질문(근거 없음)은 Hit Rate·Recall·MRR이 정의되지 않으므로 분모에서 빼야 지표가 왜곡되지 않는다. 조용히 0을 돌려주면 잘못된 입력(질문·정답 개수 불일치)을 못 잡으므로 오류로 알린다. 근거 없음 질문이 관련 없는 제도를 내보내지 않는지는 `no_evidence_rate`로 따로 보고, 관련도 하한선을 정할 때 쓴다. `evaluate`는 K=3·5·10을 한 번에 계산해 `run_eval`이 쓰기 쉽다. |
+| `run_eval`: 검색 함수를 주입(`SearchFn`)하고 `run_experiment`·`format_report`·`comparison_table`·`save_result`로 분리 | 집계·출력·저장을 검색 구현과 떼어 놓아 가짜 검색 함수로 계산을 검증할 수 있다(실제 색인·모델 없이). `main`은 이를 묶는 얇은 껍데기. |
+| 질문에 `filters`(정답 조건)를 직접 적음 | 검색 평가에 LLM 조건 추출의 오류가 섞이지 않게 한다(조건 추출은 C가 따로 평가). `hybrid_filter` 실험에서만 쓴다. |
+| 질문 세 종류(평가 대상 / 근거 없음 / 정답 미지정)와 정답이 하나도 없을 때의 오류 | 정답 미지정 질문이 지표를 조용히 낮추지 않게 제외하고 개수를 경고한다. 정답이 전혀 없으면 0점이 아니라 "정답을 채우세요"라고 알려 준다. |
+| 질문마다 가장 큰 K(10)만큼 가져와 K=3·5·10을 한 번에 계산 | 실험마다 검색을 세 번 돌리지 않는다. `--k`는 표에서 강조할 K. |
+| `--today` 옵션, 결과 JSON에 설정(모델·RRF·기준일) 저장 | 신청기한 때문에 날짜가 바뀌면 결과가 달라지므로 기준일을 고정해 재현하고, 나중에 실험을 비교할 때 어떤 설정이었는지 남긴다. |
+| 놓친 질문 목록(정답 순위·실제 검색 결과)과 범주별 표 | 점수만으로는 원인을 알 수 없다. 약한 질문 유형과 실패 사례를 바로 보여 분할·필터·임베딩·BM25 중 무엇을 손볼지 정하는 근거가 된다. |
+| `--experiment all`이 기획서 9.4용 마크다운 표를 출력, 구현 전 baseline은 건너뜀 | 비교 실험 결과를 9.4에 그대로 옮겨 적도록 한다. |
+| `test_run_eval`(질문 세트 파일 형식 점검 포함) | 가짜 검색으로 집계를, 샘플 색인으로 `main` 전체 흐름을 검증한다. 팀이 `questions.jsonl`을 고친 뒤 id 중복·필드 누락·근거 없음 질문의 정답 여부가 깨지지 않았는지도 확인한다. |
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
@@ -125,8 +133,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델로 샘플 색인·검색 확인 |
 | `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
+| `eval/run_eval.py` | 구현됨 (모드별 실험·비교표·결과 JSON). 샘플 색인·가짜 임베딩으로 확인, 실제 평가는 질문 세트 정답이 필요 |
 | `eval/metrics.py` | 구현됨 (Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`) |
-| `tests/` | 77개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
+| `tests/` | 92개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -144,3 +153,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - ⑤ 검색 구현(`retrieve/filters.py`, `retrieve/hybrid.py`): RRF 하이브리드, 서비스당 1개, `search_with_info`, 분야→지역→연령 순 완화, `python -m src.retrieve.hybrid`. `config`에 `HYBRID_CANDIDATES`·`RRF_K`·`HYBRID_WEIGHTS` 추가. `test_retrieval`·`test_filters` 확장(RRF, 모드, 완화, 파이썬/저장소 필터 일치).
 - 검색 지표 구현(`eval/metrics.py`): `hit_rate_at_k`, `recall_at_k`, `mrr`, `no_evidence_rate`, `evaluate`, `check_targets`. `test_metrics`에 경계 조건(정답 없는 질문, 중복, k 범위, 오류) 추가.
 - `python -m eval.metrics` 자체 점검 추가(손계산 예시와 비교, 불일치 시 종료 코드 1).
+- 검색 평가 실행 구현(`eval/run_eval.py`): 모드별 실험, K=3/5/10, 범주별·놓친 질문·비교표, 결과 JSON 저장, `--experiment all`, `--today`, `--questions`, `--out-dir`, `--no-save`. `eval/questions.jsonl`에 `filters` 필드 추가(q03). `tests/test_run_eval.py` 추가.
