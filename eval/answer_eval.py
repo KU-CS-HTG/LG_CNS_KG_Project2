@@ -3,15 +3,28 @@
 근거 없음 질문(expect_no_answer)은 '모른다'고 답하고 추측하지 않았는지를 Correctness로 본다.
 
 - evidence_text: 답변 생성에 넘긴 근거 조각의 본문을 이어 붙인 문자열 (예: "\\n".join(c.text for c in chunks)).
-- 점수는 모두 0~1. 질문별 점수를 run_eval(B)이 평균 내어 9.4에 기록한다.
-- Citation Accuracy는 코드로, Faithfulness와 (근거 있는 질문의) Correctness는 LLM 판정(gpt-4o-mini)으로 채점한다.
-  생성과 같은 모델이 채점하므로 점수가 후하게 나올 수 있다 (한계로 9.4에 적는다).
+- 점수는 모두 0~1. Citation Accuracy는 코드로, Faithfulness와 (근거 있는 질문의) Correctness는 LLM 판정(gpt-4o-mini)으로
+  채점한다. 생성과 같은 모델이 채점하므로 점수가 후하게 나올 수 있다 (한계로 9.4에 적는다).
+
+실행 (run_eval.py 주석: "답변 평가는 C가 eval/answer_eval.py와 연결한다"):
+    python -m eval.answer_eval                       # eval/questions.jsonl 전체, 결과를 eval/results/에 저장
+    python -m eval.answer_eval --limit 5 --no-save   # 앞 5문항만 빠르게
+전제: 검색 색인이 있어야 한다 (python -m src.index.vector_store ...). 질문 하나에 LLM을 최대 4번 부른다
+(조건 추출·생성·Faithfulness·Correctness). 답변 평가는 정답 서비스(relevant_service_ids)가 없어도 expected_answer로 채점한다.
 """
 from __future__ import annotations
 
+import argparse
+import json
+from datetime import datetime
+from pathlib import Path
+
+from src.common import config
 from src.common.schema import Answer
-from src.generate import condition_extractor
+from src.generate import condition_extractor, generator
+from src.generate import evidence as evidence_mod
 from src.generate.generator import GENERIC_REASON, NOT_IN_EVIDENCE
+from src.retrieve import hybrid
 
 FAITHFULNESS_PROMPT = """너는 RAG 답변 채점자다. [근거]와 번호가 붙은 [주장]들이 주어진다.
 각 주장이 [근거]만으로 뒷받침되는지 판정해 JSON 객체 하나를 출력한다.
@@ -93,3 +106,98 @@ def _claims(answer: Answer) -> list[str]:
 
 def _squash(s: str) -> str:
     return "".join((s or "").split())
+
+
+# --- 실행 (질문 세트 전체 채점) ---------------------------------------------------
+def answer_with_evidence(question: str) -> tuple[Answer, str]:
+    """generator.answer_question과 같은 단계를 밟되, 생성에 넘긴 근거(evidence_text)도 함께 돌려준다.
+    (answer_question은 Answer만 돌려주므로 Faithfulness·Citation Accuracy 채점용으로 단계를 직접 부른다.)"""
+    conditions = condition_extractor.extract_conditions(question)
+    filters = condition_extractor.to_filters(conditions)
+    chunks = hybrid.search(question, filters, k=config.DEFAULT_TOP_K)
+    selected = evidence_mod.select_evidence(chunks)
+    answer = generator.generate_answer(question, selected)
+    return answer, "\n".join(c.text for cs in selected.values() for c in cs)
+
+
+def evaluate(questions: list[dict]) -> dict:
+    """질문마다 답변을 만들어 세 지표를 채점하고 평균을 낸다. 한 질문이 실패해도 나머지는 계속한다."""
+    rows = []
+    for q in questions:
+        row = {"id": q.get("id"), "question": q["question"], "expect_no_answer": bool(q.get("expect_no_answer"))}
+        try:
+            answer, ev_text = answer_with_evidence(q["question"])
+            row.update(
+                no_evidence=answer.no_evidence,
+                services=[r.service_name for r in answer.recommendations],
+                correctness=answer_correctness(answer, q),
+                faithfulness=faithfulness(answer, ev_text),
+                citation_accuracy=citation_accuracy(answer, ev_text),
+            )
+        except Exception as e:  # 네트워크·키 오류 등: 기록만 하고 평균에서 뺀다
+            row["error"] = f"{type(e).__name__}: {e}"
+        rows.append(row)
+
+    ok = [r for r in rows if "error" not in r]
+    mean = lambda key, rs=ok: round(sum(r[key] for r in rs) / len(rs), 4) if rs else None  # noqa: E731
+    return {
+        "experiment": "answer_eval",
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "config": {"model": config.GENERATION_MODEL, "k": config.DEFAULT_TOP_K},
+        "counts": {"total": len(rows), "scored": len(ok), "errors": len(rows) - len(ok)},
+        "metrics": {
+            "answer_correctness": mean("correctness"),
+            "faithfulness": mean("faithfulness"),
+            "citation_accuracy": mean("citation_accuracy"),
+            "no_answer_correctness": mean("correctness", [r for r in ok if r["expect_no_answer"]]),
+        },
+        "questions": rows,
+    }
+
+
+def format_report(result: dict) -> str:
+    m, cnt = result["metrics"], result["counts"]
+    fmt = lambda v: "-" if v is None else f"{v:.2f}"  # noqa: E731
+    lines = [f"=== 답변 평가 ({cnt['scored']}/{cnt['total']}문항 채점, 오류 {cnt['errors']}) ===",
+             f"Answer Correctness {fmt(m['answer_correctness'])}  |  Faithfulness {fmt(m['faithfulness'])}"
+             f"  |  Citation Accuracy {fmt(m['citation_accuracy'])}  |  근거 없음 질문 정확도 {fmt(m['no_answer_correctness'])}",
+             "", "낮은 점수 (Correctness < 1 또는 Faithfulness < 1):"]
+    low = [r for r in result["questions"] if "error" in r or r["correctness"] < 1 or r["faithfulness"] < 1]
+    for r in low[:10]:
+        detail = r.get("error") or (f"C {r['correctness']:.1f} / F {r['faithfulness']:.2f} / 제도 {len(r['services'])}개"
+                                    + (" (근거 없음)" if r["no_evidence"] else ""))
+        lines.append(f"  {r['id']}  {r['question'][:40]}  ->  {detail}")
+    if not low:
+        lines.append("  없음")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> None:
+    from eval.run_eval import QUESTIONS_PATH, RESULTS_DIR, load_questions   # 질문 세트 형식·저장 위치는 B와 같게
+
+    ap = argparse.ArgumentParser(description="답변 평가 (Answer Correctness / Faithfulness / Citation Accuracy)")
+    ap.add_argument("--questions", default=str(QUESTIONS_PATH), help="질문 세트(jsonl)")
+    ap.add_argument("--limit", type=int, help="앞에서부터 N문항만")
+    ap.add_argument("--out-dir", default=str(RESULTS_DIR), help="결과 JSON 저장 폴더")
+    ap.add_argument("--no-save", action="store_true", help="결과 파일을 저장하지 않는다")
+    args = ap.parse_args(argv)
+
+    if not config.OPENAI_API_KEY:
+        raise SystemExit("OPENAI_API_KEY가 없습니다 (.env 확인).")
+    from src.index import vector_store
+    if vector_store.count() == 0:
+        raise SystemExit("색인이 비어 있습니다. 먼저: python -m src.index.vector_store --sample  (또는 A의 파이프라인 결과 색인)")
+
+    questions = load_questions(args.questions)[: args.limit]
+    result = evaluate(questions)
+    print(format_report(result))
+    if not args.no_save:
+        out = Path(args.out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"answer_eval_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n  저장: {path}")
+
+
+if __name__ == "__main__":
+    main()

@@ -27,6 +27,8 @@ log = logging.getLogger(__name__)
 NOT_IN_EVIDENCE = "자료에 없음 (상세 링크에서 확인)"
 NO_MATCH_MESSAGE = "질문하신 조건에 맞는 제도를 수집된 자료에서 찾지 못했습니다."
 GENERIC_REASON = "질문하신 내용과 관련된 제도로 찾았어요. 자격은 아래 조건을 확인해 주세요."
+MAX_SAID_CHARS = 20   # 이유에 쓰는 질문 구절 최대 길이(공백 제외). 질문 문장을 통째로 옮기는 것을 막는다
+_AGE_RE = re.compile(r"\d+\s*(세|살)")
 
 # 해당 여부. '해당 없음'(기획서 9.1: 연령·거주지가 맞지 않는 제도는 제외)과 '관련 없음'은 후보에서 뺀다.
 # '관련 없음'이 필요한 이유: 검색은 관련이 없어도 Top-K를 채워 돌려주므로, 질문이 묻는 것이 근거에 없으면
@@ -52,8 +54,11 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 - 사용자가 밝히지 않은 사실(소득 수준, 가구 구성, 주택 소유 등)을 사용자가 충족한다고 쓰지 않는다.
 - 사용자가 소득·재산 등을 밝혔더라도, [근거]에 그 기준이 금액이나 비율로 적혀 있지 않으면(기준 이하, 중위소득 등)
   충족 여부를 판단하지 않는다. 그 조건은 needs_check에 남기고 applicable은 "{LIKELY}"가 될 수 없다.
-- matches에는 사용자 질문의 구절과 근거의 대상 조건이 서로 맞는 쌍만 넣는다.
+- matches에는 사용자 질문의 구절과 근거의 대상 조건이 서로 맞는 쌍만 넣는다. applicable이 "{UNCLEAR}"인 제도도
+  맞는 점이 하나라도 있으면 matches를 채운다 (확인할 조건이 남아 있어도 맞는 점은 맞는 점이다).
   said는 사용자 질문 원문에서 글자 그대로 복사한 짧은 구절이어야 한다 (바꿔 쓰거나 근거의 표현을 넣지 않는다).
+  said와 condition은 같은 종류의 조건끼리만 짝짓는다: 나이는 나이, 거주지는 거주지, 신분·상황(학생·구직·혼인 등)은
+  신분·상황끼리. 한쪽에서 다른 종류를 추론해 짝짓지 않는다.
   condition은 근거 원문에서 글자 그대로 복사한 짧은 구절이다. 맞는 쌍이 없으면 빈 배열이다.
 - 소득·재산·가구처럼 질문에 없는 조건은 matches에 넣지 말고 needs_check로 보낸다.
 - needs_check에는 사용자가 밝히지 않았거나 근거로 판단할 수 없는 자격 조건을 짧은 명사구로 모두 적는다.
@@ -185,7 +190,9 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
         if not isinstance(m, dict):
             continue
         s, c = _str(m.get("said")).strip("‘’'\""), _str(m.get("condition")).strip("‘’'\"")
-        if s and squash(s) in q and s not in said:
+        if _AGE_RE.search(c) and not re.search(r"\d", s):
+            continue                      # 나이 조건은 나이로만 맞춘다 ('대학생' -> '만 19~34세' 같은 추론 차단)
+        if s and len(squash(s)) <= MAX_SAID_CHARS and squash(s) in q and s not in said:
             said.append(s)
             if c and squash(c) in body and c not in conds:
                 conds.append(c)
