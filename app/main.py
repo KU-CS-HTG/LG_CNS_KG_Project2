@@ -29,6 +29,7 @@ EXAMPLES = [
     "대학생인데 학자금 대출 이자가 부담돼요",
     "회사를 그만두고 일자리를 찾고 있어요",
 ]
+DEMO_FIELD_BOOST = 2   # 미리보기 검색에서 관심 분야가 맞는 제도에 더하는 점수 (B의 FIELD_BOOST와 같은 역할)
 OFFICIAL_SITES = [("정부24 보조금24", "https://www.gov.kr/portal/rcvfvrSvc/main"), ("복지로", "https://www.bokjiro.go.kr")]
 
 CSS = """
@@ -145,24 +146,22 @@ def _sample_chunks() -> list[Chunk]:
 
 
 def _demo_search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]:
-    """미리보기용 간이 검색: 글자 2-gram 겹침 점수 + 지역·연령 소프트 필터. 상위 k개 서비스의 전체 항목을 돌려준다
-    (실제 B는 서비스당 조각 1개. 전체 항목은 C의 _expand_service가 합의 후 가져올 몫을 미리 보여 주는 것)."""
+    """미리보기용 간이 검색: 글자 2-gram 겹침 점수 + B와 같은 규칙. 상위 k개 서비스의 전체 항목을 돌려준다
+    (실제 B는 서비스당 조각 1개이고, 전체 항목은 C의 _expand_service가 get_service_chunks로 가져온다).
+    B 규칙(CLAUDE.md 인터페이스): 거르는 조건은 신청기한·지역·나이, 관심 분야는 거르지 않고 가산점."""
+    from src.retrieve import filters as rules
     grams = lambda s: {s[i:i + 2] for i in range(len(s) - 1)}  # noqa: E731
     q = grams(re.sub(r"\s+", "", query))
     by_service: dict[str, list[Chunk]] = {}
-    for c in _sample_chunks():
-        m = c.metadata
-        if m.get("deadline") and m["deadline"] < filters.get("today", "0000"):   # 신청기한 지난 제도 제외
-            continue
-        if filters.get("region") and m.get("region") not in (None, "", "전국", filters["region"]):
-            continue
-        age = filters.get("age")
-        if age is not None and ((m.get("age_min") or 0) > age or age > (m.get("age_max") or 200)):
-            continue
-        if filters.get("field") and m.get("field") and m["field"] != filters["field"]:   # B와 같은 소프트 필터
-            continue
+    for c in rules.apply_filters(_sample_chunks(), filters):      # 기한·지역·나이 (B와 같은 함수)
         by_service.setdefault(c.service_id, []).append(c)
-    scored = sorted(by_service.values(), key=lambda cs: -max(len(q & grams(re.sub(r"\s+", "", c.text))) for c in cs))
+
+    def score(cs: list[Chunk]) -> float:
+        overlap = max(len(q & grams(re.sub(r"\s+", "", c.text))) for c in cs)
+        boost = DEMO_FIELD_BOOST if rules.field_matches(cs[0].metadata.get("field"), filters.get("field")) else 0
+        return overlap + boost
+
+    scored = sorted(by_service.values(), key=lambda cs: -score(cs))
     return [c for cs in scored[:k] for c in cs]
 
 

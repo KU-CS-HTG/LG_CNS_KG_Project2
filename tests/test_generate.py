@@ -344,13 +344,14 @@ def test_reason_rejects_long_phrase_and_cross_type_age_match(monkeypatch):
 def test_relaxed_notice_when_b_dropped_filters(fake_conditions, monkeypatch):
     from src.retrieve import hybrid
     fake_conditions(CASES["sr1"])                                      # age 27, 서울, 주거, 구직
-    used = {"age": 27, "region": "서울", "situation": ["구직"], "today": "2026-10-19"}   # B가 field를 풀었다
+    used = {"age": 27, "field": "주거", "situation": ["구직"], "today": "2026-10-19"}   # B가 region을 풀었다
     monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
                         hybrid.SearchResult(list(CASES["sr1"]["results"]), [], used, True))
     _fake_llm(monkeypatch, RuntimeError("no llm"))
     answer = generator.answer_question(QUESTION_WITH_RESULTS)
     first = answer.text.splitlines()[0]
-    assert generator.RELAXED_MARK in first and "관심 분야(주거)" in first and "지역" not in first
+    assert generator.RELAXED_MARK in first and "지역(서울)" in first
+    assert "나이" not in first and "분야" not in first                   # 분야는 필터가 아니라 안내 대상이 아님
 
 
 def test_no_relaxed_notice_on_no_evidence(fake_conditions, monkeypatch):
@@ -362,10 +363,14 @@ def test_no_relaxed_notice_on_no_evidence(fake_conditions, monkeypatch):
     assert answer.no_evidence and generator.RELAXED_MARK not in answer.text   # 근거 없음이면 완화 안내는 붙이지 않음
 
 
-def test_relaxed_notice_with_real_b_search(indexed_sample, fake_conditions, monkeypatch):
-    """샘플에는 '문화' 분야가 없어 B가 실제로 field 조건을 풀고 다시 찾는다."""
-    fake_conditions({"conditions": {"field": "문화"}})
+def test_field_is_not_a_filter_with_real_b_search(indexed_sample, fake_conditions, monkeypatch):
+    """B 계약(PR #8): 관심 분야는 필터가 아니라 가산점. 월세 고민 + 구직 중이면 field가 '주거'여도
+    일자리 분야 제도(구직촉진수당·서울 청년수당)가 후보에서 빠지지 않고, 완화 안내도 붙지 않는다."""
+    fake_conditions(CASES["sr1"])                                      # field "주거", situation ["구직"]
     _fake_llm(monkeypatch, RuntimeError("no llm"))
-    answer = generator.answer_question("청년 지원 제도가 있나요?")
-    assert not answer.no_evidence and "관심 분야(문화)" in answer.text.splitlines()[0]
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    names = [r.service_name for r in answer.recommendations]
+    assert "청년월세 지원(서울)" in names
+    assert {"구직촉진수당", "서울 청년수당"} & set(names)              # 다른 분야 제도도 후보에 남는다
+    assert generator.RELAXED_MARK not in answer.text
 

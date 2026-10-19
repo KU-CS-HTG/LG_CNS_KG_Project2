@@ -274,7 +274,8 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     return answer, selected
 
 
-_RELAX_LABELS = {"field": "관심 분야", "region": "지역", "age": "나이"}
+# B가 결과가 없을 때 푸는 조건 (CLAUDE.md: 지역 -> 연령. 관심 분야는 필터가 아니라 가산점이라 풀지 않는다)
+_RELAX_LABELS = {"region": "지역", "age": "나이"}
 
 
 def _relaxed_notice(asked: dict, used: dict) -> str:
