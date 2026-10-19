@@ -1,4 +1,8 @@
-"""① 로드 - 보조금24 API 호출. 원본 응답은 data/raw/에 저장(커밋 금지)."""
+"""① 로드 - 보조금24 API 호출. 원본 응답은 data/raw/에 저장(커밋 금지).
+
+사용 엔드포인트: serviceList(목록), serviceDetail(상세), supportConditions(정형 지원조건).
+첨부 문서·이미지는 수집하지 않고 상세 링크로 대신한다 (기획서 7.1).
+"""
 from __future__ import annotations
 
 import json

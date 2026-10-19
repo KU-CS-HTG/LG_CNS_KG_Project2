@@ -23,14 +23,16 @@
 | 담당 | 단계 | 디렉터리 |
 |---|---|---|
 | A (데이터·색인) 담당자: | ① 로드, ② 분할, 메타데이터 설계, 정기 수집 | `src/ingest/` |
-| B (임베딩·검색) 담당자: | ③ 임베딩, ④ 벡터 저장소, ⑤ 검색, 정형 필터, 검색 평가 | `src/index/`, `src/retrieve/`, `eval/` |
-| C (생성·서비스) 담당자: | 조건 추출, ⑥ 생성, 인용 형식, UI, 답변 평가 | `src/generate/`, `app/` |
+| B (임베딩·검색) 담당자: | ③ 임베딩, ④ 벡터 저장소, ⑤ 검색, 정형 필터, Baseline, 검색 평가 | `src/index/`, `src/retrieve/`, `eval/metrics.py`·`eval/run_eval.py` |
+| C (생성·서비스) 담당자: | 조건 추출, 근거 선별, ⑥ 생성, 인용 형식, UI, 답변 평가 | `src/generate/`, `app/`, `eval/answer_eval.py` |
 - 평가 질문 세트(`eval/questions.jsonl`)와 8.3 기술 선택 기록은 전원이 함께 작성한다.
 
 ## 모듈 간 인터페이스 (제안 — 팀 합의 후 확정, 바꿀 때는 이 파일부터 고친다)
 - A → B: 조각 단위 레코드 `{chunk_id, service_id, service_name, section, text, metadata, detail_url}`
-- B → C: `search(query: str, filters: dict, k: int = 5) -> list[Chunk]`
-- C의 최종 출력: 답변 텍스트 + 근거 목록(서비스명, 소관기관, 근거 문구, 상세 링크)
+- C → B: `Filters`(나이·지역·분야·상황·기준일, 값이 없으면 키 생략)
+- B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용)
+- C의 최종 출력: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
+- 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
 
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.
@@ -52,9 +54,9 @@
 ## 자주 쓰는 명령
 ```
 pip install -r requirements.txt        # 설치 (.env.example을 .env로 복사 후 키 입력)
-python -m src.ingest.pipeline          # A: 수집·정제·분할
+python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
-python -m eval.run_eval                # 평가 실행
+python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
 ```
 (스켈레톤 단계라 대부분 `NotImplementedError`. 구현하면서 갱신할 것)
