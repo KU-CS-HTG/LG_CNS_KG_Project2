@@ -416,7 +416,16 @@ python -m eval.run_eval --experiment hybrid_filter --k 5
 python -m eval.run_eval --experiment all --today 2026-10-19       # 전체 비교표 (재현하려면 --today 고정)
 ```
 
-사전 조건: 색인이 있어야 하고(`python -m src.index.vector_store ...`), 질문 세트에 정답이 채워져 있어야 합니다. 정답이 하나도 없으면 "정답이 지정된 질문이 없습니다"라고 알려 주고 멈춥니다. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
+사전 조건: 색인이 있어야 하고(`python -m src.index.vector_store ...`), 질문 세트에 정답이 채워져 있어야 합니다. 정답이 하나도 없으면 "정답이 지정된 질문이 없습니다"라고 알려 주고 멈춥니다(실제 데이터가 들어오기 전에는 정상).
+
+**실제 데이터 전에 시험해 보기**: 샘플 색인과 샘플 질문(`tests/fixtures/sample_eval_questions.jsonl`, 정답이 샘플 `service_id`로 지정됨)으로 스크립트가 도는지 확인할 수 있습니다.
+
+```
+python -m src.index.vector_store --sample --full
+python -m eval.run_eval --experiment all --questions tests/fixtures/sample_eval_questions.jsonl --today 2026-10-19 --no-save
+```
+
+**실제 질문 세트의 정답 채우는 법**: A의 데이터가 색인된 뒤, 팀원이 질문마다 **수집 데이터를 직접 읽어** 답이 되는 제도의 `service_id`를 `relevant_service_ids`에 넣고 `todo`를 지웁니다. 검색 결과를 그대로 베껴 정답으로 쓰면 평가가 순환(검색이 맞춘 것만 정답)이 되므로 쓰지 마세요. 근거가 없어야 하는 질문은 `relevant_service_ids`를 비우고 `expect_no_answer`를 `true`로 둡니다. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
 
 출력 예 (예상 형식, 수치는 예시):
 

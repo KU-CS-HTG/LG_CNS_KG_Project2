@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             raise SystemExit(f"{name}은 아직 구현되지 않았습니다 (src/retrieve/baseline.py)")
         except ValueError as e:
-            raise SystemExit(str(e))
+            raise SystemExit(f"{e}\n샘플로 먼저 시험하려면: python -m eval.run_eval --experiment all --questions tests/fixtures/sample_eval_questions.jsonl --no-save")
         print(format_report(result) + "\n")
         if not args.no_save:
             print(f"  저장: {save_result(result, args.out_dir)}\n")

@@ -154,3 +154,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - 검색 지표 구현(`eval/metrics.py`): `hit_rate_at_k`, `recall_at_k`, `mrr`, `no_evidence_rate`, `evaluate`, `check_targets`. `test_metrics`에 경계 조건(정답 없는 질문, 중복, k 범위, 오류) 추가.
 - `python -m eval.metrics` 자체 점검 추가(손계산 예시와 비교, 불일치 시 종료 코드 1).
 - 검색 평가 실행 구현(`eval/run_eval.py`): 모드별 실험, K=3/5/10, 범주별·놓친 질문·비교표, 결과 JSON 저장, `--experiment all`, `--today`, `--questions`, `--out-dir`, `--no-save`. `eval/questions.jsonl`에 `filters` 필드 추가(q03). `tests/test_run_eval.py` 추가.
+- `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.

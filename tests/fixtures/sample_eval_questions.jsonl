@@ -1,0 +1,4 @@
+{"id": "t1", "category": "상황형", "question": "서울에 사는 27살 청년인데 월세 지원 받을 수 있나요", "relevant_service_ids": ["SAMPLE001"], "filters": {"age": 27, "region": "서울"}, "expect_no_answer": false, "expected_answer": "서울 청년월세 지원을 안내한다 (샘플 데이터)"}
+{"id": "t2", "category": "제도명 아는 질문", "question": "국민내일배움카드", "relevant_service_ids": ["SAMPLE012"], "expect_no_answer": false, "expected_answer": "국민내일배움카드 안내 (샘플 데이터)"}
+{"id": "t3", "category": "근거 없음", "question": "zzzzzz", "relevant_service_ids": [], "expect_no_answer": true, "expected_answer": "근거 없음"}
+{"id": "t4", "category": "상황형", "question": "정답 미지정 예시 질문", "relevant_service_ids": [], "expect_no_answer": false, "todo": "정답을 지정하지 않은 질문은 평가에서 제외된다는 것을 보여 주는 예시"}

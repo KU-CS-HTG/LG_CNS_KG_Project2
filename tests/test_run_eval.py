@@ -1,5 +1,6 @@
 """B: eval/run_eval.py. 가짜 검색 함수로 집계를 검증하고, 샘플 색인(가짜 임베딩)으로 끝까지 돌려 본다."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -7,6 +8,7 @@ from eval import run_eval
 from eval.metrics import TARGETS
 
 TODAY = "2026-10-19"
+SAMPLE_QUESTIONS_PATH = Path(__file__).parent / "fixtures" / "sample_eval_questions.jsonl"
 
 QUESTIONS = [
     {"id": "a", "category": "상황형", "question": "qa", "relevant_service_ids": ["S1"]},
@@ -121,13 +123,7 @@ def _write_questions(tmp_path, rows):
     return path
 
 
-SAMPLE_QUESTIONS = [
-    {"id": "t1", "category": "상황형", "question": "서울에 사는 27살 청년인데 월세 지원 받을 수 있나요",
-     "relevant_service_ids": ["SAMPLE001"], "filters": {"age": 27, "region": "서울"}, "expect_no_answer": False},
-    {"id": "t2", "category": "제도명", "question": "국민내일배움카드", "relevant_service_ids": ["SAMPLE012"], "expect_no_answer": False},
-    {"id": "t3", "category": "근거 없음", "question": "zzzzzz", "relevant_service_ids": [], "expect_no_answer": True},
-    {"id": "t4", "category": "상황형", "question": "정답 미지정", "relevant_service_ids": [], "expect_no_answer": False, "todo": "x"},
-]
+SAMPLE_QUESTIONS = run_eval.load_questions(SAMPLE_QUESTIONS_PATH)
 
 
 def test_main_all_experiments(indexed_sample, tmp_path, capsys):
