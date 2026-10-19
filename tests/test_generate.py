@@ -320,3 +320,15 @@ def test_answer_eval_runner(fake_search, fake_conditions, monkeypatch):
     assert result["counts"] == {"total": 1, "scored": 1, "errors": 0}
     assert result["metrics"]["citation_accuracy"] == 1.0 and result["metrics"]["answer_correctness"] == 1.0
     assert "답변 평가" in answer_eval.format_report(result)
+
+
+def test_reason_rejects_long_phrase_and_cross_type_age_match(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]                                             # 청년월세(서울): '만 19~34세 무주택 청년'
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "확인 필요", "matches": [
+        {"said": QUESTION_WITH_RESULTS, "condition": "무주택 청년"},     # 질문 문장 통째 -> 버림
+        {"said": "취업준비생", "condition": "만 19~34세"},              # 나이 조건에 나이 아닌 구절 -> 버림
+        {"said": "27살", "condition": "만 19~34세"},                    # 나이끼리 -> 인정
+    ]}]})
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
+    assert "‘27살’" in rec.reason and "취업준비생" not in rec.reason and "받을 수 있는" not in rec.reason
