@@ -67,6 +67,17 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
 
+### 3.1 데이터 범위: 청년층 우선
+
+| 결정 | 이유·영향 |
+|---|---|
+| 보조금24 전체(약 1만 건) 중 **청년 대상만** DB·색인에 적재 | 프로젝트를 청년층 기준으로 진행하기로 했다. 범위를 줄이면 색인 규모·평가 질문·정답 지정 부담이 줄고, 비슷한 제도가 많은 문제(기획서 7.1)도 완화된다. |
+| 범위 판정을 `ingest.store.is_youth_service` 한 곳에 두고 기준값은 `config.YOUTH_AGE_RANGE`, `YOUTH_KEYWORDS`로 분리 | 대상을 넓히거나(신혼·양육·노인 등) 기준을 바꿀 때 한 곳만 고치면 된다. 청년 나이 정의(만 19~34세 vs 지자체별 최대 39세)와 판정 방법은 **팀 합의 필요**라 제안값이다. |
+| 범위 밖 질문은 별도 분기 없이 기존 '근거 없음' 경로로 처리 | 색인에 근거가 없으면 `no_evidence`로 모른다고 답하고 담당 기관을 안내하므로 새 규칙이 필요 없다. 안내 문구를 청년 전용으로 다듬을지는 C가 결정한다. |
+| 샘플 데이터에는 청년이 아닌 제도를 일부러 포함 | B의 연령 필터가 청년 아닌 제도를 걸러내는지 시험하는 부정 사례. |
+
+기획서 8.3 기술 선택 기록에 옮길 때의 예: 선택/변경 항목 "데이터 범위", 발견한 문제 "전체 약 1만 건은 유사 제도가 많고 평가 정답 지정 부담이 큼", 선택 이유 "청년 대상으로 한정(연령 겹침 또는 청년 키워드)", 결과 "(수집 후 건수·검색 성능 기록)".
+
 ## 4. 데이터 흐름
 
 오프라인(문서 변경 시, 기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
@@ -102,3 +113,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - `README.md`에 단계별 입출력 예시(§2.1)와 단계 표(오프라인/온라인 분리) 추가. 구조 변경 없음.
 - `README.md` §2.2 추가: A→B, C→B, B→C 인계 데이터를 한눈에 보는 도식·예시·상호 보장 사항. 구조 변경 없음. (B→C 결과에 한 서비스의 여러 항목이 필요할 때의 조회 방식은 B·C 합의 사항으로 남김)
 - C용 테스트 기반 추가: `tests/fixtures/sample_search_results.json`, `fake_search`·`fake_conditions`, `tests/test_generate.py`. `generator.py`에 모듈 속성 호출 규칙 주석 추가. README 8장 '테스트'를 B용/C용으로 나눔.
+- 데이터 범위를 청년층으로 한정(§3.1): `config.YOUTH_AGE_RANGE`·`YOUTH_KEYWORDS`, `ingest.store.is_youth_service`(스켈레톤), `pipeline`에 청년 필터 단계 명시. README §1.1 추가, 2.1 예시 수치를 범위에 맞게 조정, §2.2·테스트 절에 상호 링크.

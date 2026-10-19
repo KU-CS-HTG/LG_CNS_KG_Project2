@@ -18,6 +18,16 @@ def clean_service(raw: dict, conditions: dict | None = None) -> dict:
     raise NotImplementedError
 
 
+def is_youth_service(service: dict) -> bool:
+    """청년 대상 서비스인지 판정 (데이터 범위, README 1.1).
+
+    제안 기준(팀 합의 필요): 지원조건의 연령 범위가 config.YOUTH_AGE_RANGE와 겹치거나,
+    서비스명·지원대상·선정기준에 config.YOUTH_KEYWORDS가 들어 있으면 청년 대상으로 본다.
+    연령 정보가 없고 키워드도 없으면 제외한다. 범위에서 빠진 서비스는 DB·색인에 넣지 않는다.
+    """
+    raise NotImplementedError
+
+
 def build_metadata(service: dict) -> Metadata:
     raise NotImplementedError
 

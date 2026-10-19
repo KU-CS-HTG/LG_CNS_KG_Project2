@@ -22,3 +22,7 @@ GENERATION_MODEL = "gpt-4o-mini"
 DEFAULT_TOP_K = 5                # 평가에서 3 / 5 / 10 비교
 MAX_RECOMMENDATIONS = 5          # 답변에 담는 제도 수 상한 (3~5개)
 MAX_CHUNK_CHARS = 1000           # 긴 항목 Recursive 분할 기준 (수집 후 길이 측정해 조정)
+
+# 데이터 범위: 청년층 (README 1.1). 아래 값은 제안이며 팀 합의 후 확정한다.
+YOUTH_AGE_RANGE = (19, 39)       # 청년기본법은 만 19~34세, 지자체 조례는 만 18~39세까지 다양 -> 수집은 넓게
+YOUTH_KEYWORDS = ["청년", "대학생", "대학원생", "사회초년생", "취업준비", "미취업", "구직"]
