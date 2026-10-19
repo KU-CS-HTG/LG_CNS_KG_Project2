@@ -137,8 +137,13 @@ DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니�
 
 ```
 입력: ["청년월세 지원(서울)\n서울에 거주하며 ...", "청년월세 지원(서울)\n부모와 따로 ..."]
-출력: [[0.012, -0.034, 0.101, ... (1024개)], [0.008, -0.029, 0.095, ...]]   # list[list[float]]
+출력: [[0.012, -0.034, 0.101, ... (1024개)], [0.008, -0.029, 0.095, ...]]   # list[list[float]], 각 벡터는 길이 1로 정규화됨
 ```
+
+- 질문은 `embed_query("월세가 부담돼요")`로 임베딩합니다(벡터 1개). `embed_texts(texts, kind="query")`와 같습니다.
+- 벡터는 항상 길이 1로 정규화되므로 **내적 = 코사인 유사도**입니다. 벡터 저장소는 어느 쪽으로 검색해도 됩니다.
+- multilingual-e5로 바꾸면 접두(`query: `/`passage: `)를 모듈이 알아서 붙입니다. 호출하는 쪽은 `kind`만 맞게 넘기면 됩니다.
+- 모델은 처음 부를 때 한 번만 불러옵니다(첫 실행은 다운로드로 오래 걸림). `EMBEDDING_MODEL`, `EMBEDDING_DEVICE`, `EMBEDDING_BATCH_SIZE`는 `.env`/`config.py`에서 바꿉니다.
 
 #### ④ 벡터 저장소 — `vector_store.build_index(chunks)` / 조회
 
@@ -377,6 +382,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 pip install -r requirements.txt        # 설치
 cp .env.example .env                   # 키 입력: GOV24_API_KEY(Decoding 키), OPENAI_API_KEY
 python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
+python -m src.index.embedder           # B: 임베딩 모델 동작 확인 (첫 실행 시 모델 약 2.2GB 다운로드)
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
@@ -441,5 +447,6 @@ def test_예시(fake_search, fake_conditions):
 |---|---|
 | `src/ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 샘플 데이터 검증 4개 통과, 나머지 23개는 구현 전(또는 OPENAI_API_KEY 없음)이라 skip |
+| `src/index/embedder.py` | 구현됨 (B). 가짜 모델 테스트 통과. **실제 bge-m3로는 이 환경에서 못 돌려 봄** — 본인 PC에서 `python -m src.index.embedder`로 확인 필요 |
+| `tests/` | 12개 통과(샘플 데이터 검증 4 + 임베딩 8), 24개는 구현 전·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |

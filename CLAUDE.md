@@ -56,6 +56,7 @@
 ```
 pip install -r requirements.txt        # 설치 (.env.example을 .env로 복사 후 키 입력)
 python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
+python -m src.index.embedder           # B: 임베딩 모델 동작 확인 (첫 실행 시 모델 다운로드)
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)

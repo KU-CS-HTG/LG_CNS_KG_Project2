@@ -18,6 +18,9 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # 사전기획서 8.1 초기 설계값 (실험으로 바뀌면 8.3에 기록하고 여기를 고친다)
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")  # 자원 부족 시 multilingual-e5
+EMBEDDING_DEVICE = os.environ.get("EMBEDDING_DEVICE") or None   # None이면 자동(cuda > mps > cpu)
+EMBEDDING_BATCH_SIZE = 32        # 메모리가 부족하면 줄인다
+EMBEDDING_MAX_SEQ_LENGTH = 512   # 조각은 MAX_CHUNK_CHARS(1000자) 이내라 512 토큰이면 대부분 충분 (bge-m3는 최대 8192)
 GENERATION_MODEL = "gpt-4o-mini"
 DEFAULT_TOP_K = 5                # 평가에서 3 / 5 / 10 비교
 MAX_RECOMMENDATIONS = 5          # 답변에 담는 제도 수 상한 (3~5개)
