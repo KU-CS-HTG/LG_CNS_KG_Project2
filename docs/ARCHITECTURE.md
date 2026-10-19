@@ -135,7 +135,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `eval/run_eval.py` | 구현됨 (모드별 실험·비교표·결과 JSON). 샘플 색인·가짜 임베딩으로 확인, 실제 평가는 질문 세트 정답이 필요 |
 | `eval/metrics.py` | 구현됨 (Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`) |
-| `tests/` | 92개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
+| `tests/` | 94개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -155,3 +155,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - `python -m eval.metrics` 자체 점검 추가(손계산 예시와 비교, 불일치 시 종료 코드 1).
 - 검색 평가 실행 구현(`eval/run_eval.py`): 모드별 실험, K=3/5/10, 범주별·놓친 질문·비교표, 결과 JSON 저장, `--experiment all`, `--today`, `--questions`, `--out-dir`, `--no-save`. `eval/questions.jsonl`에 `filters` 필드 추가(q03). `tests/test_run_eval.py` 추가.
 - `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.
+- `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.

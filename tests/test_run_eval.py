@@ -116,6 +116,21 @@ def test_repo_questions_file_is_valid():
             assert not q["relevant_service_ids"], f"{q['id']}: 근거 없음 질문에 정답이 있음"
 
 
+def test_repo_questions_every_item_has_a_state():
+    """질문마다 정답이 있거나, 근거 없음이거나, 정답을 정해야 한다는 todo가 있어야 한다 (방치된 질문 방지)."""
+    for q in run_eval.load_questions():
+        assert q["relevant_service_ids"] or q["expect_no_answer"] or q.get("todo"), f"{q['id']}: 정답·근거없음·todo 중 하나가 필요"
+
+
+def test_repo_questions_cover_categories():
+    questions = run_eval.load_questions()
+    assert len(questions) >= 30                                       # 기획서 9.1: 30개 내외
+    cats = {q["category"] for q in questions}
+    assert {"상황형", "제도명 아는 질문", "지역·연령 조건", "기한 지난 제도", "근거 없음"} <= cats
+    assert any(q["expect_no_answer"] for q in questions)
+    assert sum(q["category"] == "상황형" for q in questions) >= len(questions) / 2   # 상황형 중심
+
+
 # --- 끝까지 (색인 필요) -----------------------------------------------------------
 def _write_questions(tmp_path, rows):
     path = tmp_path / "q.jsonl"
