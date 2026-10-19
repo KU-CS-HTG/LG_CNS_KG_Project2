@@ -143,7 +143,7 @@ def build_where(filters: Filters) -> dict | None:
 
     - age: 연령 하한 <= 나이 <= 연령 상한 (한쪽이라도 비어 있으면 그쪽은 통과)
     - region: 사용자 지역, "전국", 지역 값 없음 중 하나
-    - field: 사용자 관심 분야 또는 분야 값 없음
+    - field·situation: 필터로 쓰지 않는다 (자격이 아니라 관심사. 분야는 hybrid.search가 가산점으로 반영한다)
     - today: 이 날짜 이후까지 신청 가능한 제도만 (없으면 오늘). situation은 필터로 쓰지 않는다(질문 문장에 이미 담겨 검색에 반영됨).
     """
     conds: list[dict] = []
@@ -152,8 +152,6 @@ def build_where(filters: Filters) -> dict | None:
         conds += [{"age_min": {"$lte": age}}, {"age_max": {"$gte": age}}]
     if filters.get("region"):
         conds.append({"region": {"$in": [filters["region"], NATIONWIDE, ""]}})
-    if filters.get("field"):
-        conds.append({"field": {"$in": [filters["field"], ""]}})
     conds.append({"deadline_int": {"$gte": _date_int(filters.get("today") or date.today().isoformat())}})
     return conds[0] if len(conds) == 1 else {"$and": conds}
 

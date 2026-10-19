@@ -3,6 +3,8 @@
 - 값이 비어 있는 메타데이터는 제외하지 않고 후보에 남긴다 ('확인 필요'로 표시되도록 C에 전달).
 - 신청기한이 지난 제도는 항상 제외한다.
 - 결과가 없으면 relax()로 필터를 단계적으로 풀어 다시 검색한다.
+- 관심 분야(field)와 상황(situation)은 **필터가 아니다**. 자격이 아니라 관심사라서 거르지 않고(분야 이름이 데이터와 달라도
+  제도가 사라지지 않게), 분야는 hybrid.search에서 맞는 제도에 가산점으로만 쓴다 (`field_matches`).
 
 벡터 저장소의 `vector_store.build_where`(저장소 안에서 거르는 쪽)와 규칙이 같다. 여기 `apply_filters`는
 이미 꺼낸 Chunk 목록을 파이썬에서 거를 때(Baseline 결과, 후처리, 테스트) 쓴다. 두 규칙은 항상 같아야 한다
@@ -18,8 +20,8 @@ from datetime import date
 from src.common.schema import Chunk, Filters
 
 NATIONWIDE = "전국"
-# 완화 순서: 덜 중요한 조건부터 푼다 (관심 분야 -> 지역 -> 연령). 신청기한(today)은 풀지 않는다.
-RELAX_ORDER = ("field", "region", "age")
+# 완화 순서: 지역 -> 연령. 신청기한(today)은 풀지 않는다. field·situation은 필터가 아니므로 풀 대상이 아니다.
+RELAX_ORDER = ("region", "age")
 
 
 def _date_key(value: str | None) -> int | None:
@@ -49,10 +51,7 @@ def _passes(chunk: Chunk, filters: Filters) -> bool:
     region = filters.get("region")
     if region and md.get("region") and md["region"] not in (region, NATIONWIDE):
         return False
-    field = filters.get("field")
-    if field and md.get("field") and md["field"] != field:
-        return False
-    return True
+    return True                       # field·situation은 거르지 않는다 (가산점·참고용)
 
 
 def apply_filters(chunks: list[Chunk], filters: Filters) -> list[Chunk]:
@@ -60,16 +59,23 @@ def apply_filters(chunks: list[Chunk], filters: Filters) -> list[Chunk]:
     return [c for c in chunks if _passes(c, filters)]
 
 
-def relax(filters: Filters) -> Filters:
-    """한 단계 완화: 관심 분야 -> 지역 -> 연령 순으로 하나씩 제거한다.
+def field_matches(chunk_field: str | None, wanted: str | None) -> bool:
+    """제도의 분야가 사용자의 관심 분야와 맞는가 (가산점 판정용). 한쪽이 다른 쪽을 포함하면 맞는 것으로 본다.
+    예: wanted "주거" / 제도 분야 "주거·자립" -> True. 어느 한쪽이 비어 있으면 False (가산점 없음, 거르지는 않음)."""
+    if not chunk_field or not wanted:
+        return False
+    return wanted in chunk_field or chunk_field in wanted
 
-    세 조건이 모두 없으면 situation(검색에는 쓰이지 않음)을 제거하고, 더 풀 것이 없으면 같은 필터를 돌려준다.
-    신청기한(today)은 항상 유지한다. 호출하는 쪽은 결과가 입력과 같으면 더 풀 수 없다고 보고 멈춘다.
+
+def relax(filters: Filters) -> Filters:
+    """한 단계 완화: 지역 -> 연령 순으로 하나씩 제거한다. 신청기한(today)은 항상 유지한다.
+
+    field·situation은 필터가 아니므로 건드리지 않는다 (그대로 남겨, 호출하는 쪽이 '어떤 조건을 풀었는지'를
+    입력과 비교하면 지역·연령만 나온다). 더 풀 것이 없으면 같은 필터를 돌려주므로, 결과가 입력과 같으면 멈춘다.
     """
     relaxed = dict(filters)
     for key in RELAX_ORDER:
         if key in relaxed:
             del relaxed[key]
             return relaxed  # type: ignore[return-value]
-    relaxed.pop("situation", None)
     return relaxed  # type: ignore[return-value]

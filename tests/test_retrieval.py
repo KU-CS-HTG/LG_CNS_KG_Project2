@@ -80,10 +80,40 @@ def test_modes_without_filter_keep_everything(indexed_sample):
 
 
 def test_filter_relaxed_when_no_result(indexed_sample):
-    """분야 조건이 너무 엄격해 결과가 없으면 분야를 풀어 다시 찾는다."""
-    result = hybrid.search_with_info("월세 지원", {"field": "없는분야", "region": "서울", "today": "2026-10-19"})
-    assert result.chunks and result.relaxed
-    assert "field" not in result.filters_used and result.filters_used["region"] == "서울"
+    """지역 조건에 맞는 제도가 하나도 없으면 지역을 풀어 다시 찾는다. 분야·상황은 그대로 남는다."""
+    vector_store.remove_services([f"SAMPLE{i:03d}" for i in range(1, 13) if i != 2])   # 부산 제도(SAMPLE002)만 남김
+    flt = {"region": "서울", "field": "주거", "situation": ["구직"], "today": "2026-10-19"}
+    result = hybrid.search_with_info("월세 지원", flt)
+    assert [c.service_id for c in result.chunks] == ["SAMPLE002"] and result.relaxed
+    assert "region" not in result.filters_used
+    assert result.filters_used["field"] == "주거" and result.filters_used["situation"] == ["구직"]   # 분야·상황은 풀리지 않음
+
+
+def test_field_does_not_remove_other_fields(indexed_sample):
+    """관심 분야가 '주거'여도 일자리 분야 제도가 사라지지 않는다 (스크린샷에서 발견된 문제의 회귀 방지)."""
+    flt = {"age": 27, "region": "서울", "field": "주거", "today": "2026-10-19"}
+    ids = service_ids(hybrid.search("취업 준비 중인데 월세도 부담돼요", flt, k=10))
+    assert "SAMPLE001" in ids                                     # 주거 제도
+    assert {"SAMPLE004", "SAMPLE005"} & set(ids)                  # 구직 제도 (분야 필터가 있었다면 없었을 것)
+
+
+def test_field_boost_moves_matching_field_up(indexed_sample):
+    q = "지원 안내"
+    plain = service_ids(hybrid.search(q, {"today": "2026-10-19"}, k=12))
+    boosted = service_ids(hybrid.search(q, {"field": "일자리", "today": "2026-10-19"}, k=12))
+    jobs = {"SAMPLE004", "SAMPLE005", "SAMPLE006"}                        # 샘플에서 분야가 일자리인 제도 (기한이 지난 010 제외)
+    pos = lambda ids: [i for i, s in enumerate(ids) if s in jobs]
+    assert set(plain) == set(boosted)                              # 가산점은 거르지 않는다: 같은 제도가 나온다
+    assert sum(pos(boosted)) <= sum(pos(plain))                    # 일자리 제도는 앞으로 오거나 그대로
+
+
+def test_field_boost_unit():
+    def ch(cid, field):
+        return Chunk(cid, cid, cid, "지원대상", cid, {"field": field} if field else {}, "")
+    ranked = [(ch("a", "일자리"), 0.0165), (ch("b", "주거·자립"), 0.0160), (ch("c", None), 0.0150)]
+    assert [c.chunk_id for c, _ in hybrid.boost_by_field(ranked, "주거", boost=0.002)] == ["b", "a", "c"]   # 포함 관계도 맞음
+    assert [c.chunk_id for c, _ in hybrid.boost_by_field(ranked, "존재하지않음", boost=0.002)] == ["a", "b", "c"]   # 안 맞아도 그대로
+    assert hybrid.boost_by_field(ranked, "주거", boost=0) == ranked and hybrid.boost_by_field(ranked, None) == ranked
 
 
 def test_no_evidence_returns_empty(indexed_sample):
