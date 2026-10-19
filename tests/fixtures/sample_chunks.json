@@ -1,0 +1,857 @@
+{
+ "_note": "가상 샘플 데이터. 실제 제도의 내용이 아니며 B의 테스트 전용이다. A의 실제 조각이 나오면 일부를 실제 데이터로 교체한다.",
+ "chunks": [
+  {
+   "chunk_id": "SAMPLE001#지원대상",
+   "service_id": "SAMPLE001",
+   "service_name": "청년월세 지원(서울)",
+   "section": "지원대상",
+   "text": "청년월세 지원(서울)\n서울에 거주하며 월세로 사는 만 19~34세 무주택 청년",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE001"
+  },
+  {
+   "chunk_id": "SAMPLE001#선정기준",
+   "service_id": "SAMPLE001",
+   "service_name": "청년월세 지원(서울)",
+   "section": "선정기준",
+   "text": "청년월세 지원(서울)\n부모와 따로 거주하고 소득이 기준 이하인 경우 선정",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE001"
+  },
+  {
+   "chunk_id": "SAMPLE001#지원내용",
+   "service_id": "SAMPLE001",
+   "service_name": "청년월세 지원(서울)",
+   "section": "지원내용",
+   "text": "청년월세 지원(서울)\n월 월세의 일부를 일정 기간 지원",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE001"
+  },
+  {
+   "chunk_id": "SAMPLE001#신청방법",
+   "service_id": "SAMPLE001",
+   "service_name": "청년월세 지원(서울)",
+   "section": "신청방법",
+   "text": "청년월세 지원(서울)\n복지포털에서 온라인 신청",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE001"
+  },
+  {
+   "chunk_id": "SAMPLE002#지원대상",
+   "service_id": "SAMPLE002",
+   "service_name": "청년월세 지원(부산)",
+   "section": "지원대상",
+   "text": "청년월세 지원(부산)\n부산에 거주하며 월세로 사는 만 19~34세 무주택 청년",
+   "metadata": {
+    "agency": "부산광역시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "부산",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE002"
+  },
+  {
+   "chunk_id": "SAMPLE002#선정기준",
+   "service_id": "SAMPLE002",
+   "service_name": "청년월세 지원(부산)",
+   "section": "선정기준",
+   "text": "청년월세 지원(부산)\n부모와 따로 거주하고 소득이 기준 이하인 경우 선정",
+   "metadata": {
+    "agency": "부산광역시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "부산",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE002"
+  },
+  {
+   "chunk_id": "SAMPLE002#지원내용",
+   "service_id": "SAMPLE002",
+   "service_name": "청년월세 지원(부산)",
+   "section": "지원내용",
+   "text": "청년월세 지원(부산)\n월 월세의 일부를 일정 기간 지원",
+   "metadata": {
+    "agency": "부산광역시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "부산",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE002"
+  },
+  {
+   "chunk_id": "SAMPLE002#신청방법",
+   "service_id": "SAMPLE002",
+   "service_name": "청년월세 지원(부산)",
+   "section": "신청방법",
+   "text": "청년월세 지원(부산)\n구청 방문 또는 온라인 신청",
+   "metadata": {
+    "agency": "부산광역시",
+    "field": "주거",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "부산",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE002"
+  },
+  {
+   "chunk_id": "SAMPLE003#지원대상",
+   "service_id": "SAMPLE003",
+   "service_name": "근로장려금",
+   "section": "지원대상",
+   "text": "근로장려금\n근로·사업 소득이 있는 저소득 가구",
+   "metadata": {
+    "agency": "국세청",
+    "field": "금융",
+    "target_tags": [
+     "근로자"
+    ],
+    "region": "전국",
+    "deadline": "2026-05-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE003"
+  },
+  {
+   "chunk_id": "SAMPLE003#선정기준",
+   "service_id": "SAMPLE003",
+   "service_name": "근로장려금",
+   "section": "선정기준",
+   "text": "근로장려금\n가구 유형별 소득·재산 요건 충족 시 선정",
+   "metadata": {
+    "agency": "국세청",
+    "field": "금융",
+    "target_tags": [
+     "근로자"
+    ],
+    "region": "전국",
+    "deadline": "2026-05-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE003"
+  },
+  {
+   "chunk_id": "SAMPLE003#지원내용",
+   "service_id": "SAMPLE003",
+   "service_name": "근로장려금",
+   "section": "지원내용",
+   "text": "근로장려금\n소득에 따라 장려금 지급",
+   "metadata": {
+    "agency": "국세청",
+    "field": "금융",
+    "target_tags": [
+     "근로자"
+    ],
+    "region": "전국",
+    "deadline": "2026-05-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE003"
+  },
+  {
+   "chunk_id": "SAMPLE003#신청방법",
+   "service_id": "SAMPLE003",
+   "service_name": "근로장려금",
+   "section": "신청방법",
+   "text": "근로장려금\n홈택스 또는 모바일에서 정기 신청 기간에 신청",
+   "metadata": {
+    "agency": "국세청",
+    "field": "금융",
+    "target_tags": [
+     "근로자"
+    ],
+    "region": "전국",
+    "deadline": "2026-05-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE003"
+  },
+  {
+   "chunk_id": "SAMPLE004#지원대상",
+   "service_id": "SAMPLE004",
+   "service_name": "구직촉진수당",
+   "section": "지원대상",
+   "text": "구직촉진수당\n취업을 준비하는 저소득 구직자",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "일자리",
+    "target_tags": [
+     "구직"
+    ],
+    "region": "전국",
+    "age_min": 15,
+    "age_max": 69
+   },
+   "detail_url": "https://example.com/sample/SAMPLE004"
+  },
+  {
+   "chunk_id": "SAMPLE004#선정기준",
+   "service_id": "SAMPLE004",
+   "service_name": "구직촉진수당",
+   "section": "선정기준",
+   "text": "구직촉진수당\n가구 소득·재산 요건과 구직활동 이행 여부로 선정",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "일자리",
+    "target_tags": [
+     "구직"
+    ],
+    "region": "전국",
+    "age_min": 15,
+    "age_max": 69
+   },
+   "detail_url": "https://example.com/sample/SAMPLE004"
+  },
+  {
+   "chunk_id": "SAMPLE004#지원내용",
+   "service_id": "SAMPLE004",
+   "service_name": "구직촉진수당",
+   "section": "지원내용",
+   "text": "구직촉진수당\n구직활동 기간 동안 월 수당 지급",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "일자리",
+    "target_tags": [
+     "구직"
+    ],
+    "region": "전국",
+    "age_min": 15,
+    "age_max": 69
+   },
+   "detail_url": "https://example.com/sample/SAMPLE004"
+  },
+  {
+   "chunk_id": "SAMPLE004#신청방법",
+   "service_id": "SAMPLE004",
+   "service_name": "구직촉진수당",
+   "section": "신청방법",
+   "text": "구직촉진수당\n고용센터에서 상담 후 신청",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "일자리",
+    "target_tags": [
+     "구직"
+    ],
+    "region": "전국",
+    "age_min": 15,
+    "age_max": 69
+   },
+   "detail_url": "https://example.com/sample/SAMPLE004"
+  },
+  {
+   "chunk_id": "SAMPLE005#지원대상",
+   "service_id": "SAMPLE005",
+   "service_name": "서울 청년수당",
+   "section": "지원대상",
+   "text": "서울 청년수당\n서울에 거주하는 미취업 청년",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE005"
+  },
+  {
+   "chunk_id": "SAMPLE005#선정기준",
+   "service_id": "SAMPLE005",
+   "service_name": "서울 청년수당",
+   "section": "선정기준",
+   "text": "서울 청년수당\n중위소득 기준 이하이며 주 근로시간 제한을 충족하는 경우",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE005"
+  },
+  {
+   "chunk_id": "SAMPLE005#지원내용",
+   "service_id": "SAMPLE005",
+   "service_name": "서울 청년수당",
+   "section": "지원내용",
+   "text": "서울 청년수당\n활동 기간 동안 월 수당 지급",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE005"
+  },
+  {
+   "chunk_id": "SAMPLE005#신청방법",
+   "service_id": "SAMPLE005",
+   "service_name": "서울 청년수당",
+   "section": "신청방법",
+   "text": "서울 청년수당\n서울청년포털에서 신청",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "서울",
+    "deadline": "2099-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE005"
+  },
+  {
+   "chunk_id": "SAMPLE006#지원대상",
+   "service_id": "SAMPLE006",
+   "service_name": "경기도 청년 면접수당",
+   "section": "지원대상",
+   "text": "경기도 청년 면접수당\n경기도에 거주하며 면접 일정이 있는 미취업 청년",
+   "metadata": {
+    "agency": "경기도",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "경기",
+    "deadline": "2099-12-31",
+    "age_min": 18,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE006"
+  },
+  {
+   "chunk_id": "SAMPLE006#선정기준",
+   "service_id": "SAMPLE006",
+   "service_name": "경기도 청년 면접수당",
+   "section": "선정기준",
+   "text": "경기도 청년 면접수당\n면접 응시 증빙 제출자 중 연 횟수 한도 내 선정",
+   "metadata": {
+    "agency": "경기도",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "경기",
+    "deadline": "2099-12-31",
+    "age_min": 18,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE006"
+  },
+  {
+   "chunk_id": "SAMPLE006#지원내용",
+   "service_id": "SAMPLE006",
+   "service_name": "경기도 청년 면접수당",
+   "section": "지원내용",
+   "text": "경기도 청년 면접수당\n면접 1회당 정액 지급",
+   "metadata": {
+    "agency": "경기도",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "경기",
+    "deadline": "2099-12-31",
+    "age_min": 18,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE006"
+  },
+  {
+   "chunk_id": "SAMPLE006#신청방법",
+   "service_id": "SAMPLE006",
+   "service_name": "경기도 청년 면접수당",
+   "section": "신청방법",
+   "text": "경기도 청년 면접수당\n경기도 청년포털에서 신청",
+   "metadata": {
+    "agency": "경기도",
+    "field": "일자리",
+    "target_tags": [
+     "청년",
+     "구직"
+    ],
+    "region": "경기",
+    "deadline": "2099-12-31",
+    "age_min": 18,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE006"
+  },
+  {
+   "chunk_id": "SAMPLE007#지원대상",
+   "service_id": "SAMPLE007",
+   "service_name": "신혼부부 전세자금 대출 이자 지원",
+   "section": "지원대상",
+   "text": "신혼부부 전세자금 대출 이자 지원\n혼인한 지 7년 이내인 무주택 신혼부부",
+   "metadata": {
+    "agency": "국토교통부",
+    "field": "주거",
+    "target_tags": [
+     "신혼"
+    ],
+    "region": "전국",
+    "deadline": "2099-12-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE007"
+  },
+  {
+   "chunk_id": "SAMPLE007#선정기준",
+   "service_id": "SAMPLE007",
+   "service_name": "신혼부부 전세자금 대출 이자 지원",
+   "section": "선정기준",
+   "text": "신혼부부 전세자금 대출 이자 지원\n부부 합산 소득과 자산이 기준 이하인 경우",
+   "metadata": {
+    "agency": "국토교통부",
+    "field": "주거",
+    "target_tags": [
+     "신혼"
+    ],
+    "region": "전국",
+    "deadline": "2099-12-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE007"
+  },
+  {
+   "chunk_id": "SAMPLE007#지원내용",
+   "service_id": "SAMPLE007",
+   "service_name": "신혼부부 전세자금 대출 이자 지원",
+   "section": "지원내용",
+   "text": "신혼부부 전세자금 대출 이자 지원\n전세자금 대출 이자의 일부 지원",
+   "metadata": {
+    "agency": "국토교통부",
+    "field": "주거",
+    "target_tags": [
+     "신혼"
+    ],
+    "region": "전국",
+    "deadline": "2099-12-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE007"
+  },
+  {
+   "chunk_id": "SAMPLE007#신청방법",
+   "service_id": "SAMPLE007",
+   "service_name": "신혼부부 전세자금 대출 이자 지원",
+   "section": "신청방법",
+   "text": "신혼부부 전세자금 대출 이자 지원\n금융기관 상담 후 신청",
+   "metadata": {
+    "agency": "국토교통부",
+    "field": "주거",
+    "target_tags": [
+     "신혼"
+    ],
+    "region": "전국",
+    "deadline": "2099-12-31"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE007"
+  },
+  {
+   "chunk_id": "SAMPLE008#지원대상",
+   "service_id": "SAMPLE008",
+   "service_name": "영유아 양육수당",
+   "section": "지원대상",
+   "text": "영유아 양육수당\n어린이집·유치원을 이용하지 않는 영유아를 양육하는 가구",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "보육",
+    "target_tags": [
+     "출산",
+     "양육"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE008"
+  },
+  {
+   "chunk_id": "SAMPLE008#선정기준",
+   "service_id": "SAMPLE008",
+   "service_name": "영유아 양육수당",
+   "section": "선정기준",
+   "text": "영유아 양육수당\n만 0~6세 영유아 가구 대상, 소득과 무관",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "보육",
+    "target_tags": [
+     "출산",
+     "양육"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE008"
+  },
+  {
+   "chunk_id": "SAMPLE008#지원내용",
+   "service_id": "SAMPLE008",
+   "service_name": "영유아 양육수당",
+   "section": "지원내용",
+   "text": "영유아 양육수당\n월 양육수당 지급",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "보육",
+    "target_tags": [
+     "출산",
+     "양육"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE008"
+  },
+  {
+   "chunk_id": "SAMPLE008#신청방법",
+   "service_id": "SAMPLE008",
+   "service_name": "영유아 양육수당",
+   "section": "신청방법",
+   "text": "영유아 양육수당\n주민센터 방문 또는 복지로에서 신청",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "보육",
+    "target_tags": [
+     "출산",
+     "양육"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE008"
+  },
+  {
+   "chunk_id": "SAMPLE009#지원대상",
+   "service_id": "SAMPLE009",
+   "service_name": "기초연금",
+   "section": "지원대상",
+   "text": "기초연금\n만 65세 이상 어르신",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "노인",
+    "target_tags": [
+     "노인"
+    ],
+    "region": "전국",
+    "age_min": 65
+   },
+   "detail_url": "https://example.com/sample/SAMPLE009"
+  },
+  {
+   "chunk_id": "SAMPLE009#선정기준",
+   "service_id": "SAMPLE009",
+   "service_name": "기초연금",
+   "section": "선정기준",
+   "text": "기초연금\n소득인정액이 선정기준액 이하인 경우",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "노인",
+    "target_tags": [
+     "노인"
+    ],
+    "region": "전국",
+    "age_min": 65
+   },
+   "detail_url": "https://example.com/sample/SAMPLE009"
+  },
+  {
+   "chunk_id": "SAMPLE009#지원내용",
+   "service_id": "SAMPLE009",
+   "service_name": "기초연금",
+   "section": "지원내용",
+   "text": "기초연금\n월 연금 지급",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "노인",
+    "target_tags": [
+     "노인"
+    ],
+    "region": "전국",
+    "age_min": 65
+   },
+   "detail_url": "https://example.com/sample/SAMPLE009"
+  },
+  {
+   "chunk_id": "SAMPLE009#신청방법",
+   "service_id": "SAMPLE009",
+   "service_name": "기초연금",
+   "section": "신청방법",
+   "text": "기초연금\n주민센터 방문 또는 복지로에서 신청",
+   "metadata": {
+    "agency": "보건복지부",
+    "field": "노인",
+    "target_tags": [
+     "노인"
+    ],
+    "region": "전국",
+    "age_min": 65
+   },
+   "detail_url": "https://example.com/sample/SAMPLE009"
+  },
+  {
+   "chunk_id": "SAMPLE010#지원대상",
+   "service_id": "SAMPLE010",
+   "service_name": "지난 청년 일자리 체험 사업",
+   "section": "지원대상",
+   "text": "지난 청년 일자리 체험 사업\n서울에 거주하는 청년",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2025-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE010"
+  },
+  {
+   "chunk_id": "SAMPLE010#선정기준",
+   "service_id": "SAMPLE010",
+   "service_name": "지난 청년 일자리 체험 사업",
+   "section": "선정기준",
+   "text": "지난 청년 일자리 체험 사업\n선착순 모집으로 선정",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2025-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE010"
+  },
+  {
+   "chunk_id": "SAMPLE010#지원내용",
+   "service_id": "SAMPLE010",
+   "service_name": "지난 청년 일자리 체험 사업",
+   "section": "지원내용",
+   "text": "지난 청년 일자리 체험 사업\n체험 기간 동안 활동비 지급",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2025-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE010"
+  },
+  {
+   "chunk_id": "SAMPLE010#신청방법",
+   "service_id": "SAMPLE010",
+   "service_name": "지난 청년 일자리 체험 사업",
+   "section": "신청방법",
+   "text": "지난 청년 일자리 체험 사업\n모집 기간에 온라인 신청",
+   "metadata": {
+    "agency": "서울특별시",
+    "field": "일자리",
+    "target_tags": [
+     "청년"
+    ],
+    "region": "서울",
+    "deadline": "2025-12-31",
+    "age_min": 19,
+    "age_max": 34
+   },
+   "detail_url": "https://example.com/sample/SAMPLE010"
+  },
+  {
+   "chunk_id": "SAMPLE011#지원대상",
+   "service_id": "SAMPLE011",
+   "service_name": "생활안정 긴급 지원",
+   "section": "지원대상",
+   "text": "생활안정 긴급 지원\n갑작스러운 위기로 생계가 어려운 가구",
+   "metadata": {
+    "agency": "지방자치단체",
+    "field": "생활",
+    "target_tags": []
+   },
+   "detail_url": "https://example.com/sample/SAMPLE011"
+  },
+  {
+   "chunk_id": "SAMPLE011#선정기준",
+   "service_id": "SAMPLE011",
+   "service_name": "생활안정 긴급 지원",
+   "section": "선정기준",
+   "text": "생활안정 긴급 지원\n담당자 확인을 거쳐 선정",
+   "metadata": {
+    "agency": "지방자치단체",
+    "field": "생활",
+    "target_tags": []
+   },
+   "detail_url": "https://example.com/sample/SAMPLE011"
+  },
+  {
+   "chunk_id": "SAMPLE011#지원내용",
+   "service_id": "SAMPLE011",
+   "service_name": "생활안정 긴급 지원",
+   "section": "지원내용",
+   "text": "생활안정 긴급 지원\n생계비 등을 일시 지원",
+   "metadata": {
+    "agency": "지방자치단체",
+    "field": "생활",
+    "target_tags": []
+   },
+   "detail_url": "https://example.com/sample/SAMPLE011"
+  },
+  {
+   "chunk_id": "SAMPLE011#신청방법",
+   "service_id": "SAMPLE011",
+   "service_name": "생활안정 긴급 지원",
+   "section": "신청방법",
+   "text": "생활안정 긴급 지원\n주민센터 문의",
+   "metadata": {
+    "agency": "지방자치단체",
+    "field": "생활",
+    "target_tags": []
+   },
+   "detail_url": "https://example.com/sample/SAMPLE011"
+  },
+  {
+   "chunk_id": "SAMPLE012#지원대상",
+   "service_id": "SAMPLE012",
+   "service_name": "국민내일배움카드",
+   "section": "지원대상",
+   "text": "국민내일배움카드\n직업능력 향상 훈련을 받으려는 국민",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "교육",
+    "target_tags": [
+     "구직",
+     "재직"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE012"
+  },
+  {
+   "chunk_id": "SAMPLE012#선정기준",
+   "service_id": "SAMPLE012",
+   "service_name": "국민내일배움카드",
+   "section": "선정기준",
+   "text": "국민내일배움카드\n훈련 참여 의사와 자격 요건 확인 후 발급",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "교육",
+    "target_tags": [
+     "구직",
+     "재직"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE012"
+  },
+  {
+   "chunk_id": "SAMPLE012#지원내용",
+   "service_id": "SAMPLE012",
+   "service_name": "국민내일배움카드",
+   "section": "지원내용",
+   "text": "국민내일배움카드\n훈련비 일부 지원",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "교육",
+    "target_tags": [
+     "구직",
+     "재직"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE012"
+  },
+  {
+   "chunk_id": "SAMPLE012#신청방법",
+   "service_id": "SAMPLE012",
+   "service_name": "국민내일배움카드",
+   "section": "신청방법",
+   "text": "국민내일배움카드\n고용24에서 신청",
+   "metadata": {
+    "agency": "고용노동부",
+    "field": "교육",
+    "target_tags": [
+     "구직",
+     "재직"
+    ],
+    "region": "전국"
+   },
+   "detail_url": "https://example.com/sample/SAMPLE012"
+  }
+ ]
+}
