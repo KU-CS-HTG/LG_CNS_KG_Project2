@@ -7,7 +7,8 @@ import re
 from functools import lru_cache
 
 from src import db
-from src.config import CATEGORY_BONUS, CHROMA_DIR, COLLECTION_NAME, DEFAULT_TOP_K, RRF_K, SEARCH_MODES
+from src.config import (CATEGORY_BONUS, CHROMA_DIR, COLLECTION_NAME, DEFAULT_TOP_K,
+                        MAX_LOCAL_WHEN_UNKNOWN, RRF_K, SEARCH_MODES)
 from src.regions import NATIONWIDE
 from src.schema import Conditions, Evidence, ServiceHit
 
@@ -171,50 +172,71 @@ def _rank_hybrid(question: str, cond: Conditions, n: int) -> list[dict]:
     return sorted(fused.values(), key=lambda c: -c["score"])
 
 
-def _boost_category(hits: list[ServiceHit], category: str | None, k: int) -> list[ServiceHit]:
-    """분야 가산점(소프트): 순위 점수 1/(RRF_K+순위)에 분야가 맞으면 CATEGORY_BONUS를 더해 재정렬.
+def _rerank(hits: list[ServiceHit], cond: Conditions, category: str | None, k: int) -> list[ServiceHit]:
+    """최종 순위 조정 (모든 검색 모드 공통).
 
-    하드 필터가 아니라서 분야 분류가 애매한 제도도 순위가 충분히 높으면 그대로 남는다.
+    1) 분야 가산점(소프트): 순위 점수 1/(RRF_K+순위)에 분야가 맞으면 CATEGORY_BONUS를 더해 재정렬
+    2) 지역 다양성: 사용자의 시·군·구를 모르면, 특정 시·군·구 전용 제도는 상위 k개 중 최대
+       MAX_LOCAL_WHEN_UNKNOWN개까지만 넣는다. 예) 경기도 사용자에게 시·군별 출산장려금 5개가 아니라
+       전국·도 단위 제도를 먼저 보여 준다. 남는 자리가 있으면 다시 시·군·구 제도로 채운다.
     """
-    if not category:
+    if category:
+        rescored = [(1.0 / (RRF_K + i) + (CATEGORY_BONUS if category in h.category else 0.0), h)
+                    for i, h in enumerate(hits, start=1)]
+        hits = [h for _, h in sorted(rescored, key=lambda x: -x[0])]
+    if cond.sigungu:            # 구를 알면 필터에서 이미 다른 구 제도가 빠졌으므로 제한할 필요 없음
         return hits[:k]
-    rescored = [(1.0 / (RRF_K + i) + (CATEGORY_BONUS if category in h.category else 0.0), h)
-                for i, h in enumerate(hits, start=1)]
-    return [h for _, h in sorted(rescored, key=lambda x: -x[0])][:k]
+
+    picked, overflow, n_local = [], [], 0
+    for h in hits:
+        if h.sigungu and n_local >= MAX_LOCAL_WHEN_UNKNOWN:
+            overflow.append(h)
+            continue
+        n_local += bool(h.sigungu)
+        picked.append(h)
+        if len(picked) == k:
+            return picked
+    return (picked + overflow)[:k]
+
+
+def _candidates(question: str, cond: Conditions, mode: str, n: int) -> list[ServiceHit]:
+    """조건 필터 + 한 가지 모드로 검색한 서비스 후보 n개 (순위 조정 전)."""
+    if mode not in SEARCH_MODES:
+        raise ValueError(f"mode는 {SEARCH_MODES} 중 하나여야 합니다: {mode}")
+    if mode == "sql":
+        return _search_sql(question, cond, n)
+    ranker = {"bm25": _rank_bm25, "vector": _rank_vector, "hybrid": _rank_hybrid}[mode]
+    return _to_hits(ranker(question, cond, n * 8), n)   # 청크→서비스로 묶이면 줄어들어 8배로 가져옴
 
 
 def search(question: str, cond: Conditions, mode: str = "hybrid", k: int = DEFAULT_TOP_K,
            category: str | None = None) -> list[ServiceHit]:
-    if mode not in SEARCH_MODES:
-        raise ValueError(f"mode는 {SEARCH_MODES} 중 하나여야 합니다: {mode}")
-    pool = k * 3 if category else k     # 가산점으로 순위를 바꾸려면 후보를 넉넉히
-    if mode == "sql":
-        hits = _search_sql(question, cond, pool)
-    else:
-        ranker = {"bm25": _rank_bm25, "vector": _rank_vector, "hybrid": _rank_hybrid}[mode]
-        hits = _to_hits(ranker(question, cond, pool * 8), pool)   # 청크→서비스로 묶이면 줄어들어 8배로 가져옴
-    return _boost_category(hits, category, k)
+    # 순위 조정(가산점·지역 다양성)으로 아래쪽 후보가 올라올 수 있게 k의 4배를 먼저 뽑는다
+    return _rerank(_candidates(question, cond, mode, k * 4), cond, category, k)
 
 
 def search_multi(queries: list[str], cond: Conditions, mode: str = "hybrid", k: int = DEFAULT_TOP_K,
                  category: str | None = None) -> list[ServiceHit]:
-    """[Multi Query] 원문·재작성 검색어로 각각 검색한 서비스 순위를 RRF로 합친다.
+    """[Multi Query] 원문·재작성 검색어로 각각 검색한 순위를 합친다 (최고 순위 기준).
 
-    재작성이 빗나가도(예: 항목 이름이 섞임) 원문 순위가 받쳐 주고,
-    원문이 자기소개로 흐려져도 재작성 순위가 받쳐 준다. 두 목록 모두 상위인 제도가 1위가 된다.
+    합산(sum) RRF는 '두 목록에 모두 나온 제도'를 지나치게 우대해서, 원문에서만 1위인 제도
+    (예: 질문 속 '전세사기'로만 찾을 수 있는 제도)가 밀려났다. 그래서 각 제도의 '가장 좋은 순위'로
+    먼저 정렬하고, 같으면 더 많은 목록에 나온 제도를 앞에 둔다.
     """
     qs = list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))   # 빈 값·중복 제거
     if len(qs) == 1:
         return search(qs[0], cond, mode=mode, k=k, category=category)
 
-    pool = k * 3
-    fused: dict[str, float] = {}
+    best: dict[str, int] = {}       # 서비스별 가장 좋은 순위
+    count: dict[str, int] = {}      # 몇 개의 검색어 목록에 나왔나
     first: dict[str, ServiceHit] = {}
     for q in qs:
-        for rank, h in enumerate(search(q, cond, mode=mode, k=pool), start=1):
-            fused[h.service_id] = fused.get(h.service_id, 0.0) + 1.0 / (RRF_K + rank)
-            first.setdefault(h.service_id, h)            # 근거 청크는 먼저 찾은 쪽 것을 사용
-    hits = sorted(first.values(), key=lambda h: -fused[h.service_id])
+        for rank, h in enumerate(_candidates(q, cond, mode, k * 4), start=1):
+            sid = h.service_id
+            best[sid] = min(best.get(sid, rank), rank)
+            count[sid] = count.get(sid, 0) + 1
+            first.setdefault(sid, h)            # 근거 청크는 먼저 찾은 쪽 것을 사용
+    hits = sorted(first.values(), key=lambda h: (best[h.service_id], -count[h.service_id]))
     for h in hits:
-        h.score = fused[h.service_id]
-    return _boost_category(hits, category, k)
+        h.score = 1.0 / (RRF_K + best[h.service_id])
+    return _rerank(hits, cond, category, k)

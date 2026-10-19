@@ -34,6 +34,8 @@ RRF_K = 60                # Hybrid의 Reciprocal Rank Fusion 상수
 # 분야가 맞는 제도에 더하는 점수. 1/(60+1)=0.0164(1위)와 1/(60+15)=0.0133(15위)의 차이 정도라,
 # 분야가 맞으면 최대 10여 계단 올라갈 수 있다. 0이면 가산점 끔 (실험 비교용)
 CATEGORY_BONUS = 0.003
+# 사용자의 시·군·구를 모를 때, 상위 결과에 넣을 특정 시·군·구 전용 제도의 최대 개수
+MAX_LOCAL_WHEN_UNKNOWN = 2
 
 
 def require(key_name: str, value: str) -> str:

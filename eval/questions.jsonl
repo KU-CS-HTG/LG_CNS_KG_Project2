@@ -1,12 +1,16 @@
-{"id": "q1", "question": "취업 준비 중인데 구직활동 지원금 받을 수 있어?", "user": {"age": 25, "region": "서울특별시"}, "expected_ids": ["SAMPLE-001"], "forbidden_ids": ["SAMPLE-003"], "type": "상황형"}
-{"id": "q2", "question": "월세가 너무 부담돼요", "user": {"age": 27, "region": "서울특별시"}, "expected_ids": ["SAMPLE-002"], "forbidden_ids": [], "type": "상황형·제도명 모름"}
-{"id": "q3", "question": "월세 지원 받을 수 있어?", "user": {"age": 40, "region": "서울특별시"}, "expected_ids": [], "forbidden_ids": ["SAMPLE-002"], "type": "연령 조건"}
-{"id": "q4", "question": "교통비 지원 있어?", "user": {"age": 25, "region": "서울특별시"}, "expected_ids": [], "forbidden_ids": ["SAMPLE-004"], "type": "지역 조건"}
-{"id": "q5", "question": "근로장려금은 언제 신청해?", "user": {"age": 30, "region": null}, "expected_ids": ["SAMPLE-005"], "forbidden_ids": [], "type": "제도명 앎"}
-{"id": "q6", "question": "아기가 태어났는데 받을 수 있는 지원", "user": {"age": 32, "region": "경기도"}, "expected_ids": ["SAMPLE-006"], "forbidden_ids": ["SAMPLE-007"], "type": "생활 변화(출산)"}
-{"id": "q7", "question": "결혼하고 전세 대출 이자가 부담돼", "user": {"age": 31, "region": "서울특별시"}, "expected_ids": ["SAMPLE-007"], "forbidden_ids": [], "type": "생활 변화(결혼)"}
-{"id": "q8", "question": "직업훈련 받고 싶은데 비용 지원 있나요", "user": {"age": 28, "region": null}, "expected_ids": ["SAMPLE-008"], "forbidden_ids": [], "type": "상황형"}
-{"id": "q9", "question": "서울 사는 24살 대학생인데, 내가 받을만한 취업 지원 제도 없을까?", "user": {"age": 24, "region": "서울특별시"}, "expected_ids": ["SAMPLE-011", "SAMPLE-001", "SAMPLE-008"], "forbidden_ids": [], "type": "상황형·자기소개 포함"}
-{"id": "q10", "question": "월세가 너무 부담돼요", "user": {"age": 27, "region": "서울특별시", "sigungu": "노원구"}, "expected_ids": ["SAMPLE-002"], "forbidden_ids": ["SAMPLE-012"], "type": "시군구 조건(다른 구 제외)"}
-{"id": "q11", "question": "월세가 너무 부담돼요", "user": {"age": 27, "region": "서울특별시", "sigungu": "강남구"}, "expected_ids": ["SAMPLE-012", "SAMPLE-002"], "forbidden_ids": [], "type": "시군구 조건(내 구 포함)"}
-{"id": "q12", "question": "직업훈련 훈련장려금에 대해서 알려줘", "user": {"age": null, "region": null}, "expected_ids": ["SAMPLE-008", "SAMPLE-013"], "forbidden_ids": [], "type": "제도명 일부 포함"}
+{"id": "q01", "question": "서울 사는 24살 대학생인데, 내가 받을만한 취업 지원 제도 없을까?", "user": {"age": 24, "region": "서울특별시"}, "expected_ids": ["149200005007", "611000000144", "611000019622", "149200000026"], "forbidden_ids": [], "type": "자기소개 포함"}
+{"id": "q02", "question": "월세가 너무 부담돼요", "user": {"age": 27, "region": "서울특별시"}, "expected_ids": ["161300000099", "611000000127", "336000000096", "999000000025"], "forbidden_ids": [], "type": "상황형·제도명 모름"}
+{"id": "q03", "question": "직업훈련 훈련장려금에 대해서 알려줘", "user": {}, "expected_ids": ["149200000026", "149200000135", "B55201400002"], "forbidden_ids": [], "type": "제도명 일부"}
+{"id": "q04", "question": "국민내일배움카드 신청 조건 알려줘", "user": {}, "expected_ids": ["149200000026"], "forbidden_ids": [], "type": "제도명"}
+{"id": "q05", "question": "근로장려금 언제 어떻게 신청해?", "user": {}, "expected_ids": ["105100000001"], "forbidden_ids": [], "type": "제도명"}
+{"id": "q06", "question": "주거급여 지원대상이 어떻게 돼?", "user": {}, "expected_ids": ["336000000096"], "forbidden_ids": [], "type": "항목명 포함"}
+{"id": "q07", "question": "실업급여 받으려면 어떻게 해야 해?", "user": {}, "expected_ids": ["SD0000015536", "149200005007"], "forbidden_ids": [], "type": "일상 표현(실업급여→구직급여)"}
+{"id": "q08", "question": "아기가 태어났는데 받을 수 있는 지원 알려줘", "user": {"region": "경기도"}, "expected_ids": ["135200005015", "135200000120"], "forbidden_ids": [], "type": "생활 변화(출산)"}
+{"id": "q09", "question": "결혼하고 전세 대출 이자가 부담돼", "user": {"age": 31, "region": "서울특별시"}, "expected_ids": ["161300000076"], "forbidden_ids": [], "type": "생활 변화(결혼)"}
+{"id": "q10", "question": "노원구 사는 27살인데 월세가 부담돼요", "user": {"age": 27, "region": "서울특별시", "sigungu": "노원구"}, "expected_ids": ["161300000099", "611000000127"], "forbidden_ids": ["315000000269", "316000000146", "319000000169"], "type": "구 조건(다른 구 제외)"}
+{"id": "q11", "question": "강서구 사는데 전세사기 피해를 입었어요. 월세 지원 받을 수 있나요?", "user": {"age": 30, "region": "서울특별시", "sigungu": "강서구"}, "expected_ids": ["315000000269"], "forbidden_ids": ["316000000146", "319000000169", "323000000135"], "type": "구 조건(내 구 포함)"}
+{"id": "q12", "question": "45살인데 청년 월세 지원 받을 수 있어?", "user": {"age": 45, "region": "서울특별시"}, "expected_ids": ["336000000096", "999000000025"], "forbidden_ids": ["161300000099", "611000000127"], "type": "연령 조건"}
+{"id": "q13", "question": "부산 사는 25살인데 청년 이사비 지원 있어?", "user": {"age": 25, "region": "부산광역시"}, "expected_ids": ["626000000633"], "forbidden_ids": ["341000000313", "383000000553", "393000000269", "399000000398", "403000000154"], "type": "지역 조건"}
+{"id": "q14", "question": "직업훈련 받고 싶은데 비용 지원 있나요?", "user": {"age": 28}, "expected_ids": ["149200000026", "B55201400002"], "forbidden_ids": [], "type": "상황형"}
+{"id": "q15", "question": "내년에 새로 생길 청년 지원금은 어떻게 신청해?", "user": {}, "expected_ids": [], "forbidden_ids": [], "type": "근거 없음"}
+{"id": "q16", "question": "32살인데 아기가 태어났어요. 받을 수 있는 지원 있나요?", "user": {"age": 32, "region": "경기도"}, "expected_ids": ["135200005015", "135200000120"], "forbidden_ids": [], "type": "알려진 한계: 자녀 대상 연령"}
