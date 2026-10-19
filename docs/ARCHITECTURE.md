@@ -97,3 +97,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - 기획서·RAG 구조도 반영: `Metadata`/`Filters`/`Recommendation` 추가, `Answer` 구조 확장, 증분 수집·종료 처리(`store`, `pipeline`), Recursive 분할, `retrieve/baseline.py`와 `search(mode)`, `generate/evidence.py`, `eval/answer_eval.py`, 질문 세트 형식 및 기획서 예시 질문, 지표 목표 상수, 구조도·기획서를 `docs/`에 추가.
 - B용 테스트 기반 추가: `tests/`(샘플 조각·질의, pytest 뼈대), `pytest.ini`, `requirements.txt`에 pytest. `test_retrieval`의 색인 저장 경로 분리는 B가 결정할 사항으로 남김.
 - 루트 `README.md` 추가(CLAUDE.md와 이 문서의 내용을 합친 팀 안내). 문서 동기화 대상에 README 포함.
+- `README.md`에 단계별 입출력 예시(§2.1)와 단계 표(오프라인/온라인 분리) 추가. 구조 변경 없음.

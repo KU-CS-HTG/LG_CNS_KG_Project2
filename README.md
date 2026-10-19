@@ -21,22 +21,192 @@
 
 색인은 데이터가 바뀔 때만 다시 돌리고, 질문은 온라인 경로만 돕니다.
 
+**오프라인 색인** (데이터가 바뀔 때만)
+
 | 단계 | 내용 | 코드 | 담당 |
 |---|---|---|---|
-| 오프라인 | ① 로드: API 수집·정제 → DB 적재 | `src/ingest/client.py`, `store.py` | A |
-| | ② 분할: 항목별(지원대상/선정기준/지원내용/신청방법) 구조 기반 분할, 긴 항목은 Recursive 보조, 조각 앞에 서비스명 접두 | `src/ingest/chunker.py` | A |
-| | ③ 임베딩: 로컬 다국어 모델(bge-m3 우선, 자원 부족 시 multilingual-e5) | `src/index/embedder.py` | B |
-| | ④ 벡터 저장소: 조각 + 메타데이터(지역·소관기관·분야·신청기한·대상조건) | `src/index/vector_store.py` | B |
-| 온라인 | 질문 → 조건 추출(LLM: 나이·거주지·상황·관심 분야) | `src/generate/condition_extractor.py` | C |
-| | ⑤ 검색: 정형 필터 + Hybrid(Vector + BM25), Top-5, 중복 제거 | `src/retrieve/hybrid.py`, `filters.py` | B |
-| | 근거 선별: 조각을 서비스 단위로 묶어 3~5개 제도로 제한 | `src/generate/evidence.py` | C |
-| | ⑥ 생성(gpt-4o-mini) → 답변 + 출처 | `src/generate/generator.py`, `citation.py` | C |
+| ① 로드 | API 수집·정제 → DB 적재 | `src/ingest/client.py`, `store.py` | A |
+| ② 분할 | 항목별(지원대상/선정기준/지원내용/신청방법) 구조 기반 분할, 긴 항목은 Recursive 보조, 조각 앞에 서비스명 접두 | `src/ingest/chunker.py` | A |
+| ③ 임베딩 | 로컬 다국어 모델(bge-m3 우선, 자원 부족 시 multilingual-e5) | `src/index/embedder.py` | B |
+| ④ 벡터 저장소 | 조각 + 메타데이터(지역·소관기관·분야·신청기한·대상조건) | `src/index/vector_store.py` | B |
+
+**온라인 질의응답** (질문마다)
+
+| 단계 | 내용 | 코드 | 담당 |
+|---|---|---|---|
+| 조건 추출 | 질문 → LLM이 나이·거주지·상황·관심 분야 추출 | `src/generate/condition_extractor.py` | C |
+| ⑤ 검색 | 정형 필터 + Hybrid(Vector + BM25), Top-5, 중복 제거 | `src/retrieve/hybrid.py`, `filters.py` | B |
+| 근거 선별 | 조각을 서비스 단위로 묶어 3~5개 제도로 제한 | `src/generate/evidence.py` | C |
+| ⑥ 생성 | gpt-4o-mini → 답변 + 출처 | `src/generate/generator.py`, `citation.py` | C |
 
 구조도와 다른 점: 입력이 PDF가 아닌 API이고 정형 지원조건이 함께 들어옵니다 / 검색 앞에 조건 추출과 정형 필터가 있습니다 / 검색과 생성 사이에 근거 선별이 있습니다.
 
 **데이터 흐름**
 - 오프라인(기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
 - 온라인(질문마다): 질문 → `condition_extractor`(`Filters`) → `retrieve.hybrid.search`(필터 + Vector + BM25, 중복 제거, 필요 시 필터 완화) → `evidence.select_evidence` → `generator.generate_answer` + `citation` → `Answer`
+
+### 2.1 단계별 입출력 예시
+
+> 아직 구현 전이라 **예상 출력**입니다. 형식(키 이름·타입)은 `src/common/schema.py`와 같고, 수치·문구는 이해를 돕기 위한 예시입니다. 구현하면서 실제 출력으로 교체하세요.
+> 예시 전체가 한 질문의 흐름을 따라갑니다: **"서울에 사는 27살 취업준비생인데 월세가 부담돼요. 받을 수 있는 지원이 있을까요?"**
+
+#### ① 로드 — `python -m src.ingest.pipeline`
+
+수집 → 정제 → DB 적재 순으로 진행 로그가 나오고, 신규·변경된 서비스만 다음 단계로 넘어갑니다.
+
+```
+[client] serviceList 수집 완료: 10,213건 (perPage=500, 21페이지)
+[client] supportConditions 수집 완료: 10,198건
+[client] 원본 저장: data/raw/serviceList.json, supportConditions.json
+[store]  upsert: 신규 120 / 변경 35 / 변동 없음 10,058
+[store]  종료 처리: 8건 (색인에서 제거 대상)
+```
+
+DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니다.
+
+```json
+{
+  "service_id": "SVC000123",
+  "service_name": "청년월세 지원(서울)",
+  "agency": "서울특별시",
+  "field": "주거",
+  "support_target": "서울에 거주하며 월세로 사는 만 19~34세 무주택 청년",
+  "selection_criteria": "부모와 따로 거주하고 소득이 기준 이하인 경우 선정",
+  "support_content": "월 월세의 일부를 일정 기간 지원",
+  "how_to_apply": "복지포털에서 온라인 신청",
+  "deadline": "2026-12-31",
+  "age_min": 19, "age_max": 34, "region": "서울",
+  "detail_url": "https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SVC000123",
+  "content_hash": "a3f9...c21"
+}
+```
+
+- DB 컬럼명은 예시이며 A가 확정합니다(`schema.py`에 없는 부분). 이후 `Chunk.metadata`는 여기서 만들어집니다.
+- 신청기한이 상시·미정이면 `deadline`은 `null`입니다. 값을 알 수 없는 항목도 `null`로 두며(추측 금지), 이는 뒤에서 "확인 필요"로 이어집니다.
+
+#### ② 분할 — `chunker.chunk_service(service)`
+
+서비스 1건이 항목별 최대 4개의 `Chunk`가 됩니다. 조각 앞에 서비스명이 붙고, 긴 항목은 `-1`, `-2`로 더 쪼개집니다.
+
+```
+입력: service_id=SVC000123 (청년월세 지원(서울))
+출력: 4개 Chunk
+  SVC000123#지원대상  "청년월세 지원(서울)\n서울에 거주하며 월세로 사는 만 19~34세 무주택 청년"
+  SVC000123#선정기준  "청년월세 지원(서울)\n부모와 따로 거주하고 소득이 기준 이하인 경우 선정"
+  SVC000123#지원내용  "청년월세 지원(서울)\n월 월세의 일부를 일정 기간 지원"
+  SVC000123#신청방법  "청년월세 지원(서울)\n복지포털에서 온라인 신청"
+```
+
+조각 1개는 아래 형태입니다 (A → B 인터페이스).
+
+```json
+{
+  "chunk_id": "SVC000123#지원대상",
+  "service_id": "SVC000123",
+  "service_name": "청년월세 지원(서울)",
+  "section": "지원대상",
+  "text": "청년월세 지원(서울)\n서울에 거주하며 월세로 사는 만 19~34세 무주택 청년",
+  "metadata": {"region": "서울", "agency": "서울특별시", "field": "주거",
+               "deadline": "2026-12-31", "age_min": 19, "age_max": 34, "target_tags": ["청년"]},
+  "detail_url": "https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SVC000123"
+}
+```
+
+전체 규모는 서비스 약 1만 건 → 조각 수만 개로 예상하며, 수집 후 실제 수치를 기록합니다.
+
+#### ③ 임베딩 — `embedder.embed_texts(texts)`
+
+텍스트 N개를 넣으면 같은 순서로 벡터 N개가 나옵니다. bge-m3 기준 벡터 차원은 1024입니다.
+
+```
+입력: ["청년월세 지원(서울)\n서울에 거주하며 ...", "청년월세 지원(서울)\n부모와 따로 ..."]
+출력: [[0.012, -0.034, 0.101, ... (1024개)], [0.008, -0.029, 0.095, ...]]   # list[list[float]]
+```
+
+#### ④ 벡터 저장소 — `vector_store.build_index(chunks)` / 조회
+
+색인은 조각을 `chunk_id` 기준으로 upsert하고, 조회는 `(Chunk, 점수)` 목록을 돌려줍니다.
+
+```
+[index] upsert 조각 480개 (신규·변경 서비스분) / 제거 32개 (종료 서비스분)
+[index] 총 조각 수: 41,276
+
+vector_search("월세가 부담돼요", k=3)
+  → [(SVC000123#지원대상, 0.82), (SVC000456#지원대상, 0.80), (SVC000123#지원내용, 0.77)]
+bm25_search("청년월세", k=3)
+  → [(SVC000123#지원대상, 11.4), (SVC000456#지원대상, 10.9), (SVC000789#지원내용, 6.2)]
+```
+
+#### 조건 추출 — `condition_extractor.extract_conditions(question)`
+
+질문에서 찾은 항목만 담고, 없는 항목은 키를 생략합니다. `to_filters`가 B의 `Filters`로 바꿉니다.
+
+```
+입력: "서울에 사는 27살 취업준비생인데 월세가 부담돼요. 받을 수 있는 지원이 있을까요?"
+출력: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거"}
+Filters: {"age": 27, "region": "서울", "field": "주거", "situation": ["구직"], "today": "2026-10-19"}
+```
+
+#### ⑤ 검색 — `hybrid.search(query, filters, k=5)`
+
+정형 필터 후 Vector + BM25 결과를 합쳐 서비스 단위로 중복을 제거한 `list[Chunk]`를 돌려줍니다.
+
+```
+[retrieve] 필터 적용: 후보 조각 41,276 → 6,310 (기한 지난 제도 제외, 값이 빈 항목은 통과)
+[retrieve] Hybrid Top-5 (서비스 중복 제거 후)
+
+순위  service_id   서비스명               섹션       점수
+ 1    SVC000123    청년월세 지원(서울)    지원대상   0.91
+ 2    SVC000456    구직촉진수당           지원대상   0.84
+ 3    SVC000789    서울 청년수당          선정기준   0.80
+ 4    SVC000321    주거급여               지원대상   0.76
+ 5    SVC000654    국민내일배움카드       지원내용   0.71
+```
+
+결과가 없으면 `filters.relax()`로 필터를 한 단계씩 풀어 다시 검색합니다 (로그에 `[retrieve] 결과 없음 → 필터 완화: field 제거`처럼 표시).
+
+#### 근거 선별 — `evidence.select_evidence(chunks)`
+
+같은 서비스의 조각을 묶어 최대 5개 제도로 제한합니다. 키는 `service_id`입니다.
+
+```
+{
+  "SVC000123": [지원대상 조각, 선정기준 조각, 지원내용 조각, 신청방법 조각],
+  "SVC000456": [지원대상 조각, 선정기준 조각],
+  "SVC000789": [선정기준 조각, 신청방법 조각],
+  ...
+}
+```
+
+#### ⑥ 생성 — `generator.answer_question(question)` → `Answer`
+
+사용자에게 보이는 최종 결과입니다. 아래는 `Answer.text`의 모습입니다.
+
+```
+질문하신 상황(서울 거주, 27세, 구직 중, 월세 부담)에 해당할 수 있는 지원제도입니다.
+
+1. 청년월세 지원(서울) — 서울특별시
+   - 해당 가능 이유: 서울에 거주하는 만 19~34세 무주택 청년이 대상입니다.
+   - 지원내용: 월 월세의 일부를 일정 기간 지원
+   - 신청방법·기한: 복지포털 온라인 신청 / 2026-12-31까지
+   - 확인 필요: 부모와 따로 거주하는지, 소득 기준 충족 여부
+   - 근거: "서울에 거주하며 월세로 사는 만 19~34세 무주택 청년"
+   - 상세 링크: https://www.gov.kr/portal/rcvfvrSvc/dtlEx/SVC000123
+
+2. 구직촉진수당 — 고용노동부
+   - 해당 가능 이유: 취업을 준비하는 저소득 구직자가 대상입니다.
+   - 확인 필요: 가구 소득·재산 요건, 신청기한(정보 없음)
+   ...
+
+※ 최종 신청 자격은 담당 기관에서 확인하세요.
+```
+
+- 구조화된 결과는 `Answer.recommendations`(제도별 `Recommendation`)에, 근거는 각 `Recommendation.citations`에 들어 있어 UI가 따로 표시할 수 있습니다.
+- 근거가 없는 질문(예: "내년에 새로 생길 예정인 청년 지원금은 어떻게 신청하나요?")은 추측하지 않고 `no_evidence=True`로 이렇게 답합니다.
+
+```
+수집된 자료에서 근거를 찾지 못했습니다. 담당 기관 또는 정부24 등 공식 사이트에서 확인해 주세요.
+```
 
 ## 3. 디렉터리 구조와 담당
 
