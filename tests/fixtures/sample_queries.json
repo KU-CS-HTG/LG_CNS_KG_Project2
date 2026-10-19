@@ -1,0 +1,13 @@
+{
+  "_note": "B의 검색 테스트용. 정답은 sample_chunks.json의 service_id 기준. today는 기한 판정 기준일(고정).",
+  "queries": [
+    {"id": "sq1", "query": "서울에 사는 27살 청년인데 월세 지원 받을 수 있나요", "filters": {"age": 27, "region": "서울", "today": "2026-10-19"},
+     "expect_in_top5": ["SAMPLE001"], "expect_not_in_results": ["SAMPLE002", "SAMPLE009", "SAMPLE010"]},
+    {"id": "sq2", "query": "국민내일배움카드", "filters": {}, "mode": "bm25",
+     "expect_top1": "SAMPLE012"},
+    {"id": "sq3", "query": "근로장려금 신청", "filters": {"today": "2026-10-19"}, "mode": "hybrid_filter",
+     "expect_not_in_results": ["SAMPLE003"], "note": "신청기한이 지난 제도는 제외"},
+    {"id": "sq4", "query": "취업 준비 중인데 생활비 지원", "filters": {"age": 27, "today": "2026-10-19"}, "mode": "hybrid_filter",
+     "expect_in_top5": ["SAMPLE004"], "note": "지역·연령 값이 비어 있는 제도(SAMPLE011)도 후보에 남을 수 있다"}
+  ]
+}

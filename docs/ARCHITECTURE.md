@@ -33,6 +33,7 @@ src/
   generate/  condition_extractor, evidence, generator, citation   # C
 app/         main.py                                    # C: UI
 eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
+tests/       pytest. fixtures/(가상 샘플 조각·질의), conftest.py, test_*.py
 data/raw/    원본 응답 (커밋 금지)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ```
@@ -58,6 +59,10 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `eval/` 별도 최상위, 채점 단위는 `service_id` | 검색 지표(B)·답변 지표(C)·질문 세트(전원)가 섞이는 공용 영역. 조각이 아니라 서비스 단위로 정답을 지정해 분할 방식이 바뀌어도 질문 세트를 재사용한다. |
 | `eval/questions.jsonl` 필드: `id, category, question, relevant_service_ids, expected_answer, expect_no_answer` | 9.1: 상황형·제도명 아는 질문·지역·연령·기한 지난 제도·근거 없음을 섞어 30개 내외. 정답 서비스는 수집 후 팀원이 지정한다. 현재 4개는 기획서 예시이며 `todo`가 있는 항목은 수집 데이터에 있는지 확인 후 수정한다. |
 | `eval/metrics.TARGETS` | 9.2 잠정 목표: Hit Rate@5 0.80, Recall@5 0.70, MRR 0.60. |
+| `tests/fixtures/sample_chunks.json` (가상 조각 48개 = 12개 제도 x 4항목) | A가 끝나기 전에 B가 자기 코드를 검증하도록 `Chunk` 계약대로 만든 가짜 데이터. 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상을 일부러 섞었다. 실제 제도 내용이 아니며 A의 실제 조각이 나오면 일부를 교체한다. |
+| `tests/fixtures/sample_queries.json` | 검색 기대값(`expect_top1`, `expect_in_top5`, `expect_not_in_results`)과 필터 `today`를 고정해 시간이 지나도 결과가 변하지 않게 한다. |
+| `tests/conftest.py`: `NotImplementedError`를 skip으로 변환 | 스켈레톤 단계에서는 미구현 테스트가 실패로 보이지 않고, 구현하는 순간 같은 테스트가 실제 검증을 시작한다. |
+| `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
 
 ## 4. 데이터 흐름
@@ -83,9 +88,11 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
+| `tests/` | 샘플 데이터 검증 3개 통과, 나머지 16개는 구현 전이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
 
 - 초기 스켈레톤 작성. API 연결 테스트용 `youth_benefits.py` 삭제.
 - 기획서·RAG 구조도 반영: `Metadata`/`Filters`/`Recommendation` 추가, `Answer` 구조 확장, 증분 수집·종료 처리(`store`, `pipeline`), Recursive 분할, `retrieve/baseline.py`와 `search(mode)`, `generate/evidence.py`, `eval/answer_eval.py`, 질문 세트 형식 및 기획서 예시 질문, 지표 목표 상수, 구조도·기획서를 `docs/`에 추가.
+- B용 테스트 기반 추가: `tests/`(샘플 조각·질의, pytest 뼈대), `pytest.ini`, `requirements.txt`에 pytest. `test_retrieval`의 색인 저장 경로 분리는 B가 결정할 사항으로 남김.
