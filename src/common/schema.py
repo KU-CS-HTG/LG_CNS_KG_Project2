@@ -26,10 +26,14 @@ class Metadata(TypedDict, total=False):
 
 
 class Filters(TypedDict, total=False):
-    """정형 필터. 소프트 적용(8.1): 값이 없는 항목은 거르지 않는다. 키는 사용자 조건 기준."""
+    """검색 조건. 키는 사용자 조건 기준이며 값이 없으면 키를 생략한다.
+
+    거르는 조건(필터, 소프트 적용 8.1: 값이 비어 있는 제도는 통과): age, region, today
+    거르지 않는 신호(자격이 아니라 관심사): field(맞는 분야의 제도에 가산점), situation(현재 검색에는 쓰이지 않음)
+    """
     age: int
     region: str
-    field: str
+    field: str                # 관심 분야. 필터가 아니라 가산점 (제도 분야 이름이 달라도 제도가 사라지지 않는다)
     situation: list[str]
     today: str                # 신청기한이 지난 제도 제외 기준일(ISO). 미지정이면 오늘
 
