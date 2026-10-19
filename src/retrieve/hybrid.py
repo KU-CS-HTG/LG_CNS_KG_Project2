@@ -1,12 +1,15 @@
 """⑤ 검색 - Hybrid(Vector + BM25), Top-K, 서비스 단위 중복 제거. B -> C 인터페이스.
 
 흐름 (mode="hybrid_filter", 서비스 기본값)
-  1. 정형 필터를 벡터 저장소 조건(where)으로 바꾼다 (소프트: 값이 비어 있으면 통과, 기한 지난 제도 제외)
+  1. 정형 필터를 벡터 저장소 조건(where)으로 바꾼다 (소프트: 값이 비어 있으면 통과).
+     거르는 조건은 **신청기한·나이·지역**뿐이다. 관심 분야(field)는 자격이 아니라 관심사라 거르지 않는다.
   2. Vector 검색과 BM25 검색을 각각 후보 HYBRID_CANDIDATES개씩 가져온다
   3. RRF(Reciprocal Rank Fusion)로 두 순위를 합친다: 점수 = Σ 가중치 / (RRF_K + 순위)
      - 두 검색의 점수 단위(코사인 vs BM25)가 달라 점수를 직접 더하지 않고 순위만 쓴다
+  3'. 관심 분야가 제도의 분야와 맞으면(`filters.field_matches`) 점수에 FIELD_BOOST를 더한다 (가산점일 뿐 제도를 빼지 않는다.
+     분야 이름이 데이터와 달라 하나도 안 맞아도 결과는 그대로 나온다. FIELD_BOOST=0이면 끔)
   4. 같은 서비스의 조각은 가장 높은 것 하나만 남기고(서비스당 1개) 상위 K개를 돌려준다
-  5. 결과가 없으면 filters.relax()로 조건을 한 단계씩 풀어 다시 검색한다 (분야 -> 지역 -> 연령)
+  5. 결과가 없으면 filters.relax()로 조건을 한 단계씩 풀어 다시 검색한다 (지역 -> 연령. 분야는 필터가 아니라 풀지 않음)
 
 mode는 평가 실험용이다 (필터 없이 Vector 단독 / BM25 단독 / Hybrid / Hybrid+정형 필터 비교).
 Reranking·MMR은 문제가 관찰되면 도입한다 (8.2 개선 방법 표에 기록).
@@ -62,6 +65,15 @@ def rrf(rankings: list[list[Chunk]], weights: tuple[float, ...] | None = None,
     return [(chunks[cid], scores[cid]) for cid in order]
 
 
+def boost_by_field(ranked: list[tuple[Chunk, float]], wanted_field: str | None,
+                   boost: float = config.FIELD_BOOST) -> list[tuple[Chunk, float]]:
+    """관심 분야와 맞는 조각의 점수에 boost를 더하고 다시 정렬한다 (안정 정렬: 동점이면 원래 순서). 거르지는 않는다."""
+    if not wanted_field or boost <= 0:
+        return ranked
+    boosted = [(c, s + boost if filter_rules.field_matches(c.metadata.get("field"), wanted_field) else s) for c, s in ranked]
+    return sorted(boosted, key=lambda cs: -cs[1])
+
+
 def _top_services(ranked: list[tuple[Chunk, float]], k: int) -> tuple[list[Chunk], list[float]]:
     seen: set[str] = set()
     chunks: list[Chunk] = []
@@ -77,7 +89,7 @@ def _top_services(ranked: list[tuple[Chunk, float]], k: int) -> tuple[list[Chunk
     return chunks, scores
 
 
-def _run(query: str, k: int, mode: Mode, where: dict | None) -> tuple[list[Chunk], list[float]]:
+def _run(query: str, k: int, mode: Mode, where: dict | None, wanted_field: str | None = None) -> tuple[list[Chunk], list[float]]:
     n = max(config.HYBRID_CANDIDATES, k * 5)
     if mode == "vector":
         return _top_services(vector_store.vector_search(query, n, where), k)
@@ -85,7 +97,7 @@ def _run(query: str, k: int, mode: Mode, where: dict | None) -> tuple[list[Chunk
         return _top_services(vector_store.bm25_search(query, n, where), k)
     vec = [c for c, _ in vector_store.vector_search(query, n, where)]
     kw = [c for c, _ in vector_store.bm25_search(query, n, where)]
-    return _top_services(rrf([vec, kw], config.HYBRID_WEIGHTS), k)
+    return _top_services(boost_by_field(rrf([vec, kw], config.HYBRID_WEIGHTS), wanted_field), k)
 
 
 def search_with_info(query: str, filters: Filters, k: int = config.DEFAULT_TOP_K, mode: Mode = "hybrid_filter") -> SearchResult:
@@ -99,7 +111,7 @@ def search_with_info(query: str, filters: Filters, k: int = config.DEFAULT_TOP_K
     current: Filters = dict(filters)                   # type: ignore[assignment]
     relaxed = False
     while True:
-        chunks, scores = _run(query, k, mode, vector_store.build_where(current))
+        chunks, scores = _run(query, k, mode, vector_store.build_where(current), current.get("field"))
         if chunks:
             return SearchResult(chunks, scores, current, relaxed)
         softer = filter_rules.relax(current)
@@ -124,7 +136,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("query")
     ap.add_argument("--age", type=int)
     ap.add_argument("--region")
-    ap.add_argument("--field")
+    ap.add_argument("--field", help="관심 분야. 필터가 아니라 맞는 제도에 가산점")
     ap.add_argument("--today", help="기준일 (예: 2026-10-19). 기본은 오늘")
     ap.add_argument("--k", type=int, default=config.DEFAULT_TOP_K)
     ap.add_argument("--mode", choices=MODES, default="hybrid_filter")
