@@ -44,7 +44,7 @@
 | ① 로드 | API 수집·정제 → DB 적재 | `src/ingest/client.py`, `store.py` | A |
 | ② 분할 | 항목별(지원대상/선정기준/지원내용/신청방법) 구조 기반 분할, 긴 항목은 Recursive 보조, 조각 앞에 서비스명 접두 | `src/ingest/chunker.py` | A |
 | ③ 임베딩 | 로컬 다국어 모델(bge-m3 우선, 자원 부족 시 multilingual-e5) | `src/index/embedder.py` | B |
-| ④ 벡터 저장소 | 조각 + 메타데이터(지역·소관기관·분야·신청기한·대상조건) | `src/index/vector_store.py` | B |
+| ④ 벡터 저장소 | 조각 + 메타데이터(지역·소관기관·분야·신청기한·대상조건) 저장. Chroma(벡터) + BM25(글자 2-gram) | `src/index/vector_store.py` | B |
 
 **온라인 질의응답** (질문마다)
 
@@ -147,17 +147,25 @@ DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니�
 
 #### ④ 벡터 저장소 — `vector_store.build_index(chunks)` / 조회
 
-색인은 조각을 `chunk_id` 기준으로 upsert하고, 조회는 `(Chunk, 점수)` 목록을 돌려줍니다.
+색인은 조각을 `chunk_id` 기준으로 upsert하고, 조회는 `(Chunk, 점수)` 목록을 돌려줍니다. 점수는 벡터 검색이 코사인 유사도(높을수록 가까움), BM25 검색이 BM25 점수입니다.
 
 ```
-[index] upsert 조각 208개 (신규·변경 서비스분) / 제거 12개 (종료 서비스분)
-[index] 총 조각 수: 7,400
+[index] 조각 208개 색인 / 총 7,400개 (chunks__BAAI_bge-m3)
 
 vector_search("월세가 부담돼요", k=3)
   → [(SVC000123#지원대상, 0.82), (SVC000456#지원대상, 0.80), (SVC000123#지원내용, 0.77)]
 bm25_search("청년월세", k=3)
   → [(SVC000123#지원대상, 11.4), (SVC000456#지원대상, 10.9), (SVC000789#지원내용, 6.2)]
+get_service_chunks("SVC000123")
+  → 한 서비스의 지원대상·선정기준·지원내용·신청방법 조각 4개 (항목 순)
 ```
+
+- **구성**: 벡터는 Chroma(`data/vectorstore/`에 저장, 커밋 안 함), 키워드는 `rank_bm25` + 글자 2-gram입니다. 한국어는 조사가 붙어("월세를") 단어 단위로 자르면 놓치고, 3글자 단위(trigram)는 두 글자 단어("월세")를 못 찾아서 2-gram을 씁니다.
+- **소프트 필터를 저장소에서 처리**: 저장할 때 빈 값을 통과하는 값으로 바꿔 둡니다(지역 없음 `""`, 연령 하한 없음 `-1`, 상한 없음 `999`, 기한 없음 `99999999`). `build_where(filters)`가 이에 맞는 조건을 만들며, 기한 지난 제도는 항상 제외합니다. 필터 없이 검색하려면(Vector 단독 실험) `where=None`을 넘깁니다. 읽어 올 때는 빈 값을 다시 키 생략으로 되돌립니다.
+- **증분 색인**: 같은 `chunk_id`는 덮어쓰고, 서비스에서 사라진 항목의 조각은 지우며, 종료된 서비스는 `remove_services`로 제거합니다. BM25 색인은 저장된 텍스트에서 자동으로 다시 만들어집니다(색인이 바뀌면 갱신).
+- **모델별 컬렉션**: 임베딩 모델을 바꿔도 차원이 달라 깨지지 않도록 컬렉션 이름에 모델명이 들어갑니다. 모델을 바꾸면 다시 색인해야 합니다.
+- **속도(참고)**: 이 샌드박스(4코어)에서 가짜 벡터 2만 조각으로 쟀을 때 색인 약 93초(임베딩 제외), 검색은 필터 포함 질의당 벡터 약 0.2초·BM25 약 0.26초, BM25 색인을 처음 만드는 데 약 10초였습니다. 조각이 수십만 개를 넘으면 BM25(메모리에 올림)가 병목이 되므로 그때는 Qdrant·Elasticsearch 등을 검토합니다.
+- 확인: `python -m src.index.vector_store --sample --query "월세가 부담돼요"` (샘플 조각을 색인하고 벡터·BM25 결과를 출력)
 
 #### 조건 추출 — `condition_extractor.extract_conditions(question)`
 
@@ -306,7 +314,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 - **B가 보장할 것**: 순서는 관련도 순, 같은 서비스의 조각은 중복 제거, 신청기한이 지난 제도는 없음, 결과가 없으면 필터를 풀어 다시 검색한 뒤 돌려줌(그래도 없으면 빈 리스트).
 - **C가 가정해도 되는 것**: 각 `Chunk`에 서비스명·소관기관(`metadata["agency"]`)·상세 링크(`detail_url`)가 있다는 점. **가정하면 안 되는 것**: 모든 조건이 충족됐다는 점. 위의 구직촉진수당처럼 `region`·`deadline`이 비어 있으면 C는 단정하지 않고 "확인 필요"로 표시합니다.
-- C는 이 목록에서 같은 서비스의 다른 항목(선정기준, 신청방법 등)이 더 필요하면 `service_id`로 조각을 더 요청하거나 DB를 조회해야 합니다. 어느 쪽으로 할지는 B·C가 합의해서 정합니다. (근거 선별 단계가 이 문제를 다룹니다.)
+- C는 이 목록에서 같은 서비스의 다른 항목(선정기준, 신청방법 등)이 더 필요하면 `service_id`로 조각을 더 가져와야 합니다. B가 `vector_store.get_service_chunks(service_id)`(한 서비스의 전체 조각, 항목 순)를 만들어 두었으니, 이를 쓸지 B·C가 합의해서 정합니다. (근거 선별 단계가 이 문제를 다룹니다.)
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
 
@@ -362,6 +370,8 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 증분 수집(`store.upsert_services`가 변경분 반환), 종료 서비스는 색인에서 제거 | 기획서 7장: 정기 수집 후 변경분만 재색인. |
 | 구조 기반 분할 + 서비스명 접두 | 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고, 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
+| 벡터 저장소는 Chroma, 소프트 필터는 저장할 때 빈 값을 대체값으로 바꿔 처리 | 나중에 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓴다. Chroma는 "값이 없으면 통과"를 쿼리로 표현하기 어려워, 색인 시 빈 값을 통과하는 값으로 저장해 해결했다. |
+| BM25는 `rank_bm25` + 글자 2-gram, 색인은 저장된 텍스트에서 자동 재생성 | 한국어 조사·두 글자 단어를 다루면서 추가 설치(형태소 분석기)가 필요 없다. Chroma에 BM25가 없어 따로 두되, 색인 버전 파일로 동기화한다. 부족하면 `kiwipiepy`로 교체하고 Baseline 실험에서 비교한다. |
 | `retrieve/baseline.py`, `search(mode=...)` | Baseline → Vector → Hybrid → Hybrid+필터 비교 실험으로 하이브리드 효과를 검증한다. `mode` 기본값이 서비스 경로라 시그니처는 호환된다. |
 | `evidence.py`(근거 선별), `Answer`에 `no_evidence` | 질문당 제도를 3~5개로 제한하고, 근거 없음 응답을 UI·평가가 구분해 쓴다. |
 | `app/`은 `answer_question()` 하나만 호출 | UI 교체와 백엔드 수정이 서로 영향을 주지 않는다. |
@@ -383,7 +393,7 @@ pip install -r requirements.txt        # 설치
 cp .env.example .env                   # 키 입력: GOV24_API_KEY(Decoding 키), OPENAI_API_KEY
 python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
 python -m src.index.embedder           # B: 임베딩 모델 동작 확인 (첫 실행 시 모델 약 2.2GB 다운로드)
-python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
+python -m src.index.vector_store --sample --query "월세가 부담돼요"   # B: 샘플 조각 색인 + 검색 확인 (A가 끝나면 --sample 없이 pipeline 결과를 색인, --full은 전체 재색인)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
@@ -447,6 +457,7 @@ def test_예시(fake_search, fake_conditions):
 |---|---|
 | `src/ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `src/index/embedder.py` | 구현됨 (B). 가짜 모델 테스트 통과. **실제 bge-m3로는 이 환경에서 못 돌려 봄** — 본인 PC에서 `python -m src.index.embedder`로 확인 필요 |
-| `tests/` | 12개 통과(샘플 데이터 검증 4 + 임베딩 8), 24개는 구현 전·키 없음·실제 모델 미사용이라 skip |
+| `src/index/embedder.py` | 구현됨 (B). 가짜 모델 테스트 통과, 실제 bge-m3는 팀원 PC에서 `python -m src.index.embedder`로 확인(월세 질문 ↔ 청년월세 0.553 > 기초연금 0.422) |
+| `src/index/vector_store.py` | 구현됨 (B). Chroma + BM25, 임시 폴더·가짜 임베딩으로 테스트 통과. 실제 모델·실제 데이터로는 미확인 |
+| `tests/` | 35개 통과(샘플 데이터 4 + 임베딩 8 + 벡터 저장소 23), 22개는 구현 전·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소 테스트는 skip. 전부 돌리려면 `pip install -r requirements.txt` |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |

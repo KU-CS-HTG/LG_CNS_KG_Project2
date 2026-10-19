@@ -20,6 +20,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")  # 자원 부족 시 multilingual-e5
 EMBEDDING_DEVICE = os.environ.get("EMBEDDING_DEVICE") or None   # None이면 자동(cuda > mps > cpu)
 EMBEDDING_BATCH_SIZE = 32        # 메모리가 부족하면 줄인다
+INDEX_BATCH_SIZE = 64            # 벡터 저장소에 한 번에 임베딩해 넣는 조각 수
 EMBEDDING_MAX_SEQ_LENGTH = 512   # 조각은 MAX_CHUNK_CHARS(1000자) 이내라 512 토큰이면 대부분 충분 (bge-m3는 최대 8192)
 GENERATION_MODEL = "gpt-4o-mini"
 DEFAULT_TOP_K = 5                # 평가에서 3 / 5 / 10 비교

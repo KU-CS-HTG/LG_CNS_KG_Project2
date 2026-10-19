@@ -65,9 +65,22 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `tests/fixtures/sample_search_results.json` + `fake_search`·`fake_conditions` 픽스처 | B가 끝나기 전에 C가 자기 코드를 검증하도록 B→C 인계 데이터(Top-5 조각, 근거 없음 사례)를 미리 정해 두고 `hybrid.search`·`extract_conditions`를 가짜로 바꿔 끼운다. 이를 위해 C는 다른 모듈 함수를 모듈 속성으로 호출한다(`generator.py` 주석에 규칙 명시). |
 | `test_generate` | C 코드(조건→필터, 근거 선별, 인용, 근거 없음 응답, 전체 흐름). LLM이 필요한 실제 생성 테스트는 `OPENAI_API_KEY`가 있을 때만 실행. |
 | `embedder`: 모델 지연 로딩, L2 정규화, `kind`(passage/query)별 e5 접두 자동 처리, `embed_query`·`embedding_dim` 제공 | 모델 로딩은 수 초~수십 초 걸리므로 처음 쓸 때 한 번만 한다. 정규화하면 벡터 저장소가 내적/코사인 어느 쪽이든 같은 결과를 낸다. e5는 접두가 없으면 품질이 떨어지는데, 호출하는 쪽이 모델을 몰라도 되게 이 모듈이 처리한다(모델 교체 실험이 쉬움). 시그니처 `embed_texts(texts, kind="passage")`는 기존 호출과 호환된다. |
+| 벡터 저장소: Chroma(정식 벡터 DB), 소프트 필터는 저장 시 대체값(지역 `""`, 연령 -1/999, 기한 99999999)으로 처리, `build_where` | 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓰기로 했다(규모가 작아 numpy+SQLite도 가능하나 확장성 우선). Chroma 필터에는 "값이 없으면 통과"가 없어서, 빈 값을 통과하는 값으로 미리 바꿔 저장하는 방식으로 기획서 8.1의 소프트 필터를 구현했다. 읽을 때는 원래대로(키 생략) 되돌린다. |
+| BM25: `rank_bm25` + 글자 2-gram, 색인은 Chroma 텍스트에서 파생·버전 파일로 갱신 | Chroma에 BM25가 없다. 한국어는 조사 때문에 단어 단위가 불리하고 trigram은 두 글자 단어를 못 찾으므로 2-gram. 저장소가 둘로 나뉘지만 BM25 색인은 파생물이라 `index_version` 파일이 바뀌면 다시 만들어 동기화 문제를 피한다. |
+| 임베딩 모델별 컬렉션(`chunks__<모델명>`) | 모델을 바꾸는 실험(bge-m3 ↔ e5)에서 차원 불일치로 저장소가 깨지는 것을 막는다. |
+| `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks`는 B→C에서 미결이던 "같은 서비스의 다른 항목 조각" 조회의 후보. |
+| `test_vector_store`, 테스트용 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 | 임시 폴더와 글자 2-gram 해시 가짜 임베딩으로 실제 Chroma 동작(upsert·삭제·필터·BM25 갱신)을 모델 없이 검증. `test_retrieval`도 같은 픽스처를 쓴다. |
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
+
+### 3.0 기획서 8.3 기록용 (벡터 저장소)
+
+| 선택/변경 항목 | 발견한 문제 | 선택 이유 | 결과 |
+|---|---|---|---|
+| 벡터 저장소 = Chroma | 수천~수만 조각이라 어떤 방식도 가능하나 이후 청년 외 데이터로 확장 예정 | 확장성과 정식 벡터 DB 사용 | (수집 후 규모·검색 성능 기록) |
+| 소프트 필터를 저장 시 대체값으로 처리 | Chroma 필터는 값이 없는 항목을 통과시키는 조건을 표현하기 어려움 | 빈 값을 통과하는 값으로 저장해 where 조건만으로 처리 | 테스트에서 연령·지역·기한·분야 규칙 확인 |
+| BM25 = rank_bm25 + 글자 2-gram | Chroma에 BM25가 없고, 한국어는 조사·두 글자 단어 문제 | 추가 설치 없이 한국어 기본 대응, 필요 시 형태소 분석기로 교체 | Baseline 실험에서 비교 |
 
 ### 3.1 데이터 범위: 청년층 우선
 
@@ -102,9 +115,10 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 모듈 | 상태 |
 |---|---|
 | `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
-| `index/embedder.py` | 구현됨 (sentence-transformers, bge-m3). 가짜 모델 테스트 통과, 실제 모델 검증은 본인 PC에서 필요 |
+| `index/embedder.py` | 구현됨 (sentence-transformers, bge-m3). 가짜 모델 테스트 통과, 실제 모델은 팀원 PC에서 확인(0.553 > 0.422) |
+| `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델·데이터 미확인 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 12개 통과(샘플 데이터 검증 4 + 임베딩 8), 24개는 구현 전·키 없음·실제 모델 미사용이라 skip |
+| `tests/` | 35개 통과(샘플 데이터 4 + 임베딩 8 + 벡터 저장소 23), 22개는 구현 전·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -118,3 +132,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - C용 테스트 기반 추가: `tests/fixtures/sample_search_results.json`, `fake_search`·`fake_conditions`, `tests/test_generate.py`. `generator.py`에 모듈 속성 호출 규칙 주석 추가. README 8장 '테스트'를 B용/C용으로 나눔.
 - 데이터 범위를 청년층으로 한정(§3.1): `config.YOUTH_AGE_RANGE`·`YOUTH_KEYWORDS`, `ingest.store.is_youth_service`(스켈레톤), `pipeline`에 청년 필터 단계 명시. README §1.1 추가, 2.1 예시 수치를 범위에 맞게 조정, §2.2·테스트 절에 상호 링크.
 - ③ 임베딩 구현(`index/embedder.py`): `embed_texts(texts, kind="passage")`, `embed_query`, `embedding_dim`, `python -m src.index.embedder` 스모크 테스트. `config`에 `EMBEDDING_DEVICE/BATCH_SIZE/MAX_SEQ_LENGTH` 추가, `requirements.txt`에 sentence-transformers·numpy 추가, `tests/test_embedder.py` 추가.
+- ④ 벡터 저장소 구현(`index/vector_store.py`): Chroma + BM25(글자 2-gram), 저장 시 대체값으로 소프트 필터 처리(`build_where`), 증분 색인·삭제·`get_service_chunks`·`clear_index`, `python -m src.index.vector_store --sample --query ...`. `config.INDEX_BATCH_SIZE`, `requirements.txt`에 chromadb·rank_bm25 추가, `tests/test_vector_store.py`와 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 추가, `test_retrieval`이 이를 사용하도록 변경.
