@@ -14,7 +14,7 @@ from src.common import config
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.generate import citation, condition_extractor
 from src.generate import evidence as evidence_mod
-from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE
+from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.retrieve import hybrid
 
 # 테스트 규칙: B가 끝나기 전에도 시험할 수 있도록(tests/conftest.py의 fake_search, fake_conditions)
@@ -68,7 +68,7 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 
 def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
     if not evidence:
-        return Answer(text=NO_EVIDENCE_MESSAGE, no_evidence=True)
+        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
     try:
         out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence))
@@ -95,7 +95,7 @@ def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
         recs.append(_to_recommendation(question, chunks, gen))
 
     if not recs:
-        return Answer(text=f"{NO_MATCH_MESSAGE}\n{NO_EVIDENCE_MESSAGE}", no_evidence=True)
+        return Answer(text=f"{NO_MATCH_MESSAGE}\n{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
     return Answer(text=text, recommendations=recs)
 

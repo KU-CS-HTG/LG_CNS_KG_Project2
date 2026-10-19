@@ -7,7 +7,7 @@ import pytest
 from src.common import config
 from src.common.schema import Answer
 from src.generate import condition_extractor, evidence, generator
-from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, build_citations
+from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE, build_citations
 
 from tests.fixtures import load_search_cases
 
@@ -91,6 +91,7 @@ def test_generate_answer_without_evidence():
     assert isinstance(answer, Answer)
     assert answer.no_evidence is True and answer.recommendations == []
     assert NO_EVIDENCE_MESSAGE in answer.text                    # 모른다고 답하고 담당 기관 안내
+    assert SCOPE_NOTICE in answer.text                           # 청년 대상 범위 안내 (README 1.1)
 
 
 def test_answer_question_no_evidence_end_to_end(fake_search, fake_conditions):
@@ -161,6 +162,7 @@ def test_generate_answer_all_excluded_is_no_evidence(monkeypatch):
     _fake_llm(monkeypatch, {"services": [{"service_id": s, "applicable": "관련 없음"} for s in ev]})
     answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
     assert answer.no_evidence is True and answer.recommendations == [] and NO_EVIDENCE_MESSAGE in answer.text
+    assert SCOPE_NOTICE in answer.text
 
 
 def test_reason_uses_only_phrases_from_question(monkeypatch):
