@@ -117,3 +117,46 @@ def test_answer_question_with_results(fake_search, fake_conditions):
     unclear = [r for r in answer.recommendations if "생활안정" in r.service_name]   # SAMPLE011: 값이 빈 제도
     assert all(r.needs_check for r in unclear)                   # 단정하지 않고 '확인 필요'
 
+
+
+# --- 생성: LLM 출력을 가짜로 고정 (LLM 없이) -------------------------------------
+def _fake_llm(monkeypatch, out):
+    def _chat(system, user):
+        if isinstance(out, Exception):
+            raise out
+        return out
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+
+
+def test_generate_answer_excludes_not_eligible_and_fills_from_chunks(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    first, second = list(ev)[:2]
+    _fake_llm(monkeypatch, {"situation": "서울 거주, 27세", "follow_up": "가구 소득은 어느 정도인가요?", "services": [
+        {"service_id": first, "applicable": "가능", "reason": "이유", "benefit": "혜택", "how_to_apply": "온라인",
+         "needs_check": []},
+        {"service_id": second, "applicable": "해당 없음"},          # 명백히 맞지 않으면 후보에서 뺀다
+    ]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    names = [r.service_name for r in answer.recommendations]
+    assert ev[second][0].service_name not in names and len(names) == len(ev) - 1
+    rec = answer.recommendations[0]
+    assert rec.service_name == ev[first][0].service_name and rec.agency == ev[first][0].metadata["agency"]  # 코드가 채움
+    assert rec.citations and all(any(c.quote in ch.text for ch in ev[first]) for c in rec.citations)
+    assert "신청기한" in rec.how_to_apply
+    assert "가구 소득" in answer.text and DISCLAIMER in answer.text
+
+
+def test_generate_answer_falls_back_when_llm_fails(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    _fake_llm(monkeypatch, RuntimeError("network down"))
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    assert answer.no_evidence is False and len(answer.recommendations) == len(ev)   # 원문만으로 안내
+    assert all(r.citations and r.needs_check for r in answer.recommendations)        # 판단 못 했으니 확인 필요
+    assert DISCLAIMER in answer.text
+
+
+def test_generate_answer_all_excluded_is_no_evidence(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    _fake_llm(monkeypatch, {"services": [{"service_id": s, "applicable": "해당 없음"} for s in ev]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, ev)
+    assert answer.no_evidence is True and answer.recommendations == [] and NO_EVIDENCE_MESSAGE in answer.text
