@@ -9,3 +9,4 @@
 {"id": "q9", "question": "서울 사는 24살 대학생인데, 내가 받을만한 취업 지원 제도 없을까?", "user": {"age": 24, "region": "서울특별시"}, "expected_ids": ["SAMPLE-011", "SAMPLE-001", "SAMPLE-008"], "forbidden_ids": [], "type": "상황형·자기소개 포함"}
 {"id": "q10", "question": "월세가 너무 부담돼요", "user": {"age": 27, "region": "서울특별시", "sigungu": "노원구"}, "expected_ids": ["SAMPLE-002"], "forbidden_ids": ["SAMPLE-012"], "type": "시군구 조건(다른 구 제외)"}
 {"id": "q11", "question": "월세가 너무 부담돼요", "user": {"age": 27, "region": "서울특별시", "sigungu": "강남구"}, "expected_ids": ["SAMPLE-012", "SAMPLE-002"], "forbidden_ids": [], "type": "시군구 조건(내 구 포함)"}
+{"id": "q12", "question": "직업훈련 훈련장려금에 대해서 알려줘", "user": {"age": null, "region": null}, "expected_ids": ["SAMPLE-008", "SAMPLE-013"], "forbidden_ids": [], "type": "제도명 일부 포함"}

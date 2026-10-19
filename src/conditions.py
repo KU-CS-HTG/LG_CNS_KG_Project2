@@ -7,6 +7,11 @@ from src.regions import normalize_region, normalize_sigungu
 from src.schema import Conditions, QueryPlan
 
 
+# 모든 제도의 청크 머리말·항목에 공통으로 나오는 단어 → 검색어에서 제외
+GENERIC_WORDS = {"신청방법", "신청기한", "신청기간", "지원대상", "선정기준", "지원내용",
+                 "신청자격", "자격", "조건", "자격조건", "방법", "대상"}
+
+
 class _Extracted(BaseModel):
     age: int | None = Field(None, description="만 나이. 질문에 없으면 null")
     region: str | None = Field(None, description="거주 시·도 (예: 서울, 경기도). 질문에 없으면 null")
@@ -25,7 +30,9 @@ _SYSTEM = (
     "검색어에 넣지 않는다(조건은 따로 필터링된다). 일상 표현은 제도에 쓰이는 행정 용어로 바꾸고 "
     "관련 용어를 2~5개 덧붙인다. 예) '월세가 부담돼요' → '월세 지원 주거비 임차료 주거급여'\n"
     "  단, 질문에 제도 이름(예: 근로장려금, 국민내일배움카드)이 있으면 그 이름을 바꾸거나 빼지 말고 "
-    "검색어 맨 앞에 그대로 둔다. 예) '근로장려금 언제 신청해?' → '근로장려금 신청방법 신청기한'\n"
+    "검색어 맨 앞에 그대로 둔다. 예) '근로장려금 언제 신청해?' → '근로장려금 근로소득 장려금 지급'\n"
+    "  '신청방법·신청기한·지원대상·선정기준·지원내용·자격·조건' 같은 항목 이름은 모든 제도에 공통으로 "
+    "들어 있어 검색을 흐리므로 검색어에 넣지 않는다.\n"
     "- category: 아래 [분야 목록] 중에서만 고른다.\n\n[분야 목록]\n{categories}"
 )
 
@@ -51,7 +58,8 @@ def analyze(question: str) -> QueryPlan:
 
     age = r.age if r.age is not None and 0 <= r.age <= 120 else None
     category = r.category if r.category in cats else None       # 목록 밖 값은 버림
-    query = r.search_query.strip() or question
+    # 프롬프트로 막아도 LLM이 항목 이름을 넣는 경우가 있어 코드로 한 번 더 제거
+    query = " ".join(w for w in r.search_query.split() if w not in GENERIC_WORDS).strip() or question
     cond = Conditions(age=age, region=normalize_region(r.region), sigungu=normalize_sigungu(r.sigungu))
     return QueryPlan(cond, query, category)
 

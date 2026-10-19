@@ -98,11 +98,22 @@ def _search_sql(question: str, cond: Conditions, k: int) -> list[ServiceHit]:
 
 
 # ---------- 모드 2: BM25 ----------
+def _bm25_text(chunk_text: str) -> str:
+    """'[국민내일배움카드] 지원대상\\n본문' → '국민내일배움카드 본문'
+
+    머리말의 항목 이름(지원대상·신청방법 등)은 모든 서비스에 똑같이 붙어 있어서,
+    BM25 점수에 넣으면 질문 속 같은 단어가 '아무 제도'와 일치해 버린다. 서비스명은 남긴다.
+    """
+    header, _, body = chunk_text.partition("\n")
+    name = header[1:header.rfind("]")] if header.startswith("[") and "]" in header else header
+    return f"{name} {body}"
+
+
 @lru_cache(maxsize=1)
 def _bm25_index():
     from rank_bm25 import BM25Okapi
     chunks = [dict(c) for c in db.all_chunks()]
-    return BM25Okapi([tokenize(c["text"]) for c in chunks]), chunks
+    return BM25Okapi([tokenize(_bm25_text(c["text"])) for c in chunks]), chunks
 
 
 def _rank_bm25(question: str, cond: Conditions, n: int) -> list[dict]:
@@ -182,4 +193,28 @@ def search(question: str, cond: Conditions, mode: str = "hybrid", k: int = DEFAU
     else:
         ranker = {"bm25": _rank_bm25, "vector": _rank_vector, "hybrid": _rank_hybrid}[mode]
         hits = _to_hits(ranker(question, cond, pool * 8), pool)   # 청크→서비스로 묶이면 줄어들어 8배로 가져옴
+    return _boost_category(hits, category, k)
+
+
+def search_multi(queries: list[str], cond: Conditions, mode: str = "hybrid", k: int = DEFAULT_TOP_K,
+                 category: str | None = None) -> list[ServiceHit]:
+    """[Multi Query] 원문·재작성 검색어로 각각 검색한 서비스 순위를 RRF로 합친다.
+
+    재작성이 빗나가도(예: 항목 이름이 섞임) 원문 순위가 받쳐 주고,
+    원문이 자기소개로 흐려져도 재작성 순위가 받쳐 준다. 두 목록 모두 상위인 제도가 1위가 된다.
+    """
+    qs = list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))   # 빈 값·중복 제거
+    if len(qs) == 1:
+        return search(qs[0], cond, mode=mode, k=k, category=category)
+
+    pool = k * 3
+    fused: dict[str, float] = {}
+    first: dict[str, ServiceHit] = {}
+    for q in qs:
+        for rank, h in enumerate(search(q, cond, mode=mode, k=pool), start=1):
+            fused[h.service_id] = fused.get(h.service_id, 0.0) + 1.0 / (RRF_K + rank)
+            first.setdefault(h.service_id, h)            # 근거 청크는 먼저 찾은 쪽 것을 사용
+    hits = sorted(first.values(), key=lambda h: -fused[h.service_id])
+    for h in hits:
+        h.score = fused[h.service_id]
     return _boost_category(hits, category, k)

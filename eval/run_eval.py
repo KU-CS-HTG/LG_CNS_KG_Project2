@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.config import EMBEDDING_PROVIDER, SEARCH_MODES  # noqa: E402
 from src.regions import normalize_region, normalize_sigungu  # noqa: E402
-from src.retriever import search  # noqa: E402
+from src.retriever import search, search_multi  # noqa: E402
 from src.schema import Conditions  # noqa: E402
 
 HERE = Path(__file__).parent
@@ -48,8 +48,12 @@ def evaluate(mode: str, k: int, cases: list[dict], verbose: bool,
         u = c["user"]
         cond = Conditions(age=u.get("age"), region=normalize_region(u.get("region")),
                           sigungu=normalize_sigungu(u.get("sigungu")))
-        query, category = plans[c["id"]] if plans else (c["question"], None)
-        got = [h.service_id for h in search(query, cond, mode=mode, k=k, category=category)]
+        if plans:   # 앱과 똑같이: 원문 + 재작성 검색어 Multi Query + 분야 가산점
+            query, category = plans[c["id"]]
+            hits = search_multi([c["question"], query], cond, mode=mode, k=k, category=category)
+        else:       # Baseline: 원문 그대로
+            hits = search(c["question"], cond, mode=mode, k=k)
+        got = [h.service_id for h in hits]
         expected, forbidden = set(c["expected_ids"]), set(c.get("forbidden_ids", []))
 
         if expected:

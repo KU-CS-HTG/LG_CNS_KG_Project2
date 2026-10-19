@@ -9,7 +9,7 @@ from src import conditions
 from src.config import DEFAULT_MODE, DEFAULT_TOP_K, SEARCH_MODES
 from src.generator import describe, generate_stream, place_text
 from src.regions import SIDO
-from src.retriever import search
+from src.retriever import search_multi
 from src.schema import age_text
 
 AUTO = "(질문에서 자동 추출)"
@@ -45,8 +45,8 @@ if st.button("찾아보기", type="primary") and question.strip():
         st.info(f"적용 조건: {describe(cond)}  ·  분야: {plan.category or '없음'}  ·  검색 방식: {mode}\n\n"
                 f"검색어: {plan.search_query}")
         with st.spinner("검색 중..."):
-            # 원문 대신 재작성된 검색어 사용 → 자기소개(나이·신분)가 검색 점수를 흐리지 않게
-            hits = search(plan.search_query, cond, mode=mode, k=k, category=plan.category)
+            # 원문 + 재작성 검색어를 둘 다 검색해 합침 (한쪽이 빗나가도 다른 쪽이 받쳐 줌)
+            hits = search_multi([question, plan.search_query], cond, mode=mode, k=k, category=plan.category)
         st.divider()
         st.write_stream(generate_stream(question, cond, hits))   # 생성되는 대로 바로 표시
     except Exception as e:  # 키 누락, DB·벡터DB 미생성 등을 화면에 표시
