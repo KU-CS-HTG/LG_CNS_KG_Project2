@@ -5,4 +5,8 @@ __pycache__/
 data/raw/*
 !data/raw/.gitkeep
 data/*.db
+data/*.db-*
+data/*.db.ingest.lock
 data/vectorstore/
+.pytest_cache/
+/pytest-cache-files-*/

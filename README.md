@@ -6,7 +6,7 @@
 - 상세 설계 이유·변경 이력: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - AI 작업 지침(규칙 원문): [`CLAUDE.md`](CLAUDE.md)
 
-> 현재는 **스켈레톤 단계**입니다. API 수집(`src/ingest/client.py`)과 공용 설정·데이터 타입만 구현되어 있고, 나머지는 `NotImplementedError`로 남겨 둔 인터페이스입니다.
+> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API 세부 계약은 미검증이고 자동 소실 처리는 차단되어 있습니다. B/C는 스켈레톤입니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
 
 ## 1. 데이터
 
@@ -68,7 +68,7 @@
 
 #### ① 로드 — `python -m src.ingest.pipeline`
 
-수집 → 정제 → DB 적재 순으로 진행 로그가 나오고, 신규·변경된 서비스만 다음 단계로 넘어갑니다.
+수집 → 정제 → DB 적재 순으로 진행합니다. 기본 반환은 신규·변경 및 이전 실행의 **미확인 pending 조각**입니다. 아래 로그는 초기 설계의 예상 예시이며 실제 수집 결과가 아닙니다. 현재 한국어 실행 요약과 완전성 판정은 [A 운영 계약](docs/INGEST_A.md)을 따릅니다.
 
 ```
 [client] serviceList 수집 완료: 10,213건 (perPage=500, 21페이지)
@@ -98,7 +98,7 @@ DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니�
 }
 ```
 
-- DB 컬럼명은 예시이며 A가 확정합니다(`schema.py`에 없는 부분). 이후 `Chunk.metadata`는 여기서 만들어집니다.
+- 위 DB JSON은 초기 설계 예시입니다. 실제 SQLite는 정규 payload·실행 이력·미확인 인계 세 테이블을 사용하고, 검증된 자격은 eligibility에 보존합니다. 정확한 계약은 [A 운영 계약](docs/INGEST_A.md)을 따릅니다.
 - 신청기한이 상시·미정이면 `deadline`은 `null`입니다. 값을 알 수 없는 항목도 `null`로 두며(추측 금지), 이는 뒤에서 "확인 필요"로 이어집니다.
 
 #### ② 분할 — `chunker.chunk_service(service)`
@@ -247,7 +247,7 @@ Filters: {"age": 27, "region": "서울", "field": "주거", "situation": ["구�
 
 #### (1) A → B: 색인용 조각
 
-A가 B에게 주는 것은 **정제·분할이 끝난, 서비스 전체의 조각 목록**입니다. B는 이것을 그대로 `vector_store.build_index(chunks)`에 넣습니다.
+A가 B에게 주는 것은 **정제·분할이 끝난 서비스별 전체 교체 조각**입니다. `pipeline.run()`은 미확인 조각도 재전달하며 제거 이벤트는 별도로 조회합니다. B가 chunk_id upsert만 수행하면 줄어든 조각이 남을 수 있습니다. 서비스 전체 교체/제거 및 두 색인 적용 후 확인 응답을 제안하며, B writer 연동은 아직 구현·합의되지 않았습니다. [인계 API](docs/INGEST_A.md)를 따릅니다.
 
 ```python
 # A가 만들어서 넘긴다 — pipeline.run() 의 반환값 (일부)
@@ -300,7 +300,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 ```
 
 - **B가 보장할 것**: 순서는 관련도 순, 같은 서비스의 조각은 중복 제거, 신청기한이 지난 제도는 없음, 결과가 없으면 필터를 풀어 다시 검색한 뒤 돌려줌(그래도 없으면 빈 리스트).
-- **C가 가정해도 되는 것**: 각 `Chunk`에 서비스명·소관기관(`metadata["agency"]`)·상세 링크(`detail_url`)가 있다는 점. **가정하면 안 되는 것**: 모든 조건이 충족됐다는 점. 위의 구직촉진수당처럼 `region`·`deadline`이 비어 있으면 C는 단정하지 않고 "확인 필요"로 표시합니다.
+- **초기 C 계약의 미해결 기대값**: 모든 조각의 기관·상세 링크가 비어 있지 않다는 기대와 달리 원천에 누락이 있을 수 있습니다. A는 값을 만들지 않고 metadata 키 생략/빈 detail_url 및 품질 진단으로 표시합니다. 공용 타입과 C 코드는 유지했으며 누락 표시·후보 제외 방침은 팀 결정이 필요합니다. region·deadline 등 미상 조건은 기존처럼 "확인 필요" 대상입니다. 이 제안은 팀 합의 완료를 의미하지 않습니다.
 - C는 이 목록에서 같은 서비스의 다른 항목(선정기준, 신청방법 등)이 더 필요하면 `service_id`로 조각을 더 요청하거나 DB를 조회해야 합니다. 어느 쪽으로 할지는 B·C가 합의해서 정합니다. (근거 선별 단계가 이 문제를 다룹니다.)
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
@@ -310,7 +310,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 ```
 src/
   common/    config.py, schema.py                                  # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, store, chunker, pipeline                      # A
+  ingest/    client, normalize, store, chunker, pipeline           # A
   index/     embedder, vector_store                                # B
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
@@ -353,7 +353,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | 디렉터리 = 담당자 단위 | 한 사람이 자기 폴더만 수정해 파일 충돌과 책임 논쟁을 없앤다. |
 | `schema.py`에 모듈 간 계약을 한 곳에 정의 | 구현 전에도 서로의 입출력을 가정하고 병렬 개발한다. |
-| 함수는 시그니처·docstring만, 본문은 `NotImplementedError` | 인터페이스만 합의하고 구현은 담당자가 한다. 합의 전인 DB 스키마·색인 진입점은 확정하지 않는다. |
+| B/C는 `NotImplementedError` 스켈레톤, A는 구현됨 | 기존 공개 타입 유지. A DB·pending 설계와 B 소비자 제안은 [운영 계약](docs/INGEST_A.md)에 기록. |
 | 증분 수집(`store.upsert_services`가 변경분 반환), 종료 서비스는 색인에서 제거 | 기획서 7장: 정기 수집 후 변경분만 재색인. |
 | 구조 기반 분할 + 서비스명 접두 | 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고, 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
@@ -376,7 +376,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ```bash
 pip install -r requirements.txt        # 설치
 cp .env.example .env                   # 키 입력: GOV24_API_KEY(Decoding 키), OPENAI_API_KEY
-python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
+python -m src.ingest.pipeline          # A: 실제 수집, 기본 증분 (라이브 실행 전 승인)
+python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB·이력·pending 보존
+python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
@@ -394,7 +396,7 @@ Windows PowerShell에서 환경변수를 직접 설정한다면 `export` 대신 
 | B (A 없이) | 가짜 조각 `Chunk` 48개 | `sample_chunks.json`, `sample_queries.json` |
 | C (B 없이) | 가짜 검색 결과 + 가짜 조건 추출 | `sample_search_results.json`, `fake_search`·`fake_conditions` 픽스처 |
 
-구현 전(`NotImplementedError`) 테스트는 실패가 아니라 skip으로 표시되고, 구현하면 같은 테스트가 자동으로 실제 검증을 시작합니다. `python -m pytest -rs`로 실행합니다.
+공용 훅은 B/C 구현 전(`NotImplementedError`) 테스트를 skip으로 표시합니다. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
 
 #### B가 A의 구현 없이 테스트하기
 
@@ -439,7 +441,8 @@ def test_예시(fake_search, fake_conditions):
 
 | 모듈 | 상태 |
 |---|---|
-| `src/ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
+| `src/ingest/` | 수집·정제·SQLite·구조 분할·증분 pending·CLI 구현. 실제 API 세부 계약/JA 코드 의미는 미검증, 자동 소실 차단 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 샘플 데이터 검증 4개 통과, 나머지 23개는 구현 전(또는 OPENAI_API_KEY 없음)이라 skip |
-| 그 외 | 스켈레톤 (`NotImplementedError`) |
+| `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
+| 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
+| 그 외 B/C | 스켈레톤 (`NotImplementedError`) |

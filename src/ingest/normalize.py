@@ -1,0 +1,139 @@
+"""결정적 정제. 검증되지 않은 JA* 코드와 자연어 복합 자격조건은 추정하지 않는다."""
+from __future__ import annotations
+
+import hashlib
+import html
+import json
+import re
+from datetime import date
+from urllib.parse import parse_qsl, urlsplit
+
+from src.common import config
+from src.common.schema import Metadata
+
+SOURCE_FIELDS = {
+    "service_id": "서비스ID", "service_name": "서비스명", "agency": "소관기관명",
+    "field": "서비스분야", "support_target": "지원대상", "selection_criteria": "선정기준",
+    "support_content": "지원내용", "how_to_apply": "신청방법",
+    "application_period": "신청기한", "detail_url": "상세조회URL",
+}
+METADATA_KEYS = ("region", "agency", "field", "deadline", "age_min", "age_max", "target_tags")
+
+
+def clean_text(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, (str, int, float)):
+        raise ValueError("invalid text value")
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?i)<(?:br\s*/?|/?(?:p|div|li|tr))\s*>", "\n", text)
+    text = re.sub(r"(?i)</?(?:b|strong|em|i|span|ul|ol|table|tbody|td)(?:\s[^>]*)?>", "", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")).strip()
+
+
+def parse_deadline(text: str) -> str | None:
+    """단일 전체 날짜 또는 명확한 전체 날짜~전체 날짜만 해석한다."""
+    pattern = r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})\.?"
+    match = re.fullmatch(pattern + r"(?:\s*[~～]\s*" + pattern + r")?", text)
+    if not match:
+        return None
+    try:
+        start = date(*(int(v) for v in match.groups()[:3]))
+        if match.group(4):
+            end = date(*(int(v) for v in match.groups()[3:]))
+            return end.isoformat() if start <= end else None
+        return start.isoformat()
+    except ValueError:
+        return None
+
+
+def official_url(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        if (parts.scheme != "https" or parts.username or parts.password
+                or not (host.endswith(".gov.kr") or host.endswith(".go.kr"))
+                or any(k.lower() in ("servicekey", "api_key", "token") for k, _ in parse_qsl(parts.query))):
+            return ""
+        return value
+    except ValueError:
+        return ""
+
+
+def verified_eligibility(conditions: dict | None) -> dict:
+    """A 소유 어댑터 계약. 공식 코드북 확인 전 API의 JA* 값은 여기로 변환하지 않는다.
+
+    conditions['_verified_eligibility']는 API 원본 필드가 아니다. 별도 검증된
+    어댑터/합성 테스트 전용이며 source='applicant', age_ranges, region을 사용한다.
+    """
+    data = (conditions or {}).get("_verified_eligibility", {})
+    if not isinstance(data, dict) or data.get("source") != "applicant":
+        return {}
+    result = {}
+    ranges = data.get("age_ranges")
+    if isinstance(ranges, list) and ranges and all(
+        isinstance(pair, list) and len(pair) == 2 and all(type(v) is int for v in pair)
+        and 0 <= pair[0] <= pair[1] <= 150 for pair in ranges
+    ):
+        result["age_ranges"] = sorted(set(tuple(p) for p in ranges))
+        result["age_ranges"] = [list(p) for p in result["age_ranges"]]
+    region = data.get("region")
+    if isinstance(region, str) and clean_text(region):
+        result["region"] = clean_text(region)
+    return result
+
+
+def content_hash(service: dict) -> str:
+    payload = {key: service.get(key) for key in SOURCE_FIELDS}
+    payload["metadata"] = build_metadata(service)
+    payload["eligibility"] = service.get("eligibility", {})
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def clean_service(raw: dict, conditions: dict | None = None) -> dict:
+    if conditions and conditions.get("서비스ID", raw.get("서비스ID")) != raw.get("서비스ID"):
+        raise ValueError("condition_id_mismatch")
+    service = {key: clean_text(raw.get(source)) for key, source in SOURCE_FIELDS.items()}
+    if not service["service_id"] or not service["service_name"]:
+        raise ValueError("missing_service_identity")
+    service["detail_url"] = official_url(service["detail_url"])
+    service["deadline"] = parse_deadline(service["application_period"])
+    service["eligibility"] = verified_eligibility(conditions)
+    service["data_quality"] = ["missing_" + key for key in ("agency", "detail_url") if not service[key]]
+    service["inclusion_reasons"] = youth_inclusion_reasons(service)
+    service["content_hash"] = content_hash(service)
+    return service
+
+
+def youth_inclusion_reasons(service: dict) -> list[dict]:
+    reasons = []
+    lo, hi = config.YOUTH_AGE_RANGE
+    for age_lo, age_hi in service.get("eligibility", {}).get("age_ranges", []):
+        if age_lo <= hi and age_hi >= lo:
+            reasons.append({"reason": "verified_age_overlap", "range": [age_lo, age_hi]})
+    for field in ("service_name", "support_target", "selection_criteria"):
+        for keyword in config.YOUTH_KEYWORDS:
+            if keyword in (service.get(field) or ""):
+                reasons.append({"reason": "keyword", "field": field, "keyword": keyword})
+    return reasons or [{"reason": "no_reliable_inclusion_evidence"}]
+
+
+def is_youth_service(service: dict) -> bool:
+    return any(r["reason"] != "no_reliable_inclusion_evidence" for r in youth_inclusion_reasons(service))
+
+
+def build_metadata(service: dict) -> Metadata:
+    result = {key: service[key] for key in ("agency", "field", "deadline") if service.get(key)}
+    eligibility = service.get("eligibility", {})
+    if eligibility.get("region"):
+        result["region"] = eligibility["region"]
+    ranges = eligibility.get("age_ranges", [])
+    # Multiple/disjoint alternatives cannot be represented by the shared interval.
+    if len(ranges) == 1:
+        result["age_min"], result["age_max"] = ranges[0]
+    tags = sorted({r["keyword"] for r in youth_inclusion_reasons(service) if r["reason"] == "keyword"})
+    if tags:
+        result["target_tags"] = tags
+    return result

@@ -34,6 +34,8 @@
 - B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용)
 - C의 최종 출력: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
 - 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
+- A 구현 계약: `docs/INGEST_A.md`. `pipeline.run(full=False)`는 기존 `list[Chunk]`를 유지하고 이전 미확인 조각도 재전달한다. B는 `store.get_pending_changes()`의 서비스 전체 교체/제거를 두 색인에 적용한 후 service_id+version+event_id로 `acknowledge_changes()`한다. B 소비자 적용 방식은 합의 대기이며 실제 통합은 미검증이다.
+- `mark_closed()` 단독 호출은 안전하게 아무 작업도 하지 않는다. 내부 `apply_run()`은 검증된 완전 목록으로만 소실을 판정하며, 현재 API 세부 계약 미검증 상태에서는 자동 소실이 차단된다. `--full`은 활성 조각 재생성이고 DB·이력·pending 제거를 보존한다.
 
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.
@@ -55,10 +57,12 @@
 ## 자주 쓰는 명령
 ```
 pip install -r requirements.txt        # 설치 (.env.example을 .env로 복사 후 키 입력)
-python -m src.ingest.pipeline          # A: 수집·정제·분할 (기본 증분, --full은 전체)
+python -m src.ingest.pipeline          # A: 실제 API 수집 (실행 전 승인 필요), 기본 증분
+python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB 초기화 없음
+python -m pytest tests/ingest -q -ra   # A: mock HTTP·임시 SQLite, 미구현 skip 금지
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 평가 (baseline|vector|bm25|hybrid|hybrid_filter)
 ```
-(스켈레톤 단계라 대부분 `NotImplementedError`. 구현하면서 갱신할 것)
+(A 구현 및 합성 테스트 완료. B/C는 `NotImplementedError` 스켈레톤. 실제 API 필드·페이지·JA 코드 의미와 Vector/BM25 통합은 미검증.)
