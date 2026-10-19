@@ -17,7 +17,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src import db  # noqa: E402
 from src.chunking import chunk_service  # noqa: E402
 from src.config import PROCESSED_DIR, RAW_DIR  # noqa: E402
-from src.regions import region_of_agency  # noqa: E402
+from src.regions import UNKNOWN_REGION, region_of_agency, sigungu_of_agency  # noqa: E402
 
 FIELD = {
     "service_id": "서비스ID", "name": "서비스명", "summary": "서비스목적요약",
@@ -91,6 +91,7 @@ def from_api() -> list[dict]:
         for k in MULTI_VALUE_FIELDS:
             s[k] = clean_multi(raw.get(FIELD[k]))
         s["region"] = region_of_agency(s["agency"], clean_text(raw.get(AGENCY_TYPE_FIELD)))
+        s["sigungu"] = sigungu_of_agency(s["agency"])
         s["min_age"] = to_int(cond.get(AGE_MIN_FIELD), 0)
         s["max_age"] = to_int(cond.get(AGE_MAX_FIELD), 200)
         s["user_type"] = user_type
@@ -110,8 +111,14 @@ def main():
 
     if args.sample:
         services = [json.loads(l) for l in Path(args.sample).read_text(encoding="utf-8").splitlines() if l.strip()]
+        for s in services:
+            s.setdefault("sigungu", "")
     else:
         services = from_api()
+
+    n_sigungu = sum(1 for s in services if s["sigungu"])
+    n_unknown = sum(1 for s in services if s["region"] == UNKNOWN_REGION)
+    print(f"시·군·구 단위 제도 {n_sigungu}건 (그중 시·도를 알 수 없는 제도 {n_unknown}건 → '{UNKNOWN_REGION}')")
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     with (PROCESSED_DIR / "services.jsonl").open("w", encoding="utf-8") as f:

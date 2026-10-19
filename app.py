@@ -7,7 +7,7 @@ import streamlit as st
 
 from src import conditions
 from src.config import DEFAULT_MODE, DEFAULT_TOP_K, SEARCH_MODES
-from src.generator import describe, generate
+from src.generator import describe, generate, place_text
 from src.regions import SIDO
 from src.retriever import search
 from src.schema import age_text
@@ -23,7 +23,8 @@ with st.sidebar:
     st.caption("입력하면 질문에서 뽑은 값보다 우선합니다.")
     use_age = st.checkbox("나이 직접 입력")
     age = st.number_input("나이", min_value=0, max_value=120, value=25, disabled=not use_age)
-    region = st.selectbox("거주지", [AUTO, *SIDO])
+    region = st.selectbox("거주지 (시·도)", [AUTO, *SIDO])
+    sigungu = st.text_input("시·군·구 (선택)", placeholder="예: 노원구, 수원시")
 
     st.header("검색 설정")
     mode = st.selectbox("검색 방식", SEARCH_MODES, index=SEARCH_MODES.index(DEFAULT_MODE))
@@ -39,6 +40,7 @@ if st.button("찾아보기", type="primary") and question.strip():
                 plan.conditions,
                 override_age=int(age) if use_age else None,
                 override_region=None if region == AUTO else region,
+                override_sigungu=sigungu.strip() or None,
             )
         st.info(f"적용 조건: {describe(cond)}  ·  분야: {plan.category or '없음'}  ·  검색 방식: {mode}\n\n"
                 f"검색어: {plan.search_query}")
@@ -53,7 +55,7 @@ if st.button("찾아보기", type="primary") and question.strip():
         st.markdown(answer)
         with st.expander(f"근거 문서 {len(hits)}건"):
             for i, h in enumerate(hits, 1):
-                st.markdown(f"**[{i}] {h.name}** · {h.agency} · {h.region} · "
+                st.markdown(f"**[{i}] {h.name}** · {h.agency} · {place_text(h)} · "
                             f"{age_text(h.min_age, h.max_age)} · [상세]({h.url})")
                 for e in h.evidence:
                     st.caption(f"({e.field}) {e.text[:200]}")

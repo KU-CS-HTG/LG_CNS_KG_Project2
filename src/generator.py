@@ -12,6 +12,8 @@ PROMPT = ChatPromptTemplate.from_messages([
      "1. 제도마다 다음 순서로 쓴다: **서비스명**(소관기관) / 해당 가능 이유 / 지원내용 / "
      "신청방법·신청기한 / 확인 필요 조건 / 근거: \"원문 문구\" [번호] / 상세 링크.\n"
      "2. [번호]는 [제도 목록]의 번호다. 근거 문구는 목록에 있는 표현을 그대로 짧게 인용한다.\n"
+     "2-1. 제도의 지역이 시·군·구(예: 서울특별시 강남구)인데 사용자의 시·군·구를 모르면 "
+     "'강남구 거주자 대상'이라고 확인 필요 조건에 적는다.\n"
      "3. 소득·재산·가구 구성처럼 사용자 정보로 판단할 수 없는 조건은 '확인 필요'로 적는다.\n"
      "4. 신청기한이 지났을 수 있으면 그렇게 알리고, 기한 정보가 없으면 '기한 정보 없음'이라 쓴다.\n"
      "5. 목록에 질문과 관련된 제도가 없으면 지어내지 말고 '관련 근거를 찾지 못했다'고 답한 뒤 "
@@ -23,9 +25,14 @@ PROMPT = ChatPromptTemplate.from_messages([
 
 
 def describe(cond: Conditions) -> str:
+    place = " ".join(p for p in (cond.region, cond.sigungu) if p)
     parts = [f"나이 {cond.age}세" if cond.age is not None else "나이 모름",
-             f"거주지 {cond.region}" if cond.region else "거주지 모름"]
+             f"거주지 {place}" if place else "거주지 모름"]
     return ", ".join(parts)
+
+
+def place_text(h: ServiceHit) -> str:
+    return f"{h.region} {h.sigungu}".strip()
 
 
 def format_context(hits: list[ServiceHit]) -> str:
@@ -34,7 +41,7 @@ def format_context(hits: list[ServiceHit]) -> str:
         evidence = "\n".join(f"- ({e.field}) {e.text}" for e in h.evidence)
         age = age_text(h.min_age, h.max_age)
         blocks.append(
-            f"[{i}] {h.name} | 소관기관: {h.agency} | 지역: {h.region} | 연령: {age}\n"
+            f"[{i}] {h.name} | 소관기관: {h.agency} | 지역: {place_text(h)} | 연령: {age}\n"
             f"신청방법: {h.how_to_apply or '정보 없음'} | 신청기한: {h.deadline or '정보 없음'}\n"
             f"근거:\n{evidence}\n링크: {h.url}"
         )

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src import db  # noqa: E402
-from src.regions import normalize_region  # noqa: E402
+from src.regions import normalize_region, normalize_sigungu  # noqa: E402
 from src.schema import Conditions, age_text  # noqa: E402
 
 
@@ -20,12 +20,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("keyword", help="서비스명·요약에 포함된 단어")
     parser.add_argument("--region", help="거주지 (예: 서울) — 해당 지역+전국만")
+    parser.add_argument("--sigungu", help="시·군·구 (예: 노원구) — 해당 구+시·도 전체+전국만")
     parser.add_argument("--age", type=int, help="나이 — 연령 조건에 맞는 것만")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--detail", action="store_true")
     args = parser.parse_args()
 
-    cond = Conditions(age=args.age, region=normalize_region(args.region))
+    cond = Conditions(age=args.age, region=normalize_region(args.region),
+                      sigungu=normalize_sigungu(args.sigungu))
     where, params = db.condition_sql(cond)
     sql = (f"SELECT * FROM services WHERE (name LIKE ? OR summary LIKE ?) AND {where} "
            f"ORDER BY (name LIKE ?) DESC, name LIMIT ?")
@@ -37,7 +39,8 @@ def main():
         print("결과 없음 — 다른 단어로 찾아보세요.")
         return
     for r in rows:
-        print(f"{r['service_id']}  {r['name']}  | {r['agency']} | {r['region']} | "
+        place = f"{r['region']} {r['sigungu'] or ''}".strip()
+        print(f"{r['service_id']}  {r['name']}  | {r['agency']} | {place} | "
               f"{age_text(r['min_age'], r['max_age'])}")
         if args.detail:
             for label, col in (("대상", "target"), ("기준", "criteria")):

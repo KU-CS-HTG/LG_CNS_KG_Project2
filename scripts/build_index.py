@@ -28,14 +28,19 @@ def main():
         s = services[c["service_id"]]
         docs.append(Document(page_content=c["text"], metadata={
             "chunk_id": c["chunk_id"], "service_id": c["service_id"], "field": c["field"],
-            "name": s["name"], "region": s["region"],
+            "name": s["name"], "region": s["region"], "sigungu": s["sigungu"] or "",
             "min_age": int(s["min_age"]), "max_age": int(s["max_age"]),
             "category": s["category"] or "", "support_type": s["support_type"] or "",
         }))
         ids.append(c["chunk_id"])
 
     if CHROMA_DIR.exists():  # 다시 만들 때 중복 방지
-        shutil.rmtree(CHROMA_DIR)
+        try:
+            shutil.rmtree(CHROMA_DIR)
+        except PermissionError:
+            # Windows는 다른 프로그램이 연 파일을 지울 수 없다 (주로 실행 중인 Streamlit)
+            sys.exit(f"❌ {CHROMA_DIR.name} 폴더를 다른 프로그램이 사용 중입니다.\n"
+                     "   streamlit을 실행 중인 터미널에서 Ctrl+C로 종료한 뒤 다시 실행하세요.")
     vs = get_vectorstore()
     for i in range(0, len(docs), BATCH):
         vs.add_documents(docs[i:i + BATCH], ids=ids[i:i + BATCH])

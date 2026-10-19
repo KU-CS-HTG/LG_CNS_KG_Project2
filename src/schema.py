@@ -9,7 +9,8 @@ class Service(TypedDict):
     name: str            # 서비스명
     summary: str         # 서비스목적요약
     agency: str          # 소관기관
-    region: str          # "전국" 또는 "서울특별시" 등 (src/regions.py 기준 이름)
+    region: str          # "전국" / "서울특별시" 등 / "지역미상" (src/regions.py 기준 이름)
+    sigungu: str         # "강남구" 등. 시·도 전체 또는 전국 제도는 ""
     min_age: int         # 조건 없으면 0
     max_age: int         # 조건 없으면 200
     category: str        # 서비스분야
@@ -41,6 +42,7 @@ class Conditions:
     """사용자 조건. None = 모름 → 그 조건으로는 거르지 않는다(소프트 필터)."""
     age: int | None = None
     region: str | None = None
+    sigungu: str | None = None   # 모르면 구 단위 제도도 남기되 답변에 '○○구 거주자 대상'을 표시
 
 
 @dataclass
@@ -75,6 +77,7 @@ class ServiceHit:
     name: str
     agency: str
     region: str
+    sigungu: str
     min_age: int
     max_age: int
     deadline: str

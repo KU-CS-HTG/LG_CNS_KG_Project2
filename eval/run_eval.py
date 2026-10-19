@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.config import EMBEDDING_PROVIDER, SEARCH_MODES  # noqa: E402
-from src.regions import normalize_region  # noqa: E402
+from src.regions import normalize_region, normalize_sigungu  # noqa: E402
 from src.retriever import search  # noqa: E402
 from src.schema import Conditions  # noqa: E402
 
@@ -46,7 +46,8 @@ def evaluate(mode: str, k: int, cases: list[dict], verbose: bool,
     violations, checked = 0, 0                      # 나오면 안 되는 제도가 나온 질문 수
     for c in cases:
         u = c["user"]
-        cond = Conditions(age=u.get("age"), region=normalize_region(u.get("region")))
+        cond = Conditions(age=u.get("age"), region=normalize_region(u.get("region")),
+                          sigungu=normalize_sigungu(u.get("sigungu")))
         query, category = plans[c["id"]] if plans else (c["question"], None)
         got = [h.service_id for h in search(query, cond, mode=mode, k=k, category=category)]
         expected, forbidden = set(c["expected_ids"]), set(c.get("forbidden_ids", []))

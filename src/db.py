@@ -49,6 +49,10 @@ def condition_sql(cond: Conditions) -> tuple[str, list]:
     if cond.region:
         clauses.append("region IN (?, ?)")
         params += [cond.region, NATIONWIDE]
+    if cond.sigungu:
+        # 내 구의 제도 + 시·도 전체/전국 제도(sigungu='')만. 다른 구 제도는 제외
+        clauses.append("sigungu IN (?, '')")
+        params.append(cond.sigungu)
     return (" AND ".join(clauses) or "1=1"), params
 
 

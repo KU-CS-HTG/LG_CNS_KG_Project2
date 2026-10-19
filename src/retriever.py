@@ -72,7 +72,7 @@ def _to_hits(ranked_chunks: list[dict], k: int) -> list[ServiceHit]:
             continue
         seen.add(key)
         hits.append(ServiceHit(
-            service_id=sid, name=r["name"], agency=r["agency"], region=r["region"],
+            service_id=sid, name=r["name"], agency=r["agency"], region=r["region"], sigungu=r["sigungu"] or "",
             min_age=r["min_age"], max_age=r["max_age"], deadline=r["deadline"],
             how_to_apply=r["how_to_apply"], url=r["url"], category=r["category"] or "",
             score=scores[sid], evidence=evidence[sid],
@@ -132,6 +132,8 @@ def chroma_filter(cond: Conditions) -> dict | None:
         clauses += [{"min_age": {"$lte": cond.age}}, {"max_age": {"$gte": cond.age}}]
     if cond.region:
         clauses.append({"region": {"$in": [cond.region, NATIONWIDE]}})
+    if cond.sigungu:
+        clauses.append({"sigungu": {"$in": [cond.sigungu, ""]}})
     if not clauses:
         return None
     return clauses[0] if len(clauses) == 1 else {"$and": clauses}
