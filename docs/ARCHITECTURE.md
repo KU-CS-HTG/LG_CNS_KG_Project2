@@ -73,6 +73,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 필터 완화 순서: 관심 분야 → 지역 → 연령, 신청기한은 풀지 않음 | 분야명은 LLM이 뽑은 값과 데이터 분류가 어긋나기 쉬워 가장 먼저 푼다. 연령은 자격과 직결되어 마지막에 푼다. 종료된 제도를 보여주지 않는 것은 기획서 규칙이라 완화 대상에서 뺀다. |
 | `filters.apply_filters`(파이썬)와 `vector_store.build_where`(저장소) 규칙을 따로 두고 일치 테스트 | 저장소 안에서 거르는 것이 빠르지만, Baseline 결과나 후처리는 이미 꺼낸 목록을 거른다. 두 곳의 규칙이 어긋나지 않도록 샘플 데이터에서 결과가 같은지 매개변수 테스트로 확인한다. |
 | `test_vector_store`, 테스트용 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 | 임시 폴더와 글자 2-gram 해시 가짜 임베딩으로 실제 Chroma 동작(upsert·삭제·필터·BM25 갱신)을 모델 없이 검증. `test_retrieval`도 같은 픽스처를 쓴다. |
+| `metrics`: 정답 없는 질문은 계산에서 제외, 평가할 질문이 없거나 질문 수가 안 맞거나 k<1이면 ValueError, 같은 id가 중복되면 처음 자리만 셈, `no_evidence_rate`·`evaluate`·`check_targets` 제공 | 정답이 없는 질문(근거 없음)은 Hit Rate·Recall·MRR이 정의되지 않으므로 분모에서 빼야 지표가 왜곡되지 않는다. 조용히 0을 돌려주면 잘못된 입력(질문·정답 개수 불일치)을 못 잡으므로 오류로 알린다. 근거 없음 질문이 관련 없는 제도를 내보내지 않는지는 `no_evidence_rate`로 따로 보고, 관련도 하한선을 정할 때 쓴다. `evaluate`는 K=3·5·10을 한 번에 계산해 `run_eval`이 쓰기 쉽다. |
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
@@ -124,7 +125,8 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델로 샘플 색인·검색 확인 |
 | `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `tests/` | 67개 통과, 11개는 구현 전(C·평가)·키 없음·실제 모델 미사용이라 skip |
+| `eval/metrics.py` | 구현됨 (Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`) |
+| `tests/` | 77개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
 
 ## 7. 변경 이력
@@ -140,3 +142,4 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 - ③ 임베딩 구현(`index/embedder.py`): `embed_texts(texts, kind="passage")`, `embed_query`, `embedding_dim`, `python -m src.index.embedder` 스모크 테스트. `config`에 `EMBEDDING_DEVICE/BATCH_SIZE/MAX_SEQ_LENGTH` 추가, `requirements.txt`에 sentence-transformers·numpy 추가, `tests/test_embedder.py` 추가.
 - ④ 벡터 저장소 구현(`index/vector_store.py`): Chroma + BM25(글자 2-gram), 저장 시 대체값으로 소프트 필터 처리(`build_where`), 증분 색인·삭제·`get_service_chunks`·`clear_index`, `python -m src.index.vector_store --sample --query ...`. `config.INDEX_BATCH_SIZE`, `requirements.txt`에 chromadb·rank_bm25 추가, `tests/test_vector_store.py`와 `fake_embedder`·`tmp_vectorstore`·`indexed_sample` 픽스처 추가, `test_retrieval`이 이를 사용하도록 변경.
 - ⑤ 검색 구현(`retrieve/filters.py`, `retrieve/hybrid.py`): RRF 하이브리드, 서비스당 1개, `search_with_info`, 분야→지역→연령 순 완화, `python -m src.retrieve.hybrid`. `config`에 `HYBRID_CANDIDATES`·`RRF_K`·`HYBRID_WEIGHTS` 추가. `test_retrieval`·`test_filters` 확장(RRF, 모드, 완화, 파이썬/저장소 필터 일치).
+- 검색 지표 구현(`eval/metrics.py`): `hit_rate_at_k`, `recall_at_k`, `mrr`, `no_evidence_rate`, `evaluate`, `check_targets`. `test_metrics`에 경계 조건(정답 없는 질문, 중복, k 범위, 오류) 추가.

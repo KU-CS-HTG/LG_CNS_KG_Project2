@@ -389,6 +389,10 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ## 7. 평가
 
 - 검색: Hit Rate@K, Recall@K, MRR. 잠정 목표 Top-5 기준 Hit Rate 0.80, Recall 0.70, MRR 0.60 (`eval/metrics.TARGETS`)
+  - **Hit Rate@K**: 정답이 하나라도 상위 K개 안에 있는 질문의 비율 / **Recall@K**: 질문별 (상위 K개 안의 정답 수 ÷ 전체 정답 수)의 평균 / **MRR**: 질문별 1 ÷ (첫 정답의 순위)의 평균 (정답이 없으면 0)
+  - 채점 단위는 조각이 아니라 `service_id`입니다. `hybrid.search`가 이미 서비스당 1개로 줄여 주므로 결과의 `service_id`를 순서대로 넣으면 됩니다.
+  - 정답이 없는 질문(`expect_no_answer`)은 검색 지표에서 **제외**하고(분모에 안 넣음), 대신 `no_evidence_rate`로 따로 봅니다(그런 질문에서 검색이 빈 결과를 돌려준 비율. 관련도 하한선을 정할 때 쓸 지표).
+  - 사용: `evaluate(retrieved, relevant)`가 K=3·5·10 지표를 한 번에 계산하고 `check_targets(...)`가 잠정 목표 달성 여부를 알려 줍니다. 예: 두 질문의 결과가 `[["a","b","c"], ["x","a"]]`, 정답이 `[{"b"}, {"a"}]`이면 Hit Rate@3 = 1.0, MRR = (1/2 + 1/2) ÷ 2 = 0.5.
 - 답변: Answer Correctness, Faithfulness, Citation Accuracy
 - 실험 순서: Baseline(SQL+키워드) → Vector → BM25 → Hybrid → Hybrid+정형 필터 → 최종. 결과는 `eval/results/`에 저장하고 요약을 기획서 9.4에 기록합니다. Top-K는 3 / 5 / 10을 비교합니다.
 - 질문 세트: `eval/questions.jsonl` (30개 내외 목표, **청년 상황형 질문 중심** — 1.1 참고). 필드는 `id, category, question, relevant_service_ids, expected_answer, expect_no_answer`입니다. 정답 서비스는 수집 후 팀원이 지정하며, `todo`가 있는 항목은 수집 데이터에 있는지 확인 후 수정합니다.
@@ -469,6 +473,7 @@ def test_예시(fake_search, fake_conditions):
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `src/index/embedder.py` | 구현됨 (B). 가짜 모델 테스트 통과, 실제 bge-m3는 팀원 PC에서 `python -m src.index.embedder`로 확인(월세 질문 ↔ 청년월세 0.553 > 기초연금 0.422) |
 | `src/index/vector_store.py` | 구현됨 (B). Chroma + BM25, 임시 폴더·가짜 임베딩으로 테스트 통과. 실제 모델로 샘플 색인·검색 확인 |
+| `eval/metrics.py` | 구현됨 (B). Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`, 손으로 계산한 값과 경계 조건 테스트 통과 |
 | `src/retrieve/filters.py`, `hybrid.py` | 구현됨 (B). RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화. 가짜 임베딩 테스트 통과, 실제 모델·실제 데이터 품질은 미확인 |
-| `tests/` | 67개 통과, 11개는 구현 전(C·평가)·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소·검색 테스트는 skip되므로 전부 돌리려면 `pip install -r requirements.txt` |
+| `tests/` | 77개 통과, 8개는 구현 전(C)·키 없음·실제 모델 미사용이라 skip. `chromadb`·`rank_bm25`가 없으면 벡터 저장소·검색 테스트는 skip되므로 전부 돌리려면 `pip install -r requirements.txt` |
 | 그 외 | 스켈레톤 (`NotImplementedError`) |
