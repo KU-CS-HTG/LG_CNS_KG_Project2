@@ -290,12 +290,14 @@ def test_not_eligible_needs_code_verified_mismatch():
 
 def test_missing_conditions_skip_what_evidence_text_states():
     from src.common.schema import Chunk
-    def ch(text):
-        return [Chunk("X#지원대상", "X", "가상 제도", "지원대상", text, {"field": "주거·자립"})]   # 실제 데이터처럼 지역·나이 메타 없음
-    assert evidence._missing_conditions(ch("[가상 제도] 서울 월세 거주 19세 ~ 39세 이하 청년")) == []   # 원문에 지역·나이가 있음
-    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년")) == [
-        "거주 지역 조건 (자료에 지역 정보 없음)", "연령 조건 (자료에 연령 정보 없음)"]                   # 원문에도 없을 때만
-    assert not any("신청기한" in n for n in evidence._missing_conditions(ch("[가상 제도] 청년")))   # 기한은 카드에 따로 표시
+    def ch(text, agency="국토교통부"):
+        return [Chunk("X#지원대상", "X", "가상 제도", "지원대상", text, {"field": "주거·자립", "agency": agency})]
+    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년")) == []                        # 전국 제도: 지역 조건 없음
+    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년", "충청남도 공주시")) == [
+        "거주 지역 조건 (소관기관: 충청남도 공주시, 원문 확인)"]                                      # 지자체 제도인데 원문에 지역 없음
+    assert evidence._missing_conditions(ch("[가상 제도] 서울 월세 거주 청년", "서울특별시")) == []   # 원문에 지역이 있음
+    assert not any("연령" in n or "신청기한" in n                                                   # 연령·기한은 여기서 안 붙임
+                   for n in evidence._missing_conditions(ch("[가상 제도] 청년", "경기도")))
 
 
 def test_numeric_service_id_from_llm_still_matches(monkeypatch, sample_chunks):
