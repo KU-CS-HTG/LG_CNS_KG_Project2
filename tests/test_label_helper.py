@@ -315,3 +315,17 @@ def test_apply_unknown_id_changes_nothing(env, tmp_path):
     with pytest.raises(SystemExit) as e:
         lh.main(["apply", str(f)])
     assert "없는ID" in str(e.value) and qpath.read_text(encoding="utf-8") == before
+
+
+def test_drop_removes_question_and_blocks_when_followups_exist(env, capsys):
+    lh.main(["followup", "q01", "--region", "서울"])
+    with pytest.raises(SystemExit) as e:
+        lh.main(["drop", "q01"])
+    assert "후속 문항" in str(e.value) and any(q["id"] == "q01" for q in lh.load_questions())
+    lh.main(["drop", "q03"])
+    ids = [q["id"] for q in lh.load_questions()]
+    assert "q03" not in ids and "q04" in ids
+    with pytest.raises(SystemExit):
+        lh.main(["drop", "q99"])
+    lh.main(["followup", "q04", "--region", "부산"])                    # 번호는 최댓값 다음 → 지운 번호를 재사용하지 않음
+    assert "q03" not in [q["id"] for q in lh.load_questions()]
