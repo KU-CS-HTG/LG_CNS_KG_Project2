@@ -318,6 +318,29 @@ def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chun
     assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
 
 
+def test_needs_check_shows_criterion_quoted_from_evidence(monkeypatch, sample_chunks):
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 지원대상: '만 19~34세 무주택 청년' 등
+    body = " ".join(c.text for c in chunks)
+    quoted = "만 19~34세" if "만 19~34세" in body else body.split("]")[-1].strip()[:15]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "needs_check": [
+        {"item": "연령", "criterion": quoted},                      # 근거 원문에 있음 -> 기준까지 표시
+        {"item": "소득", "criterion": "기준 중위소득 999% 이하"},     # 근거에 없는 수치 -> 이름만
+        "가구 구성"]}]})                                             # 예전 형식(문자열)도 받음
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {"SAMPLE001": chunks}).recommendations[0]
+    assert f"연령 — {quoted}" in rec.needs_check
+    assert "소득" in rec.needs_check and not any("999%" in n for n in rec.needs_check)
+    assert "가구 구성" in rec.needs_check
+
+
+def test_needs_check_criterion_ignores_footnote_marks():
+    from src.common.schema import Chunk
+    ch = [Chunk("X#선정기준", "X", "가상 제도", "선정기준",
+                "[가상 제도] ㅇ (소득) 청년 원가구*의 소득이 기준 중위소득 100% 이하", {})]
+    got = generator._needs_with_criteria([{"item": "소득", "criterion": "청년 원가구의 소득이 기준 중위소득 100% 이하"}], ch)
+    assert got == ["소득 — 청년 원가구의 소득이 기준 중위소득 100% 이하"]     # 원문의 '*'를 빼고 옮겨도 인정
+    assert generator._needs_with_criteria([{"item": "소득", "criterion": "기준 중위소득 120% 이하"}], ch) == ["소득"]
+
+
 def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
     chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 선정기준: '소득이 기준 이하' (금액 없음)
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "가능", "needs_check": [],

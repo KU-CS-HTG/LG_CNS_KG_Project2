@@ -63,7 +63,9 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   신분·상황끼리. 한쪽에서 다른 종류를 추론해 짝짓지 않는다.
   condition은 근거 원문에서 글자 그대로 복사한 짧은 구절이다. 맞는 쌍이 없으면 빈 배열이다.
 - 소득·재산·가구처럼 질문에 없는 조건은 matches에 넣지 말고 needs_check로 보낸다.
-- needs_check에는 사용자가 밝히지 않았거나 근거로 판단할 수 없는 자격 조건을 짧은 명사구로 모두 적는다.
+- needs_check에는 사용자가 밝히지 않았거나 근거로 판단할 수 없는 자격 조건을 모두 적는다.
+  item은 조건 이름(소득·재산·거주지·연령·가구 등 짧은 명사구), criterion은 그 기준이 적힌 [근거] 원문 구절을
+  글자 그대로 복사한다(금액·비율·지역·나이가 적힌 부분). [근거]에 기준이 적혀 있지 않으면 criterion은 빈 문자열이다.
 - 모든 문장은 한국어 존댓말로 짧게 쓴다.
 
 출력 형식:
@@ -71,7 +73,8 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부, "meets_need": true 또는 false,
                 "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
                 "mismatch": {{"said": 질문 원문 구절, "condition": 근거 원문 구절}} ("{NOT_ELIGIBLE}"일 때만),
-                "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약, "needs_check": [문자열, ...]}}],
+                "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약,
+                "needs_check": [{{"item": 조건 이름, "criterion": 근거 원문 구절 또는 ""}}]}}],
   "follow_up": 더 정확히 안내하려고 사용자에게 되물을 질문 1문장 (필요 없으면 빈 문자열)}}
 [근거]의 모든 제도를 services에 한 번씩 넣는다."""
 
@@ -169,7 +172,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     else:
         reason = GENERIC_REASON
 
-    needs = _str_list(gen.get("needs_check"))
+    needs = _needs_with_criteria(gen.get("needs_check"), chunks)
     applicable = gen.get("applicable") if said else UNCLEAR   # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다
     if applicable != LIKELY and not needs:
         needs.append("자격 요건 충족 여부")
@@ -239,6 +242,36 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
     # 다른 구절에 포함되는 구절은 뺀다 ('서울에 사는 27살 취업준비생', '27살' -> 앞의 것만)
     said = [s for s in said if not any(s != o and squash(s) in squash(o) for o in said)]
     return said, conds
+
+
+MAX_CRITERION_CHARS = 60   # 확인 필요 기준 구절 최대 길이(공백 제외). 선정기준 문단을 통째로 옮기는 것을 막는다
+
+
+def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
+    """확인 필요 조건에 근거 원문의 기준을 붙인다: '소득 — 기준 중위소득 150% 이하'.
+
+    이름만 있으면('소득 기준') 사용자가 결국 원문을 열어 봐야 했다. 기준 구절은 근거 원문에 글자 그대로 있을 때만
+    붙인다 (LLM이 금액·비율을 지어내거나 바꿔 쓰는 일 차단, 이유 문장의 matches와 같은 원리). 확인되지 않으면 이름만."""
+    # 글자·숫자·%만 남겨 비교한다: 원문의 각주 표시('원가구*의')·괄호·따옴표를 LLM이 빼고 옮겨도 같은 구절로 본다
+    # (내용은 정확한데 '*' 하나 때문에 기준이 빠졌다). 금액·비율 숫자는 그대로 검증된다.
+    squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%]", "", s)  # noqa: E731
+    body = squash(" ".join(citation._body_text(c) for c in chunks))
+    out: list[str] = []
+    if isinstance(items, (str, dict)):
+        items = [items]
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, dict):
+            name, crit = _str(it.get("item")).strip(), _str(it.get("criterion")).strip().strip("‘’'\"")
+        else:                                  # 예전 형식(문자열)도 받는다
+            name, crit = _str(it).strip(), ""
+        if not name:
+            continue
+        if crit and (len(squash(crit)) > MAX_CRITERION_CHARS or squash(crit) not in body):
+            crit = ""
+        text = f"{name} — {crit}" if crit else name
+        if text not in out:
+            out.append(text)
+    return out
 
 
 def _vague_criteria(sections: dict[str, str]) -> list[str]:
@@ -323,12 +356,6 @@ def _age_text(meta: dict) -> str:
 
 def _str(v) -> str:
     return v.strip() if isinstance(v, str) else ""
-
-
-def _str_list(v) -> list[str]:
-    if isinstance(v, str):
-        v = [v]
-    return [s.strip() for s in v if isinstance(s, str) and s.strip()] if isinstance(v, list) else []
 
 
 def answer_question(question: str) -> Answer:
