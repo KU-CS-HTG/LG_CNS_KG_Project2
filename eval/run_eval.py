@@ -194,6 +194,19 @@ def comparison_table(results: Sequence[dict]) -> str:
     return "\n".join(rows)
 
 
+def missing_gold(questions: list[dict], in_index) -> dict[str, list[str]]:
+    """정답 제도 중 색인(검색 대상)에 아예 없는 것. 있으면 검색을 아무리 고쳐도 못 맞히는 상한이 생긴다.
+
+    in_index(service_id) -> bool.
+    """
+    out: dict[str, list[str]] = {}
+    for q in questions:
+        miss = [i for i in q.get("relevant_service_ids", []) if not in_index(i)]
+        if miss:
+            out[q["id"]] = miss
+    return out
+
+
 def save_result(result: dict, out_dir: Path | str | None = None) -> Path:
     directory = Path(out_dir or RESULTS_DIR)
     directory.mkdir(parents=True, exist_ok=True)
@@ -223,6 +236,14 @@ def main(argv: list[str] | None = None) -> None:
         if vector_store.count() == 0:
             raise SystemExit("색인이 비어 있습니다. 먼저: python -m src.index.vector_store --sample  (또는 A의 파이프라인 결과 색인)")
 
+    if args.experiment != "baseline":
+        gone = missing_gold(questions, lambda sid: bool(vector_store.get_service_chunks(sid)))
+        if gone:
+            total = sum(len(v) for v in gone.values())
+            print(f"! 정답 제도 {total}개가 색인에 없습니다 (질문 {len(gone)}개: 청년 판정 제외·기한 종료 등). 이 정답은 어떤 검색으로도 못 맞힙니다:")
+            for qid, ids in gone.items():
+                print(f"    {qid}: {', '.join(ids)}")
+            print()
     names = list(EXPERIMENTS) if args.experiment == "all" else [args.experiment]
     if "baseline" in names:
         from src.retrieve import baseline
