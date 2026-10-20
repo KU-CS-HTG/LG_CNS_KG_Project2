@@ -277,6 +277,7 @@ python -m eval.label_helper label --only q35
 | `apply 결정.json [--source claude]` | `{질문id: {ids, note, confidence, [no_answer], [todo]}}` 를 한꺼번에 반영 (id가 하나라도 없으면 아무것도 바꾸지 않음) |
 | `review [--only q01,q02]` | 사람 검수 대기 목록과 근거 보기 |
 | `review --ok q01,q02` / `review --all-ok` | 검수 완료로 표시 |
+| `drop 질문id` | 질문을 세트에서 삭제(폐기). 후속 문항이 달린 질문은 후속을 먼저 삭제. 저장 전 백업이 `data/raw/label_backups/`에 남음 |
 | `status` | 진행 상황 (정답 지정 / 근거 없음 / 확인 필요 / 미지정 수, 남은 문항 목록) |
 | `check` | 정답 검증 (§8) |
 

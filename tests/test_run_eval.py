@@ -174,3 +174,11 @@ def test_main_without_labels_explains(indexed_sample, tmp_path):
     with pytest.raises(SystemExit) as e:
         run_eval.main(["--experiment", "vector", "--questions", str(qpath)])
     assert "정답" in str(e.value)
+
+
+def test_missing_gold_reports_ids_not_in_index():
+    qs = [{"id": "q01", "relevant_service_ids": ["A", "B"]}, {"id": "q02", "relevant_service_ids": ["A"]},
+          {"id": "q03", "relevant_service_ids": []}]
+    from eval.run_eval import missing_gold
+    assert missing_gold(qs, lambda sid: sid == "A") == {"q01": ["B"]}
+    assert missing_gold(qs, lambda sid: True) == {}
