@@ -6,10 +6,10 @@
 - 상세 설계 이유·변경 이력: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - AI 작업 지침(규칙 원문): [`CLAUDE.md`](CLAUDE.md)
 
-> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B/C는 스켈레톤입니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
+> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B indexing/retrieval and C evidence/generation paths are implemented. The stored-event consumer is verified with real Chroma and fake embeddings; actual-model and production-data integration remain unverified. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
 
 2차 수정에서 과거 상세/현재 목록 병합, fixture 저장소 격리, HTML 표 경계를 보완했습니다.
-격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. 전체 순회·실제 연령/지역 어댑터·B 색인 통합은 미검증입니다.
+격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. Full API traversal and production age/region adapters remain unverified. This handoff pass makes no new live API or actual-model verification claims.
 
 ## 1. 데이터
 
@@ -271,7 +271,7 @@ python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울
 
 #### (1) A → B: 색인용 조각
 
-A가 B에게 주는 것은 **정제·분할이 끝난 서비스별 전체 교체 조각**입니다. `pipeline.run()`은 미확인 조각도 재전달하며 제거 이벤트는 별도로 조회합니다. B가 chunk_id upsert만 수행하면 줄어든 조각이 남을 수 있습니다. 서비스 전체 교체/제거 및 두 색인 적용 후 확인 응답을 제안하며, B writer 연동은 아직 구현·합의되지 않았습니다. [인계 API](docs/INGEST_A.md)를 따릅니다.
+A stores complete service replacements/removals in `pending_changes` (미처리 변경 이벤트). `python -m src.ingest.handoff` inspects them; `--apply` uses B's existing `build_index()`/`remove_services()`, verifies persistent documents and both retrieval paths, then acknowledges the original service/version/event token. It never substitutes `pipeline.run()` output or current service records for the stored event. See the [handoff contract](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자).
 
 ```python
 # A가 만들어서 넘긴다 — pipeline.run() 의 반환값 (일부)
@@ -329,12 +329,28 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
 
+### 2.3 Incremental index handoff (증분 색인 인계)
+
+```powershell
+# Existing source DB → read-only inspection (no model/index initialization).
+.\.venv\Scripts\python.exe -m src.ingest.handoff --dry-run
+# Apply to the associated index with an already cached matching model.
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply
+# First binding of an existing nonempty B collection requires explicit adoption.
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply --adopt-existing
+# Retry the same --apply command after resolving a failure; pending is durable.
+```
+
+One source DB is associated with one index directory/model configuration. The worker owns OS locks in index→DB order; supported collection/upsert/apply-run paths share the DB lock. Competing processes fail immediately. Application stops on the first failure with exit code 1. Successfully verified earlier events remain acknowledged; failed/later events remain pending. BM25 is derived from Chroma documents and refreshed by B's `index_version`, without another persistent BM25 database.
+
+Fixture sources require `--validation` and explicit isolated `--db-path`/`--index-dir`; protected live paths and aliases are rejected before writes. See [isolated commands and synchronization limits](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자). The legacy `src.index.vector_store` CLI bypasses this protocol: do not run direct index writers concurrently with ingestion/consumption. It does not acknowledge pending events.
+
 ## 3. 디렉터리 구조와 담당
 
 ```
 src/
   common/    config.py, schema.py                                  # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, normalize, merge, storage, store, chunker, pipeline # A
+  ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
   index/     embedder, vector_store                                # B
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
@@ -377,7 +393,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 |---|---|
 | 디렉터리 = 담당자 단위 | 한 사람이 자기 폴더만 수정해 파일 충돌과 책임 논쟁을 없앤다. |
 | `schema.py`에 모듈 간 계약을 한 곳에 정의 | 구현 전에도 서로의 입출력을 가정하고 병렬 개발한다. |
-| B/C는 `NotImplementedError` 스켈레톤, A는 구현됨 | 기존 공개 타입 유지. A DB·pending 설계와 B 소비자 제안은 [운영 계약](docs/INGEST_A.md)에 기록. |
+| A/B/C implementations retain their public contracts | Stored-event consumption, lock protocol and replay behavior are recorded in the [operating contract](docs/INGEST_A.md). |
 | 증분 수집(`store.upsert_services`가 변경분 반환), 종료 서비스는 색인에서 제거 | 기획서 7장: 정기 수집 후 변경분만 재색인. |
 | 구조 기반 분할 + 서비스명 접두 | 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고, 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
@@ -511,7 +527,8 @@ python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB·이력�
 python -m src.ingest.pipeline --offline-fixture tests/fixtures/a_synthetic_api.json  # 별도 저장소 강제
 python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승인된 격리 라이브 표본
 python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
-python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
+python -m src.ingest.handoff --dry-run # A→B: inspect stored pending; add --apply to apply/verify/ack
+python -m src.index.vector_store       # B: legacy direct index CLI; no pending acknowledgment/consumer locks
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
@@ -531,7 +548,7 @@ Windows PowerShell에서 환경변수를 직접 설정한다면 `export` 대신 
 | B (A 없이) | 가짜 조각 `Chunk` 48개 | `sample_chunks.json`, `sample_queries.json` |
 | C (B 없이) | 가짜 검색 결과 + 가짜 조건 추출 | `sample_search_results.json`, `fake_search`·`fake_conditions` 픽스처 |
 
-공용 훅은 B/C 구현 전(`NotImplementedError`) 테스트를 skip으로 표시합니다. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
+The historical shared hook converts `NotImplementedError` into skips; the A-specific hook treats it as failure. The consumer regressions must have no skips. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
 
 #### B가 A의 구현 없이 테스트하기
 
@@ -539,7 +556,7 @@ A의 구현이 끝나기 전에도 B가 자기 코드를 검증할 수 있도록
 
 - 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상이 섞여 있습니다.
 - 시험 대상: `filters`(소프트 필터·기한 제외·완화), `metrics`(지표 계산), `vector_store`·`hybrid`(색인 후 검색 기대값). 테스트 파일은 `test_filters.py`, `test_metrics.py`, `test_retrieval.py`입니다.
-- `test_retrieval.py`의 색인 저장 경로 분리는 B가 결정합니다.
+- Retrieval tests use isolated `tmp_vectorstore`; consumer tests add real Chroma/BM25, subprocess locks, replay and C evidence expansion with fake embeddings.
 
 #### C가 B의 구현 없이 테스트하기
 

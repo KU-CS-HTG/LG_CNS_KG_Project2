@@ -1,7 +1,9 @@
 # A 수집·정제·SQLite·분할 운영 계약
 
 2026-10-19 구현 및 2차 수정. `feat/ingest-a-v1` 체크아웃의 공개 함수·반환형과 `Chunk`를 유지한다.
-세 결함의 오프라인 회귀 및 격리된 라이브 소량 검증을 수행했다. 전체 API 적합성·실제 Vector/BM25 쓰기는 미검증이다.
+The prior second pass recorded three offline corrections and a small isolated live sample.
+The 2026-10-20 handoff pass adds real Chroma/BM25 integration using fake embeddings.
+No new live API, actual-model or production-data validation is claimed.
 
 ## API 확인 수준과 필드 매핑
 
@@ -142,42 +144,129 @@ HTMLParser로 td/th의 셀 경계는 공백, tr/블록의 행 경계는 개행�
 이전 HTML 표에서 숫자가 붙었던 레코드는 다음 성공 관측 때 해시와 서비스 전체 조각이 한 번 갱신될 수 있다.
 운영 DB 자동 마이그레이션이나 기존 raw 자동 재처리는 하지 않는다.
 
-## B 인계: 구현된 A API와 합의가 필요한 B 적용
+## Stored-event consumer (증분 색인 인계 소비자)
 
-`pipeline.run(full=False) -> list[Chunk]`는 **모든 현재 미확인 replace 이벤트**의 조각을 반환한다.
-이번 수집 변경 0건이어도 이전 미확인 조각이 재전달된다. 반환/직렬화는 확인 응답이 아니다.
-`--full`은 현재 활성 서비스 전체 조각을 재생성해 pending에 넣는다. DB·이력·기존 제거 이벤트를 보존한다.
-부분 수집을 완전 수집으로 승격하지 않는다. 내용 버전이 같아도 새 이벤트 ID로 이전 확인 응답을 구분한다.
+`pipeline.run(full=False) -> list[Chunk]` remains compatible and may replay pending
+chunks even when the latest collection changed nothing. The supported index command
+is `python -m src.ingest.handoff`; it consumes stored `pending_changes` snapshots,
+never `pipeline.run()` output or current service records. It does not collect APIs.
 
-```python
-from src.ingest import store
+| Event | Existing B operation | Completion |
+|---|---|---|
+| `replace`, nonempty complete `chunks` | `build_index(all_service_chunks)` removes stale IDs, then upserts | Verify → exact acknowledgment |
+| `replace`, explicit `chunks=[]` | `remove_services([service_id])` | Verify all previous chunks absent → acknowledgment |
+| `remove`, explicit `chunks=[]` | `remove_services([service_id])` | Same, preserving the removal reason in A state |
+| Missing/null/malformed chunks, duplicate IDs, mismatched service, unsupported metadata | Reject before initializing the index | No acknowledgment |
 
-events = store.get_pending_changes()  # serializable dicts, includes full chunks even []
-removal_ids = store.pending_removal_ids()
-chunks = store.pending_chunks()      # existing Chunk type
-for event in events:
-    # Proposed B implementation: replace ALL chunks of event['service_id'], or remove.
-    # Persist matching service version/event in BOTH Vector and BM25, then:
-    store.acknowledge_changes([event])
+Pending stores the latest event per service. Events are read in service ID order and
+tokens are revalidated under locks before application. Acknowledgment matches the
+original `service_id + version + event_id` and must return exactly 1. Reading,
+serializing or successfully calling a B writer does not acknowledge anything.
+`store.get_pending_changes()`, `pending_chunks()`, `pending_removal_ids()` and
+`acknowledge_changes()` retain their interfaces. `handoff.read_pending(settings)`
+adds read-only inspection without schema initialization.
+
+### Verification, failure and replay
+
+The A adapter compares persistent chunk IDs, text and B's encoded metadata with the
+event, confirms obsolete chunks are absent, and compares unrelated documents before
+and after. Service-scoped Vector queries request all event chunks, avoiding unrelated
+top-K ranking. B's actual BM25 cache is prewarmed, then rebuilt by its version marker;
+all corpus IDs/token frequencies must match persistent documents. Actual BM25 queries
+must match B's positive-score semantics. Okapi can give nonpositive scores in tiny or
+common-term corpora: membership/frequencies establish visibility in those cases;
+the consumer does not alter B ranking to force a positive hit. Removals are proved by
+persistent/corpus absence, together with empty service-scoped retrieval results.
+
+Chroma stores source documents; BM25 remains derived in memory, reconstructed after
+restart. No second persistent BM25 database is introduced. This is at-least-once
+application, not a transaction across SQLite and Chroma. A crash after partial/full
+index application and before acknowledgment leaves the event replayable. Retry the
+same command after resolving the failure. Application stops at the first failed stage;
+earlier verified events remain acknowledged, failed/later events remain pending.
+The JSON report includes effective mode/paths/model, applied/acknowledged counts,
+successful event tokens, failing stage/code/token, and remaining count. Failure exits 1.
+
+### Synchronization and association
+
+The application worker takes OS locks in fixed order:
+
+1. `<index-dir>.handoff.lock` protects the target directory across consumers/DBs.
+2. `<source-db>.ingest.lock` protects the source events against supported ingestion.
+
+Both are held through read/revalidation, application, verification and acknowledgment.
+Acquisition fails immediately if busy (bounded wait: zero seconds). `pipeline._execute`
+(including fixture CLI), `store.upsert_services()` and public `store.apply_run()` share
+the source lock. The pipeline calls `_apply_run_locked()` only inside its existing
+lock. Ingestion takes no target lock, so the order cannot deadlock. OS handles release
+locks on failure/process death; an old lock file is not a lease. The worker owns locks
+itself; terminating its launcher does not leave an unlocked, still-writing child.
+
+One DB acknowledgment queue supports **one target directory/model configuration**.
+`<db>.handoff.json` and `<index>/handoff_manifest.json` record resolved paths, exact
+model ID, dimension, max sequence length, cosine distance and B passage/query policy.
+Mismatch fails before writes to service chunks. An interrupted first binding can
+recover a missing matching manifest half. Do not delete/edit manifests to repoint a
+consumed queue or maintain multiple independent indexes; migration/rebuilding a lost
+index requires a separately reviewed full-service regeneration/recovery procedure.
+
+The first association of a nonempty legacy B collection requires `--adopt-existing`.
+Confirm its original model/settings: an old model-name slug alone cannot prove exact
+model identity. Existing collection name, dimension and cosine metric are checked;
+no reset or alternate model download is attempted. Worker-only configuration keeps
+caller config/client caches unchanged. Hugging Face offline flags require an already
+cached matching model. This pass does not run or download an actual model.
+
+The legacy `python -m src.index.vector_store` CLI and arbitrary direct B API/SQL calls
+bypass these locks and exact-event acknowledgment. Do not run them concurrently with
+the supported ingestion/consumer commands. Stale-ack protection alone cannot prevent
+stale writes by multiple bypassing consumers. Online readers are not transactional
+across SQLite/Chroma and may see an in-progress replacement until verification/replay
+finishes; this protocol serializes writers, not all user queries.
+
+### PowerShell commands
+
+```powershell
+# Default inspection: no index initialization, model loading, downloads or API calls.
+.\.venv\Scripts\python.exe -m src.ingest.handoff --dry-run
+# Apply with the configured DB/index and cached matching model.
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply
+# First association of an existing nonempty B collection only:
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply --adopt-existing
+# Replay after a failure: run the same --apply command again.
+
+# Offline source: never use live DB/raw/vector storage. No API calls here.
+.\.venv\Scripts\python.exe -m src.ingest.pipeline --offline-fixture tests/fixtures/a_synthetic_api.json --db-path data/a_validation/handoff-demo/services.db --raw-dir data/a_validation/handoff-demo/raw
+.\.venv\Scripts\python.exe -m src.ingest.handoff --validation --db-path data/a_validation/handoff-demo/services.db --index-dir data/a_validation/handoff-demo/vectorstore --dry-run
+# Requires an already cached matching model (actual model execution, not part of this task):
+.\.venv\Scripts\python.exe -m src.ingest.handoff --validation --db-path data/a_validation/handoff-demo/services.db --index-dir data/a_validation/handoff-demo/vectorstore --model BAAI/bge-m3 --apply
+
+# Isolated real Chroma + fake-embedding verification, no model/key/network required:
+.\.venv\Scripts\python.exe -m pytest tests/ingest/test_handoff.py -q -rs --basetemp=data/a_validation/handoff-tests
 ```
 
-마지막 줄은 두 색인 적용이 성공한 뒤에만 호출한다. 위 예시는 적용 순서를 설명하는 계약이며 실제 B writer가 아니다.
-토큰은 service_id+version+event_id다. 오래된 토큰은 새 pending을 지우지 못한다. 반환값은 실제 확인된 건수다.
-서비스별 최신 이벤트가 이전 이벤트를 대체하므로 소비자는 이벤트 스냅샷의 전체 교체를 멱등 적용해야 한다.
-빈 조각 replace도 기존 전체 삭제를 의미한다. remove는 이유와 서비스 ID를 갖는다.
+`--validation` requires explicit DB/index paths and rejects resolved live DB/raw/index
+destinations, aliases, sidecars, manifests and locks before writes. Existing offline/
+test/validation ingestion history requires validation mode for application, even if a
+later live run failed. Source DB hardlinks are rejected in all modes, because alias
+paths would give one queue different locks/manifests. Normal
+live defaults remain `config.DB_PATH` and `config.VECTORSTORE_DIR`. Use an ignored
+`data/a_validation/<run>/` tree for all synthetic/validation DB/index/runtime artifacts.
+Dry-run does not initialize a missing DB; run collection/fixture setup first.
 
-**구체적 계약 충돌/제안:** 현재 B `vector_store.build_index()` docstring의 chunk_id upsert만으로는
-청크 수 감소·빈 항목 전환 때 오래된 조각이 남는다. 영향 호출자는 B 색인 writer와 재시도 소비자다.
-호환 대안은 기존 Chunk 타입/빌더를 유지하면서 B가 서비스 단위 삭제 후 전체 조각을 적용하고, Vector/BM25에
-동일 버전이 반영된 후 A 확인 API를 호출하는 것이다. 버전 fencing/소비자 단일 실행, 두 색인의 장애 복구 및
-출처 누락 항목의 C 표시 방침은 **팀 결정 필요**다. 코드/문서 작성이 합의를 의미하지 않는다.
-가짜 소비자만 tests/ingest/test_store_pipeline.py에서 검증했으며 B/C 코드는 수정하지 않았다.
+### Preserved/deferred team decisions
 
-초기 B 소비자는 **하나만 실행**할 것을 권장한다. A의 오래된 확인 응답 차단은 pending 삭제만 보호하며,
-여러 소비자가 오래된 조각을 색인에 덮어쓰는 것까지 막지 못한다. 병렬 소비 전 B의 버전 fencing이 필요하다.
-기관·URL 누락은 `data_quality`와 감사 조회 `store.get_record(service_id)`로 확인한다. Chunk에는 품질
-진단·병합 출처가 없으므로 B/C는 이 A 조회를 이용할 수 있다. 제안은 출처 불완전 서비스를 인용 후보에서
-보류하고 공식 출처를 확인하는 것이다. 이 정책과 C 표시 변경은 합의 대기이며 실제 동작을 바꾸지 않았다.
+`Chunk`, B storage/retrieval, interest field score boosting, C evidence expansion,
+expiry/disappearance/youth-scope reasons and provisional inclusion rules are unchanged.
+Real Chroma/fake-embedding tests verify replay, replacement/removal, exact acknowledgment,
+cross-process exclusion, worker isolation and C full-service expansion without an LLM.
+They do not establish actual-model behavior, full API traversal or answer/search quality.
+
+Missing agency/URL stays in `data_quality`; `Chunk` has no quality/provenance extension.
+B/C can use `store.get_record(service_id, storage=...)` to inspect the same source DB.
+Holding incomplete-provenance candidates or changing C display behavior remains a team
+decision. Real age/region adapters still need verified JA/codebook semantics; internal
+`_verified_eligibility` synthetic data does not implement a production mapping.
 
 ## 실행·테스트·일일 스케줄
 
@@ -243,5 +332,5 @@ Pytest는 테스트별 tmp_path로 fixture 상태와 legacy 기본 경로를 분
 OAS의 JA 기본 라벨 이후 신청자/부양자·경계·특수값·대안 조건 의미를 확인하는 실제 연령 어댑터가 다음 작업이다.
 지역 자격의 명시적 원천과 전국/미상의 구분도 추가 확인이 필요하며 기관명으로 추정하지 않는다.
 전체 페이지 종료·빈 전체 목록의 권위성·ID 카디널리티는 추가 검증 전까지 자동 소실 권한으로 쓰지 않는다.
-전체 청년 건수, 운영 처리량, Vector/BM25 통합, 검색·답변 평가지표는 미검증이다.
+Full youth counts, production throughput, actual-model/production-data integration and search/answer quality remain unverified.
 기존 B/C fixtures와 eval 질문은 교체하지 않았으며 실제 수집 후 팀원이 정답·공식 근거를 확인해야 한다.

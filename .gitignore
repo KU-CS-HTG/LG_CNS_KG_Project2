@@ -7,6 +7,8 @@ data/raw/*
 data/*.db
 data/*.db-*
 data/*.db.ingest.lock
+data/*.db.handoff.json*
+data/vectorstore.handoff.lock
 data/vectorstore/
 data/a_validation/
 .pytest_cache/

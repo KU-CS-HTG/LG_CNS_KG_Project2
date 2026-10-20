@@ -150,7 +150,7 @@ def _execute(full: bool = False, *, max_pages: int | None = None, per_page: int 
                 "endpoints": {k: v.summary() for k, v in collections.items()},
                 "diagnostics": diagnostics, "skipped_decisions": skipped,
             }
-            summary = store.apply_run(run_id, services, listing, full=full, today=seoul_today(),
+            summary = store._apply_run_locked(run_id, services, listing, full=full, today=seoul_today(),
                                       summary=summary, storage=paths)
             # The authoritative summary is committed with DB/events. Failure to write
             # this convenience raw copy cannot undo that transaction.
