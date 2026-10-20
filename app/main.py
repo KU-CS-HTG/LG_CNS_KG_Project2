@@ -10,6 +10,8 @@ from __future__ import annotations
 import html
 import re
 import sys
+import threading
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +142,25 @@ def _search_ready() -> bool:
 
 
 @st.cache_resource(show_spinner=False)
+def _warm_up() -> threading.Event:
+    """서버가 뜰 때 검색 모델·BM25 색인을 미리 불러 둔다 (실제 색인에서 첫 검색만 약 13초 걸렸다).
+    화면은 기다리지 않고 바로 뜨고, 그사이 질문이 오면 _ask가 준비가 끝날 때까지 기다린다
+    (모델을 두 번 불러오지 않게)."""
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            hybrid.search("청년 지원", {"today": date.today().isoformat()}, k=1)
+        except Exception as e:  # 미리 불러오기에 실패해도 질문할 때 다시 불러온다
+            print(f"[app] 검색 미리 불러오기 실패: {e}", file=sys.stderr)
+        finally:
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return done
+
+
+@st.cache_resource(show_spinner=False)
 def _sample_chunks() -> list[Chunk]:
     from tests.fixtures import load_sample_chunks
     return load_sample_chunks()
@@ -179,6 +200,7 @@ def _demo_search_with_info(query: str, filters: Filters, k: int = 5, mode: str =
 
 def _ask(question: str) -> Answer:
     if _search_ready():
+        _warm_up().wait()
         return generator.answer_question(question)
     original = hybrid.search, hybrid.search_with_info
     hybrid.search, hybrid.search_with_info = _demo_search, _demo_search_with_info
@@ -324,6 +346,8 @@ def main() -> None:
     st.session_state.setdefault("threads", [])     # 주제별 대화 [[{role, content}, ...], ...]
     st.session_state.setdefault("current", None)   # 화면에 보이는 주제 번호 (None = 첫 화면)
     st.session_state.setdefault("follow", False)   # True면 다음 입력을 지금 주제에 이어서 묻는다
+    if _search_ready():
+        _warm_up()                                  # 첫 화면을 보는 동안 검색 준비
     _sidebar()
     thread = _thread()
 
@@ -364,10 +388,13 @@ def main() -> None:
         else:
             last = thread[-1]["content"]
             _, follow_q = _parse_text(last.text) if not last.no_evidence else ("", "")
+            # 근거 없음이면 소득 같은 정보를 덧붙여도 결과가 같다 -> 표현·상황을 바꿔 묻도록 안내
+            sub = ("찾는 지원을 다른 말로 바꾸거나, 지금 상황(나이·지역·필요한 도움)을 덧붙여 다시 물어봐 주세요."
+                   if last.no_evidence else "소득·가구처럼 더 알려 주실 정보가 있으면 덧붙여 주세요.")
             with st.container(key="followbox"):
                 st.markdown('<div class="fb-title">💬 이 답변에 이어서 물어볼 수 있어요</div>'
                             + (f'<div class="fb-q">{_e(follow_q)}</div>' if follow_q else "")
-                            + '<div class="fb-sub">소득·가구처럼 더 알려 주실 정보가 있으면 덧붙여 주세요.</div>',
+                            + f'<div class="fb-sub">{sub}</div>',
                             unsafe_allow_html=True)
                 if st.button("↳ 이어서 질문하기"):
                     st.session_state.follow = True
