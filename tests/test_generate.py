@@ -273,6 +273,31 @@ def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
     assert generator.generate_answer(QUESTION_WITH_RESULTS, ev).no_evidence is True
 
 
+def test_not_eligible_needs_code_verified_mismatch():
+    ok = generator._verified_mismatch
+    q = "서울에 사는 27살이에요. 받을 수 있는 지원이 있나요?"
+    assert ok(q, {"said": "27살", "condition": "만 35세~59세 여성"})            # 범위 밖: 해당 없음 인정
+    assert ok(q, {"said": "27살", "condition": "24세 이하 청년"})
+    assert not ok(q, {"said": "27살", "condition": "18세~45세"})              # 범위 안 (실제 데이터에서 빠졌던 경우)
+    assert not ok(q, {"said": "27살", "condition": "만 19세~39세"})
+    assert not ok(q, {"said": "27살", "condition": "청년"})                   # 연령 범위를 읽을 수 없음
+    assert ok(q, {"said": "서울에 사는", "condition": "대전광역시에 주민등록"})   # 다른 시·도
+    assert not ok(q, {"said": "서울에 사는", "condition": "서울특별시 거주 청년"})
+    assert not ok(q, {"said": "서울에 사는", "condition": "무주택 청년"})        # 지역을 말하지 않는 구절
+    assert not ok("청년도약계좌 가입 조건이 어떻게 되나요?",                    # 나이·거주지가 아닌 구절 (실제 데이터)
+                  {"said": "청년도약계좌 가입 조건이 어떻게 되나요?", "condition": "만 15세~만 39세 이하"})
+
+
+def test_missing_conditions_skip_what_evidence_text_states():
+    from src.common.schema import Chunk
+    def ch(text):
+        return [Chunk("X#지원대상", "X", "가상 제도", "지원대상", text, {"field": "주거·자립"})]   # 실제 데이터처럼 지역·나이 메타 없음
+    assert evidence._missing_conditions(ch("[가상 제도] 서울 월세 거주 19세 ~ 39세 이하 청년")) == []   # 원문에 지역·나이가 있음
+    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년")) == [
+        "거주 지역 조건 (자료에 지역 정보 없음)", "연령 조건 (자료에 연령 정보 없음)"]                   # 원문에도 없을 때만
+    assert not any("신청기한" in n for n in evidence._missing_conditions(ch("[가상 제도] 청년")))   # 기한은 카드에 따로 표시
+
+
 def test_numeric_service_id_from_llm_still_matches(monkeypatch, sample_chunks):
     # 실제 보조금24 서비스ID는 숫자뿐이라 LLM이 JSON 숫자로 돌려준다 (실제 데이터에서 모든 제도가 빠졌던 문제)
     from dataclasses import replace
@@ -408,6 +433,17 @@ def test_help_must_be_quoted_from_question():
     q = "대학 등록금이 부담돼요. 받을 수 있는 장학금이 있나요?"
     assert norm({"help": ["등록금", "장학금", "생활비"]}, question=q)["help"] == ["등록금", "장학금"]   # 질문에 없는 '생활비'는 버림
     assert "help" not in norm({"help": []}, question=q)
+    q2 = "청년이 해외 주식 투자에서 손실을 보면 정부가 보전해 주는 제도가 있나요?"
+    assert norm({"help": ["해외 주식 투자에서 손실을 보전해 주는 제도"]}, question=q2)["help"]   # 낱말이 모두 질문에 있음
+    assert "help" not in norm({"help": ["청년 지원", "받을 수 있는 지원"]},                     # 특정하지 않는 말뿐: 넓은 질문
+                              question="27살이 받을 수 있는 청년 지원이 뭐가 있나요?")
+
+
+def test_extract_conditions_asks_help_separately(monkeypatch):
+    def _chat(system, user):
+        return {"asked": ["기초연금"]} if system == condition_extractor.HELP_PROMPT else {}   # 조건은 없어도
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+    assert condition_extractor.extract_conditions("기초연금은 어떻게 신청하나요?") == {"help": ["기초연금"]}
 
 
 def test_service_not_meeting_need_is_dropped(fake_search, fake_conditions, monkeypatch):

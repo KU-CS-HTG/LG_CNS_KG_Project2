@@ -78,14 +78,23 @@ JSON 객체 하나만 출력한다. 사용할 수 있는 키는 아래뿐이다.
 {_defs(SITUATION_DEFS)}
 - field: 사용자가 가장 도움받고 싶은 분야 하나. 아래 목록의 이름 중 하나:
 {_defs(FIELD_DEFS)}
-- help: 사용자가 질문에서 직접 말한 원하는 도움·부담을 질문 원문에서 글자 그대로 복사한 짧은 구절의 배열.
-  처지(신분·상황)는 넣지 않는다. 원하는 도움을 말하지 않고 받을 수 있는 지원을 넓게 물으면 빈 배열이다.
 
 규칙:
 - 질문에 근거가 없는 키는 아예 넣지 않는다. 추측하지 않는다.
 - 자녀·부모 등 가족의 나이나 거주지를 사용자 본인의 값으로 쓰지 않는다.
 - 목록에 없는 값은 쓰지 않는다. 해당하는 값이 없으면 그 키를 뺀다.
 - 조건이 하나도 없으면 빈 객체를 출력한다."""
+
+# 질문이 찾는 것(원하는 도움·부담·제도 이름)은 따로 짧게 묻는다. 위 프롬프트에 help 키로 함께 넣었더니
+# 나이·지역 같은 조건이 없는 질문('기초연금은 어떻게 신청하나요?')에서 빈 객체만 돌려줬다 (실제 데이터 평가 q33·q34).
+HELP_PROMPT = """너는 정부 지원제도 질문에서 사용자가 찾는 것을 가리키는 구절만 뽑는 도구다.
+JSON 객체 하나만 출력한다: {"asked": [구절, ...]}
+
+- asked: 사용자가 받고 싶은 도움, 덜고 싶은 부담, 또는 묻는 제도 이름을 질문 원문에서 글자 그대로 복사한 짧은 구절.
+- 나이·사는 곳·신분·처지(취업준비생, 직장인, 대학생 등)는 넣지 않는다.
+- '지원', '혜택', '제도'처럼 무엇인지 특정하지 않는 말만 있으면 빈 배열이다."""
+# 무엇인지 특정하지 않는 말. 구절에서 이것들을 빼고 남는 것이 없으면 넓은 질문으로 본다 ('청년 지원', '받을 수 있는 지원')
+_GENERIC_HELP = ("받을수있는", "청년", "지원금", "지원", "혜택", "제도", "정책", "신청", "정부", "서비스")
 
 
 _client = None
@@ -120,6 +129,10 @@ def extract_conditions(question: str) -> dict:
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("조건 추출 실패, 조건 없이 진행: %s", e)
         return {}
+    try:
+        raw["help"] = _chat_json(HELP_PROMPT, question).get("asked")
+    except Exception as e:  # 찾는 것을 못 뽑으면 넓은 질문처럼 거르지 않는다
+        log.warning("찾는 것 추출 실패, 없이 진행: %s", e)
     return _normalize_conditions(raw, question=question)
 
 
@@ -174,8 +187,8 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
         if picked:
             out["situation"] = picked
 
-    # help: 질문에서 직접 말한 원하는 도움 (C 내부용. B에게 넘기는 Filters에는 들어가지 않는다).
-    # 질문 원문에 실제로 있는 짧은 구절만 받는다 (나이와 같은 원리로 추측 차단)
+    # help: 질문이 찾는 것 (C 내부용. B에게 넘기는 Filters에는 들어가지 않는다).
+    # 낱말이 모두 질문 원문에 있는 짧은 구절만 받는다 (나이와 같은 원리로 추측 차단. LLM이 조사를 조금 바꿔 쓰는 것은 허용)
     help_ = raw.get("help")
     if isinstance(help_, str):
         help_ = [help_]
@@ -184,7 +197,11 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
         picked = []
         for h in help_:
             h = h.strip() if isinstance(h, str) else ""
-            if h and len("".join(h.split())) <= 20 and "".join(h.split()) in q and h not in picked:
+            words, rest = h.split(), "".join(h.split())
+            for g in _GENERIC_HELP:
+                rest = rest.replace(g, "")
+            if (words and len("".join(words)) <= 25 and all(w in q for w in words)
+                    and len(rest) >= 2 and h not in picked):
                 picked.append(h)
         if picked:
             out["help"] = picked
@@ -203,6 +220,13 @@ def _normalize_region(value) -> str | None:
     if v.endswith(("시", "도")) and v[:-1] in REGIONS:
         return v[:-1]
     return None
+
+
+def _find_region(text: str) -> str | None:
+    """구절에 처음 나오는 시·도의 짧은 이름 ('서울에 사는' -> '서울', '대전광역시에 주민등록' -> '대전'). 없으면 None."""
+    found = [(text.find(name), short) for name, short in
+             [*((r, r) for r in REGIONS), *_REGION_ALIASES.items()] if name in text]
+    return min(found)[1] if found else None
 
 
 def _to_int(value) -> int | None:

@@ -120,8 +120,8 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str])
                 continue
             gen = {}
         applicable = gen.get("applicable")
-        if applicable == NOT_ELIGIBLE and not _grounded_mismatch(question, gen.get("mismatch")):
-            applicable = UNCLEAR          # 질문에 나이·거주지 근거가 없으면 제외하지 않고 확인 필요로 남긴다
+        if applicable == NOT_ELIGIBLE and not _verified_mismatch(question, gen.get("mismatch")):
+            applicable = UNCLEAR          # 나이·거주지가 실제로 다르다고 확인되지 않으면 제외하지 않고 확인 필요로 남긴다
         if applicable in (NOT_ELIGIBLE, NOT_RELEVANT):
             continue
         if needs and gen.get("meets_need") is False:
@@ -248,10 +248,47 @@ def _vague_criteria(sections: dict[str, str]) -> list[str]:
     return out
 
 
-def _grounded_mismatch(question: str, mismatch) -> bool:
-    """'해당 없음' 판정의 근거(사용자가 밝힌 나이·거주지 구절)가 질문 원문에 실제로 있는가."""
-    said = _str(mismatch.get("said")).strip("‘’'\"") if isinstance(mismatch, dict) else ""
-    return bool(said) and "".join(said.split()) in "".join(question.split())
+_AGE_RANGE_RE = re.compile(r"(\d+)\s*세?\s*[~∼\-–]\s*(?:만\s*)?(\d+)\s*세")
+_AGE_MAX_RE = re.compile(r"(\d+)\s*세\s*(이하|미만)")
+_AGE_MIN_RE = re.compile(r"(\d+)\s*세\s*(이상|초과)")
+
+
+def _verified_mismatch(question: str, mismatch) -> bool:
+    """'해당 없음' 판정을 코드로 확인한다. 확인되지 않으면 빼지 않고 '확인 필요'로 남긴다.
+
+    - said가 질문 원문에 있고, 나이나 거주지를 담은 구절이어야 한다
+      (실제 데이터: 질문 문장 전체를 said로 써서 청년도약계좌 질문의 제도가 모두 빠짐).
+    - 나이면 근거의 연령 범위를 코드가 읽어 실제로 벗어나는지 본다 ('27살' vs '18세~45세'를 해당 없음으로 판정한 적 있음).
+    - 거주지면 근거 구절이 다른 시·도를 말하고 사용자의 시·도는 말하지 않아야 한다."""
+    if not isinstance(mismatch, dict):
+        return False
+    said = _str(mismatch.get("said")).strip("‘’'\"")
+    cond = _str(mismatch.get("condition"))
+    if not said or "".join(said.split()) not in "".join(question.split()):
+        return False
+
+    age = _AGE_RE.search(said)
+    if age:
+        n = int(re.match(r"\d+", age.group()).group())
+        if m := _AGE_RANGE_RE.search(cond):
+            return not int(m.group(1)) <= n <= int(m.group(2))
+        lo, hi = _AGE_MIN_RE.search(cond), _AGE_MAX_RE.search(cond)
+        if not (lo or hi):
+            return False                              # 근거 구절에서 연령 범위를 읽을 수 없음
+        below = lo and (n < int(lo.group(1)) or (lo.group(2) == "초과" and n == int(lo.group(1))))
+        above = hi and (n > int(hi.group(1)) or (hi.group(2) == "미만" and n == int(hi.group(1))))
+        return bool(below or above)
+
+    user = condition_extractor._find_region(said)
+    if user is None:
+        return False                                  # 나이도 시·도도 아닌 구절
+    named = _regions_in(cond)
+    return bool(named) and user not in named
+
+
+def _regions_in(text: str) -> set[str]:
+    return {r for r in condition_extractor.REGIONS if r in text} | {
+        short for full, short in condition_extractor._REGION_ALIASES.items() if full in text}
 
 
 def _sections(chunks: list[Chunk]) -> dict[str, str]:
