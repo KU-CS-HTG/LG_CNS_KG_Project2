@@ -453,6 +453,8 @@ def test_help_must_be_quoted_from_question():
                               question="27살이 받을 수 있는 청년 지원이 뭐가 있나요?")
     q3 = "자격증 시험이나 어학 시험 응시료를 지원받을 수 있나요?"                           # 질문 어미는 잘라 낸다 (이유 문장용)
     assert norm({"help": [q3[:-1]]}, question=q3)["help"] == ["자격증 시험이나 어학 시험 응시료"]
+    q4 = "대학생인데 자취방을 구해야 해요. 주거비를 지원받을 수 있을까요?"                  # '있을까요' 앞에서 잘려 온 경우
+    assert norm({"help": ["주거비를 지원받을 수"]}, question=q4)["help"] == ["주거비"]
 
 
 def test_extract_conditions_asks_help_separately(monkeypatch):
