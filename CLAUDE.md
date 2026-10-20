@@ -26,7 +26,7 @@
 | B (임베딩·검색) 담당자: | ③ 임베딩, ④ 벡터 저장소, ⑤ 검색, 정형 필터, Baseline, 검색 평가 | `src/index/`, `src/retrieve/`, `eval/metrics.py`·`eval/run_eval.py` |
 | C (생성·서비스) 담당자: | 조건 추출, 근거 선별, ⑥ 생성, 인용 형식, UI, 답변 평가 | `src/generate/`, `app/`, `eval/answer_eval.py` |
 - 테스트(`tests/`)는 각자 자기 모듈의 `test_*.py`를 관리하고, 샘플 데이터(`tests/fixtures/`)는 A의 실제 조각이 나오면 A·B가, B의 실제 검색 결과가 나오면 B·C가 함께 실제 데이터로 보강한다. C는 다른 모듈 함수를 모듈 속성(`hybrid.search(...)`)으로 호출한다(테스트에서 가짜로 바꿔 끼우기 위함).
-- 평가 질문 세트(`eval/questions.jsonl`)와 8.3 기술 선택 기록은 전원이 함께 작성한다.
+- 평가 질문 세트(`eval/questions.jsonl`)와 8.3 기술 선택 기록은 전원이 함께 작성한다. 정답(`relevant_service_ids`)은 **데이터를 읽고 사람이 정하며**(검색 결과를 베끼지 않는다), `eval/label_helper.py`로 채우고 기준은 `docs/LABELING.md`를 따른다(질문당 5개 이내, 지역 없는 질문은 전국 단위 제도, 지역 제도는 `followup` 문항).
 
 ## 모듈 간 인터페이스 (제안 — 팀 합의 후 확정, 바꿀 때는 이 파일부터 고친다)
 - A → B: 조각 단위 레코드 `{chunk_id, service_id, service_name, section, text, metadata, detail_url}`
@@ -70,6 +70,7 @@ python -m pytest tests/ingest -q -ra   # A: mock HTTP·임시 SQLite, 미구현 
 python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
+python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요
 ```
 (A 2차 수정·오프라인 회귀 및 격리 live 표본 검증 완료. B/C는 스켈레톤. 전체 API 적합성·실제 연령/지역 어댑터·Vector/BM25 통합은 미검증.)
