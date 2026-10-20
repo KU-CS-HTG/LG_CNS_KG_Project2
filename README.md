@@ -6,10 +6,10 @@
 - 상세 설계 이유·변경 이력: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - AI 작업 지침(규칙 원문): [`CLAUDE.md`](CLAUDE.md)
 
-> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B/C는 스켈레톤입니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
+> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B indexing/retrieval and C evidence/generation paths are implemented. The stored-event consumer is verified with real Chroma and fake embeddings; actual-model and production-data integration remain unverified. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
 
 2차 수정에서 과거 상세/현재 목록 병합, fixture 저장소 격리, HTML 표 경계를 보완했습니다.
-격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. 전체 순회·실제 연령/지역 어댑터·B 색인 통합은 미검증입니다.
+격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. Full API traversal and production age/region adapters remain unverified. This handoff pass makes no new live API or actual-model verification claims.
 
 ## 1. 데이터
 
@@ -271,7 +271,7 @@ python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울
 
 #### (1) A → B: 색인용 조각
 
-A가 B에게 주는 것은 **정제·분할이 끝난 서비스별 전체 교체 조각**입니다. `pipeline.run()`은 미확인 조각도 재전달하며 제거 이벤트는 별도로 조회합니다. B가 chunk_id upsert만 수행하면 줄어든 조각이 남을 수 있습니다. 서비스 전체 교체/제거 및 두 색인 적용 후 확인 응답을 제안하며, B writer 연동은 아직 구현·합의되지 않았습니다. [인계 API](docs/INGEST_A.md)를 따릅니다.
+A stores complete service replacements/removals in `pending_changes` (미처리 변경 이벤트). `python -m src.ingest.handoff` inspects them; `--apply` uses B's existing `build_index()`/`remove_services()`, verifies persistent documents and both retrieval paths, then acknowledges the original service/version/event token. It never substitutes `pipeline.run()` output or current service records for the stored event. See the [handoff contract](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자).
 
 ```python
 # A가 만들어서 넘긴다 — pipeline.run() 의 반환값 (일부)
@@ -329,20 +329,36 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
 
+### 2.3 Incremental index handoff (증분 색인 인계)
+
+```powershell
+# Existing source DB → read-only inspection (no model/index initialization).
+.\.venv\Scripts\python.exe -m src.ingest.handoff --dry-run
+# Apply to the associated index with an already cached matching model.
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply
+# First binding of an existing nonempty B collection requires explicit adoption.
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply --adopt-existing
+# Retry the same --apply command after resolving a failure; pending is durable.
+```
+
+One source DB is associated with one index directory/model configuration. The worker owns OS locks in index→DB order; supported collection/upsert/apply-run paths share the DB lock. Competing processes fail immediately. Application stops on the first failure with exit code 1. Successfully verified earlier events remain acknowledged; failed/later events remain pending. BM25 is derived from Chroma documents and refreshed by B's `index_version`, without another persistent BM25 database.
+
+Fixture sources require `--validation` and explicit isolated `--db-path`/`--index-dir`; protected live paths and aliases are rejected before writes. See [isolated commands and synchronization limits](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자). The legacy `src.index.vector_store` CLI bypasses this protocol: do not run direct index writers concurrently with ingestion/consumption. It does not acknowledge pending events.
+
 ## 3. 디렉터리 구조와 담당
 
 ```
 src/
   common/    config.py, schema.py                                  # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, normalize, merge, storage, store, chunker, pipeline # A
+  ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
   index/     embedder, vector_store                                # B
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
 app/         main.py                                               # C: UI
-eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
+eval/        metrics, answer_eval, run_eval, label_helper(정답 채우기 도구), questions.jsonl, results/
 tests/       fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
-docs/        사전기획서.docx, ARCHITECTURE.md, images/
+docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기 안내), images/
 ```
 
 | 담당 | 맡은 단계 | 디렉터리 |
@@ -377,7 +393,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | 디렉터리 = 담당자 단위 | 한 사람이 자기 폴더만 수정해 파일 충돌과 책임 논쟁을 없앤다. |
 | `schema.py`에 모듈 간 계약을 한 곳에 정의 | 구현 전에도 서로의 입출력을 가정하고 병렬 개발한다. |
-| B/C는 `NotImplementedError` 스켈레톤, A는 구현됨 | 기존 공개 타입 유지. A DB·pending 설계와 B 소비자 제안은 [운영 계약](docs/INGEST_A.md)에 기록. |
+| A/B/C implementations retain their public contracts | Stored-event consumption, lock protocol and replay behavior are recorded in the [operating contract](docs/INGEST_A.md). |
 | 증분 수집(`store.upsert_services`가 변경분 반환), 종료 서비스는 색인에서 제거 | 기획서 7장: 정기 수집 후 변경분만 재색인. |
 | 구조 기반 분할 + 서비스명 접두 | 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고, 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
@@ -402,13 +418,16 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
   - 사용: `evaluate(retrieved, relevant)`가 K=3·5·10 지표를 한 번에 계산하고 `check_targets(...)`가 잠정 목표 달성 여부를 알려 줍니다. 예: 두 질문의 결과가 `[["a","b","c"], ["x","a"]]`, 정답이 `[{"b"}, {"a"}]`이면 Hit Rate@3 = 1.0, MRR = (1/2 + 1/2) ÷ 2 = 0.5.
 - 답변: Answer Correctness, Faithfulness, Citation Accuracy
 - 실험 순서: Baseline(SQL+키워드) → Vector → BM25 → Hybrid → Hybrid+정형 필터 → 최종. 결과는 `eval/results/`에 저장하고 요약을 기획서 9.4에 기록합니다. Top-K는 3 / 5 / 10을 비교합니다.
-- 질문 세트: `eval/questions.jsonl` (현재 초안 34문항, **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
+- 질문 세트: `eval/questions.jsonl` (현재 36문항(상황형 중심 34 + 지역 후속 2), **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
 
   | 필드 | 설명 |
   |---|---|
   | `id`, `category`, `question` | 식별자, 범주(상황형·제도명 아는 질문·지역·연령 조건·근거 없음 등), 질문 |
   | `topic` (선택) | 사람이 보는 주제 분류(구직·주거·교육·금융·결혼·출산·양육·창업·건강·교통·자립 등). 약한 주제를 찾는 용도이며 평가 계산에는 쓰이지 않음 |
-  | `relevant_service_ids` | 정답 `service_id` 목록. 수집 후 팀원이 데이터에서 직접 확인해 채움 |
+  | `relevant_service_ids` | 정답 `service_id` 목록 (보조금24 서비스ID). 팀원이 데이터를 읽고 `eval/label_helper.py`로 채움 |
+  | `relevant_service_names` (자동) | 정답 제도 이름. 도구가 정답과 함께 적어 두며 사람이 검수하기 위한 값 (평가 계산에는 안 쓰임) |
+  | `label_source`·`reviewed`·`label_confidence`·`label_note` (자동) | 정답을 Claude가 1차로 채웠을 때의 출처·사람 검수 여부·신뢰도·근거 (LABELING.md §8.2.1). 평가 계산에는 안 쓰임 |
+  | `follow_up_of` (자동) | `followup` 명령으로 만든 후속 문항이 어느 질문에서 왔는지 |
   | `expected_answer` | 기대하는 답변(사람이 읽는 설명, 답변 평가용) |
   | `expect_no_answer` | 근거가 없어 "모른다"고 답해야 하는 질문이면 `true` |
   | `filters` (선택) | 이 질문의 정형 조건. LLM 조건 추출과 분리해서 검색만 평가하려고 정답 조건을 직접 적음. 예: `{"age": 27, "region": "서울"}` (`hybrid_filter` 실험에서만 사용) |
@@ -428,10 +447,31 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 기한 지난 제도 | 2 | 신청이 끝난 제도를 물었을 때 후보에서 제외되는지 |
 | 근거 없음 | 3 | 아직 없는 제도, 청년 범위 밖(기초연금), 존재하지 않는 제도 |
 
-- **정답은 모두 비어 있습니다.** 수집된 데이터에 이 제도들이 실제로 있는지 모르기 때문에, 데이터가 들어온 뒤 팀원이 확인해서 채웁니다. 데이터에 없는 제도·상황이면 질문을 바꾸거나 삭제합니다(기획서 9.1의 메모와 같음). 제도명 질문과 기한 지난 제도 질문의 실제 제도명은 예시이므로 데이터에 있는 제도로 교체해도 됩니다.
-- `expected_answer`는 정답 서비스를 모르는 상태에서 쓴 **일반적인 기대 답변 설명**입니다. 구체적인 제도명·금액은 데이터를 보고 보강합니다.
-- `todo`가 남은 질문은 평가에서 제외되고 개수가 경고로 표시되므로, 채울수록 평가 대상이 늘어납니다. `tests/test_run_eval.py`가 질문마다 정답·근거 없음·`todo` 중 하나가 있는지 점검합니다.
-- 팀원이 문항을 나눠 채우세요. 예: 주제별(구직·주거·교육…)로 담당을 정하고, 채운 질문에서 `todo`를 지우고 `relevant_service_ids`를 넣습니다.
+- **정답은 모두 비어 있습니다.** 수집된 데이터에 이 제도들이 실제로 있는지 모르기 때문에, 데이터가 들어온 뒤 팀원이 **데이터를 직접 읽고** 채웁니다.
+  데이터에 없는 제도·상황이면 질문을 바꾸거나 삭제합니다(기획서 9.1의 메모와 같음). 제도명 질문과 기한 지난 제도 질문의 실제 제도명은 예시이므로 데이터에 있는 제도로 교체해도 됩니다.
+- `expected_answer`는 정답 서비스를 모르는 상태에서 쓴 **일반적인 기대 답변 설명**입니다. `todo`가 남은 질문은 평가에서 제외되므로 채울수록 평가 대상이 늘어납니다.
+- 팀원이 문항을 나눠 채웁니다 (분담 제안은 [`docs/LABELING.md`](docs/LABELING.md) §9.1).
+
+#### 정답 채우는 법 — 요약 (전체 안내: [`docs/LABELING.md`](docs/LABELING.md))
+
+정답 채우기 전용 도구 `eval/label_helper.py`가 있습니다. 보조금24 서비스 목록을 내려받아 키워드로 찾아보고, **사람이 읽고 판단해서** 고른 `서비스ID`를 질문에 기록합니다.
+
+```bash
+python -m eval.label_helper fetch                  # 서비스 목록 내려받기 (한 번만, .env의 GOV24_API_KEY 필요)
+python -m eval.label_helper status                 # 진행 상황
+python -m eval.label_helper label --only q01,q02   # 내 담당 문항을 대화형으로 채우기 (한 문항씩 저장)
+python -m eval.label_helper followup q01 --region 서울   # 지역을 알려 준 뒤의 후속 질문 문항 만들기
+python -m eval.label_helper check                  # 정답 id·이름·지역·기한 검증 (오류 0건이 되게)
+python -m eval.label_helper review                 # Claude가 1차로 채운 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
+```
+
+정답 기준 (자세한 이유와 예외는 LABELING.md §3):
+- **그 제도 하나만으로도 좋은 답이 되는** 제도만, 한 질문에 **5개 이내** (정답이 많으면 Recall이 구조적으로 낮아짐).
+- 질문에 나오지 않은 소득·가구 조건은 따지지 않고(답변 단계의 "확인 필요"), **신청기한이 지난 제도·청년이 아닌 제도는 제외**.
+- **지역이 없는 질문의 정답은 전국 단위 제도**입니다. 실제 서비스는 지역을 추가 질문으로 받기 때문에, 지역 제도는 `followup`으로 만든 별도 문항("서울에 살아요. …")에서 채웁니다.
+- 복합 질문("월세 + 취업 준비")은 필요마다 따로 검색해 각각 2~3개.
+- **우리 검색 시스템의 결과를 정답으로 베끼지 않습니다** (검색이 맞춘 것만 정답이 되어 점수가 부풀려짐).
+- 근거 없음 질문은 키워드를 바꿔 3번 이상 찾아도 없을 때만 `none`/`keep`.
 
 ### 7.1 검색 평가 실행 — `python -m eval.run_eval`
 
@@ -449,7 +489,7 @@ python -m src.index.vector_store --sample --full
 python -m eval.run_eval --experiment all --questions tests/fixtures/sample_eval_questions.jsonl --today 2026-10-19 --no-save
 ```
 
-**실제 질문 세트의 정답 채우는 법**: A의 데이터가 색인된 뒤, 팀원이 질문마다 **수집 데이터를 직접 읽어** 답이 되는 제도의 `service_id`를 `relevant_service_ids`에 넣고 `todo`를 지웁니다. 검색 결과를 그대로 베껴 정답으로 쓰면 평가가 순환(검색이 맞춘 것만 정답)이 되므로 쓰지 마세요. 근거가 없어야 하는 질문은 `relevant_service_ids`를 비우고 `expect_no_answer`를 `true`로 둡니다. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
+**실제 질문 세트의 정답 채우는 법**은 위 "정답 채우는 법"과 [`docs/LABELING.md`](docs/LABELING.md)를 보세요. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
 
 출력 예 (예상 형식, 수치는 예시):
 
@@ -487,10 +527,12 @@ python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB·이력�
 python -m src.ingest.pipeline --offline-fixture tests/fixtures/a_synthetic_api.json  # 별도 저장소 강제
 python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승인된 격리 라이브 표본
 python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
-python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
+python -m src.ingest.handoff --dry-run # A→B: inspect stored pending; add --apply to apply/verify/ack
+python -m src.index.vector_store       # B: legacy direct index CLI; no pending acknowledgment/consumer locks
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
+python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (docs/LABELING.md)
 ```
 
 모델 다운로드 시 나오는 `Warning: You are sending unauthenticated requests to the HF Hub` 경고는 무시해도 됩니다. 없애려면 `.env`에 `HF_TOKEN=<Hugging Face 토큰>`을 넣거나(다운로드도 빨라짐), 모델을 이미 받은 뒤라면 `HF_HUB_OFFLINE=1`을 넣으세요(`.env.example` 참고).
@@ -506,7 +548,7 @@ Windows PowerShell에서 환경변수를 직접 설정한다면 `export` 대신 
 | B (A 없이) | 가짜 조각 `Chunk` 48개 | `sample_chunks.json`, `sample_queries.json` |
 | C (B 없이) | 가짜 검색 결과 + 가짜 조건 추출 | `sample_search_results.json`, `fake_search`·`fake_conditions` 픽스처 |
 
-공용 훅은 B/C 구현 전(`NotImplementedError`) 테스트를 skip으로 표시합니다. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
+The historical shared hook converts `NotImplementedError` into skips; the A-specific hook treats it as failure. The consumer regressions must have no skips. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
 
 #### B가 A의 구현 없이 테스트하기
 
@@ -514,7 +556,7 @@ A의 구현이 끝나기 전에도 B가 자기 코드를 검증할 수 있도록
 
 - 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상이 섞여 있습니다.
 - 시험 대상: `filters`(소프트 필터·기한 제외·완화), `metrics`(지표 계산), `vector_store`·`hybrid`(색인 후 검색 기대값). 테스트 파일은 `test_filters.py`, `test_metrics.py`, `test_retrieval.py`입니다.
-- `test_retrieval.py`의 색인 저장 경로 분리는 B가 결정합니다.
+- Retrieval tests use isolated `tmp_vectorstore`; consumer tests add real Chroma/BM25, subprocess locks, replay and C evidence expansion with fake embeddings.
 
 #### C가 B의 구현 없이 테스트하기
 
@@ -553,6 +595,7 @@ def test_예시(fake_search, fake_conditions):
 |---|---|
 | `src/ingest/` | 수집·정제·SQLite·분할·pending·CLI 구현. OAS·첫 페이지 표본 확인, 실제 연령/지역 어댑터·전체 적합성 미검증, 자동 소실 차단 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
+| `eval/label_helper.py` | 구현됨 (B). 질문 정답 채우기 도구(검색·전국/지역 구분·기한 경고·대화형·후속 질문·검증). 가짜 데이터로 테스트(`tests/test_label_helper.py`). 실제 API 응답으로는 미확인 (`fields` 명령으로 필드 확인 필요) |
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
 | 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
 | 그 외 B/C | 스켈레톤 (`NotImplementedError`) |

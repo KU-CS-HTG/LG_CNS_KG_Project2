@@ -27,12 +27,12 @@
 ```
 src/
   common/    config.py, schema.py                       # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, normalize, merge, storage, store, chunker, pipeline # A
+  ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
   index/     embedder, vector_store                     # B: ③ 임베딩, ④ 벡터 저장소
   retrieve/  hybrid, filters, baseline                  # B: ⑤ 검색, 정형 필터, 비교 실험용 Baseline
   generate/  condition_extractor, evidence, generator, citation   # C
 app/         main.py                                    # C: UI
-eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
+eval/        metrics, answer_eval, run_eval, label_helper, questions.jsonl, results/
 tests/       pytest. fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
@@ -44,9 +44,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | 디렉터리 = 담당자 단위 (A `ingest` / B `index`+`retrieve`+`eval` / C `generate`+`app`) | `CLAUDE.md` 담당 영역과 1:1. 한 사람이 자기 폴더만 수정해 파일 충돌과 책임 논쟁을 없앤다. |
 | `src/common/schema.py`에 `Chunk`·`Metadata`·`Filters`·`Recommendation`·`Answer`를 한 곳에 정의 | 모듈 간 계약(A→B 조각, C→B 필터, B→C 검색 결과, C→UI 답변)을 코드로 고정해 구현 전에도 병렬 개발한다. 바꿀 때는 이 파일과 `CLAUDE.md` 인터페이스 절부터 고친다. |
-| B/C 함수는 시그니처·docstring과 `NotImplementedError`, A는 구현됨 | 기존 공개 시그니처와 공유 타입 유지. A SQLite·pending 설계는 아래 A 계약 참조. B의 색인 진입점과 소비자 적용은 팀 합의 대기. |
+| A/B/C implementations retain existing public contracts | A-owned stored-event consumer connects the existing Chroma/BM25 APIs without changing B/C or shared types/configuration. |
 | `ingest`를 `client` / `store` / `chunker` / `pipeline`으로 분리 | ①로드와 ②분할에 대응. 수집은 API 의존, 분할은 순수 함수라 따로 테스트한다. DB는 정형 필터·Baseline 실험·변경 감지의 원천이다 (7장). |
-| `store.upsert_services`가 변경된 활성 `service_id`를 반환, `pipeline.run`은 미확인 증분을 재전달 | 일일 증분 수집. A가 서비스 전체 교체/제거를 durable pending에 기록한다. 무인자 `mark_closed()`는 안전한 no-op. 검증된 전체 목록만 내부 소실 판정을 허가하며 현재 실 API 미검증으로 차단된다. 실제 B writer는 별도 구현 필요. |
+| `store.upsert_services`가 변경된 활성 `service_id`를 반환, `pipeline.run`은 미확인 증분을 재전달 | 일일 증분 수집. A가 서비스 전체 교체/제거를 durable pending에 기록한다. 무인자 `mark_closed()`는 안전한 no-op. 검증된 전체 목록만 내부 소실 판정을 허가하며 현재 실 API 미검증으로 차단된다. The implemented `ingest.handoff` consumer verifies and acknowledges stored snapshots through B APIs. |
 | `chunker`: 구조 기반(4개 항목) + 긴 항목은 Recursive, 서비스명 접두 | 8.1 문서 분할. 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고(7.1), 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | `Metadata`에 지역·소관기관·분야·신청기한·연령 범위·대상 태그 | 8.1 메타데이터. 종료된 제도와 지역·연령이 안 맞는 후보를 제거하고, 지역만 다른 중복 제도(7.1)를 구분한다. |
 | `index`(오프라인)와 `retrieve`(온라인) 분리 | 구조도의 오프라인 색인 / 온라인 질의응답 경계를 코드에 반영. 색인은 문서가 바뀔 때만 실행. |
@@ -68,7 +68,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 벡터 저장소: Chroma(정식 벡터 DB), 소프트 필터는 저장 시 대체값(지역 `""`, 연령 -1/999, 기한 99999999)으로 처리, `build_where` | 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓰기로 했다(규모가 작아 numpy+SQLite도 가능하나 확장성 우선). Chroma 필터에는 "값이 없으면 통과"가 없어서, 빈 값을 통과하는 값으로 미리 바꿔 저장하는 방식으로 기획서 8.1의 소프트 필터를 구현했다. 읽을 때는 원래대로(키 생략) 되돌린다. |
 | BM25: `rank_bm25` + 글자 2-gram, 색인은 Chroma 텍스트에서 파생·버전 파일로 갱신 | Chroma에 BM25가 없다. 한국어는 조사 때문에 단어 단위가 불리하고 trigram은 두 글자 단어를 못 찾으므로 2-gram. 저장소가 둘로 나뉘지만 BM25 색인은 파생물이라 `index_version` 파일이 바뀌면 다시 만들어 동기화 문제를 피한다. |
 | 임베딩 모델별 컬렉션(`chunks__<모델명>`) | 모델을 바꾸는 실험(bge-m3 ↔ e5)에서 차원 불일치로 저장소가 깨지는 것을 막는다. |
-| `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks`는 B→C에서 미결이던 "같은 서비스의 다른 항목 조각" 조회의 후보. |
+| `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks` is used by C evidence expansion to retrieve all sections of a selected service. |
 | 검색: RRF(순위 합산, 상수 60, 후보 50개) + 서비스당 조각 1개, `search_with_info`(점수·적용된 필터·완화 여부) | 코사인과 BM25는 점수 단위가 달라 순위로 합친다(튜닝 최소화). 같은 제도의 조각이 Top-K를 채우지 않게 서비스 단위로 줄인다(구조도 '중복 제거', 기획서 8.1). 평가(9.4)에서 `mode`별로 점수를 비교하고, 완화 여부는 C가 안내 문구에 쓸 수 있다. |
 | 필터 완화 순서: 지역 → 연령, 신청기한은 풀지 않음. 분야·상황은 필터가 아니라 풀지 않음 | 연령은 자격과 직결되어 마지막에 푼다. 종료된 제도를 보여주지 않는 것은 기획서 규칙이라 완화 대상에서 뺀다. (분야는 처음에는 가장 먼저 푸는 필터였으나 아래 결정으로 필터에서 빠짐) |
 | **관심 분야(`field`)는 필터가 아니라 가산점**: `build_where`·`apply_filters`에서 분야 조건 제거, `hybrid.boost_by_field`가 맞는 분야에 `FIELD_BOOST`(0.002)를 RRF 점수에 더함, `filters.field_matches`(포함 관계) | 분야는 자격이 아니라 관심사다. 화면 테스트에서 질문("월세가 부담되고 취업 준비 중")의 분야가 "주거" 하나로 뽑히자 구직 지원 제도가 필터로 통째로 걸러졌다. 또 LLM이 뽑는 분야 이름과 실제 데이터의 서비스분야 이름이 다르면(예: "주거" vs "주거·자립") 맞지 않는 제도가 모두 사라지고, 분야가 비어 있어 통과하는 제도만 남아 결과가 비지 않으므로 완화도 일어나지 않는 문제가 있다. 가산점은 거르지 않으므로 이름이 달라도 결과가 그대로 나오고 맞으면 앞으로 올라간다. B·C 합의(C는 `Filters`에 `field`를 그대로 보냄). 값은 평가(`run_eval`)로 조정하며 0이면 끈다. 검색어에 분야를 덧붙이는 방법은 복합 질문에서 한쪽으로 쏠릴 수 있어 쓰지 않았다. |
@@ -83,6 +83,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 놓친 질문 목록(정답 순위·실제 검색 결과)과 범주별 표 | 점수만으로는 원인을 알 수 없다. 약한 질문 유형과 실패 사례를 바로 보여 분할·필터·임베딩·BM25 중 무엇을 손볼지 정하는 근거가 된다. |
 | `--experiment all`이 기획서 9.4용 마크다운 표를 출력, 구현 전 baseline은 건너뜀 | 비교 실험 결과를 9.4에 그대로 옮겨 적도록 한다. |
 | `test_run_eval`(질문 세트 파일 형식 점검 포함) | 가짜 검색으로 집계를, 샘플 색인으로 `main` 전체 흐름을 검증한다. 팀이 `questions.jsonl`을 고친 뒤 id 중복·필드 누락·근거 없음 질문의 정답 여부가 깨지지 않았는지도 확인한다. |
+| `eval/label_helper.py` (질문 정답 채우기 도구)를 `eval/`에 둠, 사용법은 `docs/LABELING.md` | 정답은 A의 파이프라인이 끝나기 전에도, 검색 시스템과 독립적으로 정해야 한다(순환 평가 방지). 그래서 보조금24 API에서 서비스 목록을 직접 받아 키워드로 찾는 별도 도구로 만들었다. `eval/questions.jsonl`을 고치는 도구라 평가(`eval/`)에 둔다. 팀원 전원이 쓰므로 사용법과 기준을 문서로 남긴다. |
+| 정답 기준: 질문당 5개 이내 핵심 제도, 질문에 없는 자격 조건은 따지지 않음, 기한 지난 제도 제외, **지역 없는 질문은 전국 단위 제도** | Recall@K의 분모가 정답 수라 정답이 많으면 목표를 달성할 수 없다. 자격(소득 등)은 답변 단계의 "확인 필요"로 처리되므로 검색 정답에서는 가능성만 본다. 실제 서비스는 지역을 추가 질문으로 받으므로 지역 없는 첫 질문의 정답은 전국 제도로 하고, 지역 제도는 `followup`으로 만든 별도 문항(`filters.region`, `follow_up_of`)에서 평가한다. |
+| 도구가 전국/지역(소관기관), 기한 지남(신청기한 문자열)을 추정해 보여 주고, 저장 시 지역·기한이 안 맞으면 경고 | 약 1만 건에서 기준에 맞는 제도를 사람이 고르기 쉽게 하되, 두 값은 자유 형식 문자열에서 추정하는 것이라 판정을 강제하지 않고 경고로만 다룬다. `check`는 id·이름 오류(종료 코드 1)와 경고를 구분한다. |
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
@@ -133,8 +136,8 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `ingest/normalize.py`, `store.py`, `chunker.py`, `pipeline.py` | 결정적 정제·잠정 청년 정책·SQLite·트랜잭션 pending·구조 분할·CLI 구현. 상세 운영 계약은 [INGEST_A.md](INGEST_A.md) |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `tests/ingest/` | A 전용 합성 HTTP·임시 DB·가짜 소비자·CLI 검증. A NotImplementedError는 실패 처리, 공용 훅/fixtures 보존 |
-| 기존 `tests/`의 B/C 영역 | 구현 전(또는 OPENAI_API_KEY 없음) skip. 실제 검색·생성 품질 검증 아님 |
-| 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
+| Existing B/C tests | Implemented offline regression coverage; the opt-in actual-model test is skipped by default. This is not search/answer quality evaluation. |
+| `ingest/handoff*.py`, `locking.py` | Stored snapshot → B apply → persistent/Vector/BM25 verification → exact ack; real Chroma/fake embeddings, subprocess locks and C evidence expansion tested. |
 
 ### 6.1 A 구현과 팀 결정 경계
 
@@ -142,7 +145,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 
 `--full`은 DB 초기화 없이 활성 전체 조각을 pending에 재생성한다. 기본 `run()`도 이전 미확인 조각을 반환할 수 있다. 읽기·반환은 확인 응답이 아니다. [A 운영 계약](INGEST_A.md)에 필드 매핑, 확인 수준, 조건 어댑터, 스케줄, 실패 복구 및 B API를 기록했다.
 
-B의 기존 chunk_id별 upsert 설명만으로는 청크 수 감소 때 잔여 조각이 남는다. **제안:** 서비스 전체 교체/제거 후 Vector/BM25가 동일 버전을 영속 반영하면 service_id+version+event_id로 확인한다. B/C 코드는 수정하지 않았고 실제 연동은 미검증이다. 소비자 동시 실행·버전 fencing·출처 누락 표시와 잠정 청년 포함 정책은 팀 합의가 필요하다.
+B already removes stale chunk IDs for each nonempty service replacement. The consumer reuses that implementation and calls `remove_services()` explicitly for removals/empty replacements. Verification precedes exact service_id+version+event_id acknowledgment; no B/C source changes are required. Production age/region mapping, missing-provenance display policy and the provisional youth policy remain team decisions.
 
 ### 6.2 A 2차 수정
 
@@ -161,7 +164,23 @@ JA 기본 라벨을 공식 OAS에서 확인했으나 신청자/부양자·경계
 B 소비자는 우선 하나를 권장하며 A stale-ack 보호가 B의 stale write까지 막지는 않는다. 기관/URL 품질은
 `get_record()`로 조회하고 인용 후보 보류·표시 정책은 B/C 합의가 필요하다.
 
+### 6.3 Stored-event consumption (증분 색인 인계)
+
+`handoff.py` is the A-owned orchestration/inspection CLI; `handoff_worker.py` isolates B's process-global paths/model settings; `handoff_index.py` adapts existing B APIs. Source event rows contain complete stored snapshots (including a valid empty list), ordered by service ID. The consumer never reconstructs an older event from current service data or initiates ingestion.
+
+The worker locks `<index-dir>.handoff.lock`, then `<db>.ingest.lock`, before reading/revalidating tokens and applying anything. Ingestion takes only the source lock; public `apply_run` and `upsert_services` participate, and the pipeline uses a private already-locked helper. Lock acquisition is nonblocking, with immediate failure. OS handle closure/process death releases leases; leftover files are harmless. The worker, rather than its launcher, owns the locks, so terminating the launcher cannot leave an unlocked index writer. Direct B APIs/legacy CLI and arbitrary SQL writes do not participate and must not run concurrently.
+
+After model/index compatibility checks, both source and target store a matching association manifest: resolved DB/index paths, exact model ID, embedding dimension, max sequence length, cosine metric and B passage/query policy. One source acknowledgment queue supports one association. Existing nonempty collections need explicit `--adopt-existing`; model name collisions in legacy slugs cannot establish original model identity, so adoption requires operator knowledge. No collection reset/model download is used to resolve mismatches. Manifests are runtime state, preserved for replay and excluded from Git.
+
+Verification compares exact service chunk IDs/text/B storage metadata and unchanged unrelated documents. Vector queries are scoped to the service and request its entire chunk set. BM25's rebuilt corpus must match all persistent IDs/token frequencies; real BM25 searches are checked against B's positive-score semantics. In tiny/common-term corpora Okapi may assign nonpositive scores: corpus membership proves visibility, and the consumer does not change ranking or demand an accidental positive top-K hit. Removal checks use persistent and BM25 corpus absence, not a top-K miss.
+
+Chroma source documents persist; BM25 remains a derived cache invalidated by `index_version`. There is no SQLite/Chroma distributed transaction. A crash/verification/ack failure leaves replayable work; idempotent replacement/removal converges on retry. The first failure stops application with nonzero status; earlier verified/acknowledged events stay complete. Dry-run is read-only and performs no worker/model/collection initialization. Exact PowerShell commands, validation isolation and recovery are in [INGEST_A.md](INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자).
+
+Interest field remains a score boost; age/region/deadline semantics and C full-service evidence expansion are unchanged. Only fake embeddings are injected in integration tests. Actual-model, full API traversal and retrieval/answer quality evaluation are not established by this pass.
+
 ## 7. 변경 이력
+
+- 2026-10-20: Implement stored-event handoff consumer, exact verification/ack, OS synchronization and one DB/index/model association; document dry-run/application/replay and test real Chroma/BM25 plus C evidence expansion with fake embeddings. Record the decision in planning §8.3; preserve B/C/shared contracts.
 
 - 2026-10-19 A 2차 수정: 현재 목록/과거 상세 충돌, fixture 저장소 격리, HTML 표 경계 보완. 회귀 테스트와 격리 라이브 3건씩의 표본 검증. 전체 API 적합성과 실제 연령/지역·B 색인 통합은 미완료. 기획서 8.3에 설계 변경 기록.
 
@@ -184,3 +203,5 @@ B 소비자는 우선 하나를 권장하며 A stale-ack 보호가 B의 stale wr
 - `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.
 - `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.
 - 관심 분야를 필터에서 가산점으로 변경(B·C 합의): `vector_store.build_where`와 `filters.apply_filters`에서 field 조건 제거, `filters.relax`는 지역→연령만 풀고 field·situation은 유지(`filters_used`에 그대로 남아 완화 안내에는 지역·연령만 나옴), `filters.field_matches`와 `hybrid.boost_by_field` 추가, `config.FIELD_BOOST`, `schema.Filters` 설명 갱신. 관련 테스트 수정·추가(분야가 달라도 제도가 남는 회귀 테스트 포함). C 코드는 변경 없음.
+- 평가 질문 정답을 Claude가 실제 서비스 목록(보조금24 전체 10,969건)을 읽고 1차로 채우고 사람이 검수하는 방식으로 변경(팀 합의). `eval/label_helper.py`에 출처 기록(`set`·`none`의 `--source/--note/--confidence`), 일괄 반영 `apply`, 검수 `review`, `status`의 검수 대기 수를 추가하고 테스트 3개 추가. `eval/questions.jsonl`에 정답과 `label_*`·`reviewed` 필드를 채우고 지역 후속 문항 q35(경기)·q36(서울)을 추가. LABELING.md §8.2.1에 검수 절차 기록.
+- 평가 질문 정답 채우기 도구 `eval/label_helper.py`와 `tests/test_label_helper.py`(45개)를 저장소에 추가하고, 사용 안내 `docs/LABELING.md`(준비·정답 기준·대화형 사용법·유형별 가이드·후속 질문·검증·팀 작업 방식)를 작성. README 7장의 정답 채우는 법을 요약+링크로 교체하고 필드(`relevant_service_names`, `follow_up_of`)를 추가.
