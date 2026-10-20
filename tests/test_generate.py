@@ -373,11 +373,14 @@ def test_answer_eval_runner(fake_search, fake_conditions, monkeypatch):
     monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
     case = fake_search("sr1")
     fake_conditions(case)
+    shown = case["results"][0].service_id                   # 검색 1위 제도 (원문 대체 경로라 그대로 안내됨)
     result = answer_eval.evaluate([{"id": "t1", "question": case["question"], "expected_answer": "주거 지원 안내",
-                                    "expect_no_answer": False}])
-    assert result["counts"] == {"total": 1, "scored": 1, "errors": 0}
+                                    "expect_no_answer": False, "relevant_service_ids": [shown, "OUT_OF_SCOPE"]}],
+                                  indexed=lambda sid: sid != "OUT_OF_SCOPE")
+    assert result["counts"] == {"total": 1, "scored": 1, "errors": 0, "service_labeled": 1, "unreachable_ids": 1}
     assert result["metrics"]["citation_accuracy"] == 1.0 and result["metrics"]["answer_correctness"] == 1.0
-    assert "답변 평가" in answer_eval.format_report(result)
+    assert result["metrics"]["service_hit"] == 1.0 and result["metrics"]["service_recall"] == 1.0   # 색인 밖 정답은 분모에서 뺌
+    assert "정답 제도 안내" in answer_eval.format_report(result)
 
 
 def test_reason_rejects_long_phrase_and_cross_type_age_match(monkeypatch):
@@ -448,6 +451,8 @@ def test_help_must_be_quoted_from_question():
     assert norm({"help": ["해외 주식 투자에서 손실을 보전해 주는 제도"]}, question=q2)["help"]   # 낱말이 모두 질문에 있음
     assert "help" not in norm({"help": ["청년 지원", "받을 수 있는 지원"]},                     # 특정하지 않는 말뿐: 넓은 질문
                               question="27살이 받을 수 있는 청년 지원이 뭐가 있나요?")
+    q3 = "자격증 시험이나 어학 시험 응시료를 지원받을 수 있나요?"                           # 질문 어미는 잘라 낸다 (이유 문장용)
+    assert norm({"help": [q3[:-1]]}, question=q3)["help"] == ["자격증 시험이나 어학 시험 응시료"]
 
 
 def test_extract_conditions_asks_help_separately(monkeypatch):
