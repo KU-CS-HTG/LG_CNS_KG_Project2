@@ -248,6 +248,7 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
 
 
 MAX_CRITERION_CHARS = 60   # 확인 필요 기준 구절 최대 길이(공백 제외). 선정기준 문단을 통째로 옮기는 것을 막는다
+NO_CRITERION = "(기준은 원문 확인)"   # 기준 구절을 옮겨 오지 못한 확인 필요 조건에 붙이는 안내
 MAX_REGION_PIECE_CHARS = 40   # 이유 문장에 넣는 거주지 근거 구절 최대 길이 (긴 전입 조건 문장이 그대로 들어가지 않게)
 
 
@@ -255,7 +256,8 @@ def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
     """확인 필요 조건에 근거 원문의 기준을 붙인다: '소득 — 기준 중위소득 150% 이하'.
 
     이름만 있으면('소득 기준') 사용자가 결국 원문을 열어 봐야 했다. 기준 구절은 근거 원문에 글자 그대로 있을 때만
-    붙인다 (LLM이 금액·비율을 지어내거나 바꿔 쓰는 일 차단, 이유 문장의 matches와 같은 원리). 확인되지 않으면 이름만."""
+    붙인다 (LLM이 금액·비율을 지어내거나 바꿔 쓰는 일 차단, 이유 문장의 matches와 같은 원리).
+    기준 구절이 없으면 그 조건 이름이 원문에 나올 때만 '(기준은 원문 확인)'을 붙여 남기고, 원문에 없는 조건은 뺀다."""
     # 글자·숫자·%만 남겨 비교한다: 원문의 각주 표시('원가구*의')·괄호·따옴표를 LLM이 빼고 옮겨도 같은 구절로 본다
     # (내용은 정확한데 '*' 하나 때문에 기준이 빠졌다). 금액·비율 숫자는 그대로 검증된다.
     squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%]", "", s)  # noqa: E731
@@ -272,7 +274,12 @@ def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
             continue
         if crit and (len(squash(crit)) > MAX_CRITERION_CHARS or squash(crit) not in body):
             crit = ""
-        text = f"{_criterion_label(crit, name)} — {crit}" if crit else name
+        if crit:
+            text = f"{_criterion_label(crit, name)} — {crit}"
+        elif any(len(w) >= 2 and squash(w) in body for w in name.split()):
+            text = f"{name} {NO_CRITERION}"     # 원문에 그 조건이 언급은 되지만 기준 구절을 옮겨 오지 못함
+        else:
+            continue                           # 원문에 없는 조건 (월세자금보증에 근거 없이 '가구'가 붙던 문제)
         if text not in out:
             out.append(text)
     return out

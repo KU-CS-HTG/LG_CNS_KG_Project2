@@ -324,12 +324,12 @@ def test_needs_check_shows_criterion_quoted_from_evidence(monkeypatch, sample_ch
     quoted = "만 19~34세" if "만 19~34세" in body else body.split("]")[-1].strip()[:15]
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "needs_check": [
         {"item": "연령", "criterion": quoted},                      # 근거 원문에 있음 -> 기준까지 표시
-        {"item": "소득", "criterion": "기준 중위소득 999% 이하"},     # 근거에 없는 수치 -> 이름만
-        "가구 구성"]}]})                                             # 예전 형식(문자열)도 받음
+        {"item": "소득", "criterion": "기준 중위소득 999% 이하"},     # 근거에 없는 수치 -> 이름 + 원문 확인 안내
+        "병역 의무"]}]})                                             # 예전 형식(문자열). 원문에 없는 조건 -> 뺌
     rec = generator.generate_answer(QUESTION_WITH_RESULTS, {"SAMPLE001": chunks}).recommendations[0]
     assert f"연령 — {quoted}" in rec.needs_check
-    assert "소득" in rec.needs_check and not any("999%" in n for n in rec.needs_check)
-    assert "가구 구성" in rec.needs_check
+    assert f"소득 {generator.NO_CRITERION}" in rec.needs_check and not any("999%" in n for n in rec.needs_check)
+    assert not any("병역" in n for n in rec.needs_check)
 
 
 def test_reason_pairs_age_and_region_by_code_when_llm_said_is_too_long(monkeypatch):
@@ -360,7 +360,9 @@ def test_needs_check_criterion_ignores_footnote_marks():
                 "[가상 제도] ㅇ (소득) 청년 원가구*의 소득이 기준 중위소득 100% 이하", {})]
     got = generator._needs_with_criteria([{"item": "소득", "criterion": "청년 원가구의 소득이 기준 중위소득 100% 이하"}], ch)
     assert got == ["소득 — 청년 원가구의 소득이 기준 중위소득 100% 이하"]     # 원문의 '*'를 빼고 옮겨도 인정
-    assert generator._needs_with_criteria([{"item": "소득", "criterion": "기준 중위소득 120% 이하"}], ch) == ["소득"]
+    assert generator._needs_with_criteria([{"item": "소득", "criterion": "기준 중위소득 120% 이하"}], ch) == [
+        f"소득 {generator.NO_CRITERION}"]                                    # 지어낸 수치는 빼고 원문 확인 안내
+    assert generator._needs_with_criteria([{"item": "병역", "criterion": ""}], ch) == []   # 원문에 없는 조건은 뺌
 
 
 def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
