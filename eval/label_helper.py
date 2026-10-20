@@ -354,18 +354,74 @@ def state(q: dict) -> str:
     return "todo"
 
 
-def set_labels(q: dict, ids: list[str], by_id: dict[str, dict]) -> None:
+PROVENANCE_KEYS = ("label_source", "label_note", "label_confidence", "reviewed")
+
+
+def set_provenance(q: dict, source: str | None = None, note: str | None = None, confidence: str | None = None) -> None:
+    """누가 채웠는지 기록. source가 사람이 아닌 값(예: claude)이면 사람이 검수하기 전까지 reviewed=False."""
+    if not source:
+        for k in PROVENANCE_KEYS:
+            q.pop(k, None)
+        return
+    q["label_source"] = source
+    q["reviewed"] = source == "human"
+    for key, value in (("label_note", note), ("label_confidence", confidence)):
+        if value:
+            q[key] = value
+        else:
+            q.pop(key, None)
+
+
+def set_labels(q: dict, ids: list[str], by_id: dict[str, dict], source: str | None = None, note: str | None = None,
+               confidence: str | None = None, todo: str | None = None) -> None:
     q["relevant_service_ids"] = list(dict.fromkeys(ids))
     q["relevant_service_names"] = [get(by_id[i], "name") for i in q["relevant_service_ids"]]
     q["expect_no_answer"] = False
     q.pop("todo", None)
+    if todo:
+        q["todo"] = todo
+    set_provenance(q, source, note, confidence)
 
 
-def set_no_answer(q: dict) -> None:
+def set_no_answer(q: dict, source: str | None = None, note: str | None = None, confidence: str | None = None,
+                  todo: str | None = None) -> None:
     q["relevant_service_ids"] = []
     q.pop("relevant_service_names", None)
     q["expect_no_answer"] = True
     q.pop("todo", None)
+    if todo:
+        q["todo"] = todo
+    set_provenance(q, source, note, confidence)
+
+
+def needs_review(q: dict) -> bool:
+    """사람이 아닌 쪽(예: Claude)이 채운 뒤 아직 검수하지 않은 문항."""
+    return bool(q.get("label_source")) and not q.get("reviewed", False)
+
+
+def apply_decisions(questions: list[dict], decisions: dict[str, dict], by_id: dict[str, dict], source: str = "claude") -> list[str]:
+    """{qid: {ids, note, confidence, [todo], [no_answer]}} 를 한꺼번에 반영. 데이터에 없는 id가 있으면 아무것도 바꾸지 않고 중단한다."""
+    for qid, d in decisions.items():
+        bad = unknown_ids(d.get("ids", []), by_id)
+        if bad:
+            raise SystemExit(f"{qid}: 데이터에 없는 서비스ID {bad}")
+    done = []
+    for qid, d in decisions.items():
+        q = find_question(questions, qid)
+        kw = dict(source=source, note=d.get("note"), confidence=d.get("confidence"), todo=d.get("todo"))
+        if d.get("ids"):
+            set_labels(q, d["ids"], by_id, **kw)
+        elif d.get("no_answer"):
+            set_no_answer(q, **kw)
+        else:
+            q["relevant_service_ids"] = []
+            q.pop("relevant_service_names", None)
+            q["expect_no_answer"] = False
+            if d.get("todo"):
+                q["todo"] = d["todo"]
+            set_provenance(q, source, d.get("note"), d.get("confidence"))
+        done.append(qid)
+    return done
 
 
 def find_question(questions: list[dict], qid: str) -> dict:
@@ -679,6 +735,8 @@ def cmd_status(args) -> None:
         counts[state(q)] = counts.get(state(q), 0) + 1
     print(f"질문 {len(qs)}개: 정답 지정 {counts.get('labeled', 0)} / 근거 없음 확정 {counts.get('no_answer', 0)} / "
           f"근거 없음(확인 필요) {counts.get('no_answer_check', 0)} / 정답 미지정 {counts.get('todo', 0)}")
+    pending = [q for q in qs if needs_review(q)]
+    print(f"사람 검수 대기 {len(pending)}개 (Claude 등이 채웠고 아직 확인 전)" + (": " + ", ".join(q["id"] for q in pending) if pending else ""))
     for q in qs:
         if state(q) in ("todo", "no_answer_check"):
             region = question_region(q)
@@ -711,16 +769,53 @@ def cmd_set(args) -> None:
     for i in args.ids:
         for w in label_warnings(q, by_id[i], _today_arg(args.today)):
             print(f"! 주의 {get(by_id[i], 'name')}: {w}")
-    set_labels(q, args.ids, by_id)
+    set_labels(q, args.ids, by_id, source=args.source, note=args.note, confidence=args.confidence)
     save_questions(qs)
     print(f"{args.qid} ← {[get(by_id[i], 'name') for i in args.ids]}")
 
 
 def cmd_none(args) -> None:
     qs = load_questions()
-    set_no_answer(find_question(qs, args.qid))
+    set_no_answer(find_question(qs, args.qid), source=args.source, note=args.note, confidence=args.confidence)
     save_questions(qs)
     print(f"{args.qid} = 근거 없음으로 저장")
+
+
+def cmd_apply(args) -> None:
+    decisions = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    qs = load_questions()
+    done = apply_decisions(qs, decisions, index_by_id(load_cache()), source=args.source)
+    save_questions(qs)
+    print(f"{len(done)}개 질문에 반영했습니다 (출처 {args.source}, 사람 검수 전). 확인: python -m eval.label_helper review")
+
+
+def cmd_review(args) -> None:
+    qs = load_questions()
+    if args.ok or args.all_ok:
+        targets = [q for q in qs if needs_review(q)] if args.all_ok else [find_question(qs, i) for i in args.ok.split(",")]
+        for q in targets:
+            q["reviewed"] = True
+        save_questions(qs)
+        print(f"{len(targets)}개 질문을 검수 완료로 표시했습니다: {', '.join(q['id'] for q in targets)}")
+        return
+    pending = [q for q in qs if needs_review(q)]
+    if args.only:
+        wanted = set(args.only.split(","))
+        pending = [q for q in qs if q["id"] in wanted]
+    print(f"검수 대기 {len(pending)}개  (맞으면: review --ok q01,q02 / 고치려면: set·none 으로 직접 지정하면 사람이 채운 것으로 바뀜)\n")
+    for q in pending:
+        print(f"[{q['id']}] {q['question']}")
+        if q.get("filters"):
+            print(f"  조건: {q['filters']}")
+        names = q.get("relevant_service_names") or []
+        for i, sid in enumerate(q.get("relevant_service_ids", [])):
+            print(f"  - {sid} {names[i] if i < len(names) else ''}")
+        if not q.get("relevant_service_ids"):
+            print("  (정답 없음: " + ("근거 없음 기대" if q.get("expect_no_answer") else "전국 단위 정답 없음") + ")")
+        print(f"  신뢰도 {q.get('label_confidence', '-')} | {q.get('label_note', '')}")
+        if q.get("todo"):
+            print(f"  ! 사람 확인: {q['todo']}")
+        print()
 
 
 def cmd_check(args) -> None:
@@ -749,6 +844,12 @@ def cmd_check(args) -> None:
             warnings += 1
     print(("문제 없음" if not problems else f"문제 {problems}건") + (f", 경고 {warnings}건" if warnings else ""))
     raise SystemExit(1 if problems else 0)
+
+
+def _add_provenance_args(p) -> None:
+    p.add_argument("--source", help="채운 주체 (예: claude). 없으면 사람이 직접 채운 것으로 보고 출처 기록을 남기지 않음")
+    p.add_argument("--note", help="판단 근거 한 줄")
+    p.add_argument("--confidence", help="신뢰도 (높음/중간/낮음)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -790,11 +891,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("set", help="정답 직접 지정")
     p.add_argument("qid")
     p.add_argument("ids", nargs="+")
+    _add_provenance_args(p)
     p.add_argument("--today", help=today_help)
     p.set_defaults(fn=cmd_set)
     p = sub.add_parser("none", help="근거 없음으로 확정")
     p.add_argument("qid")
+    _add_provenance_args(p)
     p.set_defaults(fn=cmd_none)
+    p = sub.add_parser("apply", help="결정 JSON({qid: {ids, note, confidence, todo}})을 한꺼번에 반영 (사람 검수 전으로 표시)")
+    p.add_argument("file")
+    p.add_argument("--source", default="claude", help="채운 주체 (기본 claude)")
+    p.set_defaults(fn=cmd_apply)
+    p = sub.add_parser("review", help="사람 검수: 목록 보기 / --ok q01,q02 로 검수 완료 표시")
+    p.add_argument("--only", help="쉼표로 구분한 질문 id만 보기")
+    p.add_argument("--ok", help="검수 완료로 표시할 질문 id (쉼표 구분)")
+    p.add_argument("--all-ok", action="store_true", help="검수 대기 전부를 검수 완료로 표시")
+    p.set_defaults(fn=cmd_review)
     p = sub.add_parser("check", help="정답 id 검증")
     p.add_argument("--today", help=today_help)
     p.set_defaults(fn=cmd_check)

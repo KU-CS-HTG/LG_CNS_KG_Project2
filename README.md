@@ -402,7 +402,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
   - 사용: `evaluate(retrieved, relevant)`가 K=3·5·10 지표를 한 번에 계산하고 `check_targets(...)`가 잠정 목표 달성 여부를 알려 줍니다. 예: 두 질문의 결과가 `[["a","b","c"], ["x","a"]]`, 정답이 `[{"b"}, {"a"}]`이면 Hit Rate@3 = 1.0, MRR = (1/2 + 1/2) ÷ 2 = 0.5.
 - 답변: Answer Correctness, Faithfulness, Citation Accuracy
 - 실험 순서: Baseline(SQL+키워드) → Vector → BM25 → Hybrid → Hybrid+정형 필터 → 최종. 결과는 `eval/results/`에 저장하고 요약을 기획서 9.4에 기록합니다. Top-K는 3 / 5 / 10을 비교합니다.
-- 질문 세트: `eval/questions.jsonl` (현재 초안 34문항, **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
+- 질문 세트: `eval/questions.jsonl` (현재 36문항(상황형 중심 34 + 지역 후속 2), **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
 
   | 필드 | 설명 |
   |---|---|
@@ -410,6 +410,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
   | `topic` (선택) | 사람이 보는 주제 분류(구직·주거·교육·금융·결혼·출산·양육·창업·건강·교통·자립 등). 약한 주제를 찾는 용도이며 평가 계산에는 쓰이지 않음 |
   | `relevant_service_ids` | 정답 `service_id` 목록 (보조금24 서비스ID). 팀원이 데이터를 읽고 `eval/label_helper.py`로 채움 |
   | `relevant_service_names` (자동) | 정답 제도 이름. 도구가 정답과 함께 적어 두며 사람이 검수하기 위한 값 (평가 계산에는 안 쓰임) |
+  | `label_source`·`reviewed`·`label_confidence`·`label_note` (자동) | 정답을 Claude가 1차로 채웠을 때의 출처·사람 검수 여부·신뢰도·근거 (LABELING.md §8.2.1). 평가 계산에는 안 쓰임 |
   | `follow_up_of` (자동) | `followup` 명령으로 만든 후속 문항이 어느 질문에서 왔는지 |
   | `expected_answer` | 기대하는 답변(사람이 읽는 설명, 답변 평가용) |
   | `expect_no_answer` | 근거가 없어 "모른다"고 답해야 하는 질문이면 `true` |
@@ -445,6 +446,7 @@ python -m eval.label_helper status                 # 진행 상황
 python -m eval.label_helper label --only q01,q02   # 내 담당 문항을 대화형으로 채우기 (한 문항씩 저장)
 python -m eval.label_helper followup q01 --region 서울   # 지역을 알려 준 뒤의 후속 질문 문항 만들기
 python -m eval.label_helper check                  # 정답 id·이름·지역·기한 검증 (오류 0건이 되게)
+python -m eval.label_helper review                 # Claude가 1차로 채운 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
 ```
 
 정답 기준 (자세한 이유와 예외는 LABELING.md §3):

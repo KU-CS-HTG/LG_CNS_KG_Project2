@@ -71,6 +71,7 @@ python -m src.index.vector_store       # B: 색인 (진입점은 B가 확정)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
+python -m eval.label_helper review                 # Claude 1차 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요
 ```
 (A 2차 수정·오프라인 회귀 및 격리 live 표본 검증 완료. B/C는 스켈레톤. 전체 API 적합성·실제 연령/지역 어댑터·Vector/BM25 통합은 미검증.)

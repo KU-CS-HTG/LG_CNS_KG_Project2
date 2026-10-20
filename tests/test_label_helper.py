@@ -271,3 +271,47 @@ def test_fields_reports_optional_and_required(env, capsys):
     lh.main(["fields"])
     out = capsys.readouterr().out
     assert "서비스ID" in out and "선택 항목 중 찾지 못한 것" in out and "범위" in out
+
+
+def test_set_with_source_marks_pending_review_and_human_set_clears(env, capsys):
+    lh.main(["set", "q04", "700000000001", "--source", "claude", "--note", "근거", "--confidence", "높음"])
+    q = {x["id"]: x for x in lh.load_questions()}["q04"]
+    assert q["label_source"] == "claude" and q["reviewed"] is False and q["label_note"] == "근거" and q["label_confidence"] == "높음"
+    assert lh.needs_review(q)
+    lh.main(["status"])
+    assert "사람 검수 대기 1개" in capsys.readouterr().out
+    lh.main(["set", "q04", "700000000001"])                                  # 사람이 직접 지정 → 출처 기록 제거
+    q = {x["id"]: x for x in lh.load_questions()}["q04"]
+    assert not lh.needs_review(q) and "label_source" not in q and "reviewed" not in q
+
+
+def test_apply_decisions_and_review_ok(env, tmp_path, capsys):
+    dec = {"q01": {"ids": ["116010000001"], "confidence": "중간", "note": "월세 보증"},
+           "q03": {"ids": [], "no_answer": True, "note": "없음", "confidence": "낮음", "todo": "확인"},
+           "q02": {"ids": [], "note": "전국 정답 없음", "todo": "후속 문항으로 평가"}}
+    f = tmp_path / "dec.json"
+    f.write_text(json.dumps(dec, ensure_ascii=False), encoding="utf-8")
+    lh.main(["apply", str(f)])
+    qs = {x["id"]: x for x in lh.load_questions()}
+    assert qs["q01"]["relevant_service_ids"] == ["116010000001"] and qs["q01"]["relevant_service_names"] == ["주택금융공사 월세자금보증"]
+    assert qs["q03"]["expect_no_answer"] is True and qs["q03"]["todo"] == "확인" and lh.state(qs["q03"]) == "no_answer_check"
+    assert qs["q02"]["expect_no_answer"] is False and qs["q02"]["todo"] and lh.state(qs["q02"]) == "todo"
+    assert all(qs[i]["reviewed"] is False for i in ("q01", "q02", "q03"))
+    capsys.readouterr()
+    lh.main(["review", "--only", "q01"])
+    out = capsys.readouterr().out
+    assert "q01" in out and "116010000001" in out and "신뢰도 중간" in out
+    lh.main(["review", "--ok", "q01"])
+    assert not lh.needs_review({x["id"]: x for x in lh.load_questions()}["q01"])
+    lh.main(["review", "--all-ok"])
+    assert not any(lh.needs_review(x) for x in lh.load_questions())
+
+
+def test_apply_unknown_id_changes_nothing(env, tmp_path):
+    qpath, _ = env
+    before = qpath.read_text(encoding="utf-8")
+    f = tmp_path / "dec.json"
+    f.write_text(json.dumps({"q01": {"ids": ["116010000001"]}, "q02": {"ids": ["없는ID"]}}), encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        lh.main(["apply", str(f)])
+    assert "없는ID" in str(e.value) and qpath.read_text(encoding="utf-8") == before
