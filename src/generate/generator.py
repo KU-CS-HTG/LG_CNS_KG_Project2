@@ -461,14 +461,44 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     """answer_question의 본체. 생성에 넘긴 근거도 함께 돌려준다 (답변 평가가 같은 흐름으로 채점하도록)."""
     conditions = condition_extractor.extract_conditions(question)
     filters = condition_extractor.to_filters(conditions)
+    region = conditions.get("region")
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
-    result = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K)
-    selected = evidence_mod.select_evidence(result.chunks)
+    # 지역을 말했으면 후보를 넉넉히 받아 다른 지역 지자체 제도를 뺀 뒤 상위 5개를 고른다 (_drop_other_regions)
+    k = config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR if region else config.DEFAULT_TOP_K
+    result = hybrid.search_with_info(question, filters, k=k)
+    chunks, region_relaxed = _drop_other_regions(result.chunks, region)
+    selected = evidence_mod.select_evidence(chunks)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
-    notice = _relaxed_notice(filters, result.filters_used) if result.relaxed else ""
+    used = dict(result.filters_used)
+    if region_relaxed:
+        used.pop("region", None)
+    notice = _relaxed_notice(filters, used) if (result.relaxed or region_relaxed) else ""
     if notice and not answer.no_evidence:
         answer.text = f"{notice}\n\n{answer.text}"
     return answer, selected
+
+
+REGION_CANDIDATE_FACTOR = 3   # 지역을 말했을 때 받는 검색 후보 배수 (5 -> 15개 중 다른 지역 제도를 빼고 5개)
+
+
+def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[Chunk], bool]:
+    """사용자가 말한 시·도와 다른 지역의 지자체 제도를 뺀다. (남은 조각, 지역 조건을 풀었는가)
+
+    수집 데이터에 지역 메타데이터가 없어 B의 지역 필터가 아무것도 거르지 못하고, 원문에 '충주시'만 있으면
+    시·도 비교도 안 돼 '대구 사는 24살' 질문에 충주시 면접비 지원이 나왔다. 소관기관이 지자체('충청북도 충주시')면
+    그 시·도를 제도의 지역으로 본다. 전국 제도(중앙부처·공공기관)는 남긴다.
+    다 빠지면 원래 후보를 그대로 쓰고 지역 조건을 풀었다고 알린다 (소프트 필터, CLAUDE.md)."""
+    if not region:
+        return chunks, False
+    keep = [c for c in chunks if _agency_region(c.metadata.get("agency") or "") in (None, region)]
+    return (keep, False) if keep else (chunks, True)
+
+
+def _agency_region(agency: str) -> str | None:
+    """지자체 소관기관의 시·도 짧은 이름 ('충청북도 충주시' -> '충북'). 전국 기관이면 None."""
+    if not evidence_mod._LOCAL_AGENCY_RE.search(agency):
+        return None
+    return condition_extractor._find_region(agency)
 
 
 # B가 결과가 없을 때 푸는 조건 (CLAUDE.md: 지역 -> 연령. 관심 분야는 필터가 아니라 가산점이라 풀지 않는다)

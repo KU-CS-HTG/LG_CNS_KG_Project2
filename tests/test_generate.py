@@ -347,6 +347,18 @@ def test_reason_pairs_age_and_region_by_code_when_llm_said_is_too_long(monkeypat
     assert generator._code_matches("부산 사는 42살이에요", ch) == ([], [])        # 범위 밖 나이, 대상에 없는 지역(신청방법만)은 짝 없음
 
 
+def test_drop_other_region_local_services():
+    from src.common.schema import Chunk
+    def ch(sid, agency):
+        return Chunk(f"{sid}#지원대상", sid, sid, "지원대상", f"[{sid}] 청년 면접비", {"agency": agency})
+    chunks = [ch("A", "충청북도 충주시"), ch("B", "대구광역시"), ch("C", "고용노동부"), ch("D", "대구광역시 수성구")]
+    kept, relaxed = generator._drop_other_regions(chunks, "대구")
+    assert [c.service_id for c in kept] == ["B", "C", "D"] and relaxed is False     # 다른 지역 지자체만 빠짐, 전국 제도는 남음
+    kept, relaxed = generator._drop_other_regions([ch("A", "충청북도 충주시")], "대구")
+    assert [c.service_id for c in kept] == ["A"] and relaxed is True                # 다 빠지면 그대로 두고 완화로 알림
+    assert generator._drop_other_regions(chunks, None) == (chunks, False)            # 지역을 안 말하면 그대로
+
+
 def test_criterion_label_follows_criterion_text():
     lab = generator._criterion_label
     assert lab("임차 보증금 8천만원 이하, 월세 60만원 이하 건물 월세 거주", "거주지") == "주택 조건"
