@@ -388,10 +388,13 @@ def main() -> None:
         else:
             last = thread[-1]["content"]
             _, follow_q = _parse_text(last.text) if not last.no_evidence else ("", "")
+            # 근거 없음이면 소득 같은 정보를 덧붙여도 결과가 같다 -> 표현·상황을 바꿔 묻도록 안내
+            sub = ("찾는 지원을 다른 말로 바꾸거나, 지금 상황(나이·지역·필요한 도움)을 덧붙여 다시 물어봐 주세요."
+                   if last.no_evidence else "소득·가구처럼 더 알려 주실 정보가 있으면 덧붙여 주세요.")
             with st.container(key="followbox"):
                 st.markdown('<div class="fb-title">💬 이 답변에 이어서 물어볼 수 있어요</div>'
                             + (f'<div class="fb-q">{_e(follow_q)}</div>' if follow_q else "")
-                            + '<div class="fb-sub">소득·가구처럼 더 알려 주실 정보가 있으면 덧붙여 주세요.</div>',
+                            + f'<div class="fb-sub">{sub}</div>',
                             unsafe_allow_html=True)
                 if st.button("↳ 이어서 질문하기"):
                     st.session_state.follow = True

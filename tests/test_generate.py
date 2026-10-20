@@ -307,6 +307,17 @@ def test_numeric_service_id_from_llm_still_matches(monkeypatch, sample_chunks):
     assert answer.no_evidence is False and len(answer.recommendations) == 1
 
 
+def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chunks):
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "meets_need": True}]})
+    q = "월세가 부담돼요. 지원이 있나요?"                                     # 나이·지역 없이 원하는 도움만
+    rec = generator._generate(q, {"SAMPLE001": chunks}, ["월세가 부담돼요"], ["월세가 부담돼요"]).recommendations[0]
+    assert "‘월세가 부담돼요’에 도움이 될 수 있는" in rec.reason
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요"}]})   # meets_need 판정 없음
+    rec = generator._generate(q, {"SAMPLE001": chunks}, [], ["월세가 부담돼요"]).recommendations[0]
+    assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
+
+
 def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
     chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 선정기준: '소득이 기준 이하' (금액 없음)
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "가능", "needs_check": [],
