@@ -25,7 +25,6 @@ from src.retrieve import hybrid
 log = logging.getLogger(__name__)
 
 NOT_IN_EVIDENCE = "자료에 없음 (상세 링크에서 확인)"
-NO_MATCH_MESSAGE = "질문하신 조건에 맞는 제도를 수집된 자료에서 찾지 못했습니다."
 GENERIC_REASON = "질문하신 내용과 관련된 제도로 찾았어요. 자격은 아래 조건을 확인해 주세요."
 RELAXED_MARK = "조건을 넓혀 찾았어요"   # 필터 완화 안내 문구 (UI가 이 문구가 든 줄을 찾아 따로 보여 준다)
 MAX_SAID_CHARS = 20   # 이유에 쓰는 질문 구절 최대 길이(공백 제외). 질문 문장을 통째로 옮기는 것을 막는다
@@ -95,7 +94,9 @@ def _needs_from(conditions: dict) -> list[str]:
     return list(help_) + [f"{s}({condition_extractor.SITUATION_DEFS[s]})" for s in situation]
 
 
-def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str]) -> Answer:
+def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
+              asked: list[str] | None = None) -> Answer:
+    """asked = 질문에서 검증된 '찾는 것' 구절(conditions['help']). 나이·지역 짝이 없을 때 이유 문장에 쓴다."""
     if not evidence:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
@@ -126,10 +127,10 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str])
             continue
         if needs and gen.get("meets_need") is False:
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
-        recs.append(_to_recommendation(question, chunks, gen))
+        recs.append(_to_recommendation(question, chunks, gen, asked if gen.get("meets_need") is True else None))
 
     if not recs:
-        return Answer(text=f"{NO_MATCH_MESSAGE}\n{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
+        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
     return Answer(text=text, recommendations=recs)
 
@@ -152,14 +153,19 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[s
     return head + "\n\n".join(blocks)
 
 
-def _to_recommendation(question: str, chunks: list[Chunk], gen: dict) -> Recommendation:
-    """LLM 출력이 없거나 빠진 항목은 조각 원문으로 채운다."""
+def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: list[str] | None = None) -> Recommendation:
+    """LLM 출력이 없거나 빠진 항목은 조각 원문으로 채운다.
+
+    asked: 이 제도가 도와준다고 판정된(meets_need) '찾는 것' 구절. 나이·거주지 짝이 없을 때 일반 문구 대신 쓴다
+    (실제 데이터: 나이·지역 없이 '면접 비용 지원'만 물으면 모든 카드의 이유가 같은 일반 문구였다)."""
     meta = _merged_meta(chunks)
     raw = _sections(chunks)
     said, conds = _grounded_matches(question, chunks, gen.get("matches"))
     if said:
         reason = f"말씀하신 {', '.join(f'‘{s}’' for s in said)} 조건이 이 제도의 대상" \
                  + (f"({', '.join(f'‘{c}’' for c in conds)})" if conds else "") + "에 해당될 수 있어요."
+    elif asked:
+        reason = f"말씀하신 {', '.join(f'‘{a}’' for a in asked)}에 도움이 될 수 있는 제도예요. 자격은 아래 조건을 확인해 주세요."
     else:
         reason = GENERIC_REASON
 
@@ -340,7 +346,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
     result = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K)
     selected = evidence_mod.select_evidence(result.chunks)
-    answer = _generate(question, selected, _needs_from(conditions))
+    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
     notice = _relaxed_notice(filters, result.filters_used) if result.relaxed else ""
     if notice and not answer.no_evidence:
         answer.text = f"{notice}\n\n{answer.text}"

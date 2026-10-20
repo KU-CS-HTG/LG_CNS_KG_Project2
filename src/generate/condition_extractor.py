@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from src.common import config
@@ -93,7 +94,11 @@ JSON 객체 하나만 출력한다: {"asked": [구절, ...]}
 - asked: 사용자가 받고 싶은 도움, 덜고 싶은 부담, 또는 묻는 제도 이름을 질문 원문에서 글자 그대로 복사한 짧은 구절.
 - 나이·사는 곳·신분·처지(취업준비생, 직장인, 대학생 등)는 넣지 않는다.
 - '지원', '혜택', '제도'처럼 무엇인지 특정하지 않는 말만 있으면 빈 배열이다."""
-# 무엇인지 특정하지 않는 말. 구절에서 이것들을 빼고 남는 것이 없으면 넓은 질문으로 본다 ('청년 지원', '받을 수 있는 지원')
+# 구절 끝의 질문·요청 어미 ('응시료를 지원받을 수 있나요' -> '응시료'). 이유 문장에 그대로 들어가 어색했다
+_QUESTION_TAIL_RE = re.compile(
+    r"\s*(?:을|를|이|가|은|는)?\s*(?:지원\s*받을\s*수\s*있나요|받을\s*수\s*있나요|있나요|있을까요|있는지|"
+    r"알려\s*주세요|알려\s*줘|궁금해요|어떻게\s*되나요)\??$")
+# 무엇인지 특정하지 않는 말.구절에서 이것들을 빼고 남는 것이 없으면 넓은 질문으로 본다 ('청년 지원', '받을 수 있는 지원')
 _GENERIC_HELP = ("받을수있는", "청년", "지원금", "지원", "혜택", "제도", "정책", "신청", "정부", "서비스")
 
 
@@ -123,14 +128,18 @@ def _chat_json(system: str, user: str) -> dict:
 def extract_conditions(question: str) -> dict:
     """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거·자립"}
 
-    LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게)."""
+    LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게).
+    조건 호출과 찾는 것(help) 호출은 서로 관계없어 동시에 보낸다 (차례로 하면 약 2초, 동시에 하면 약 1초)."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cond = pool.submit(_chat_json, SYSTEM_PROMPT, question)
+        asked = pool.submit(_chat_json, HELP_PROMPT, question)
     try:
-        raw = _chat_json(SYSTEM_PROMPT, question)
+        raw = cond.result()
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("조건 추출 실패, 조건 없이 진행: %s", e)
         return {}
     try:
-        raw["help"] = _chat_json(HELP_PROMPT, question).get("asked")
+        raw["help"] = asked.result().get("asked")
     except Exception as e:  # 찾는 것을 못 뽑으면 넓은 질문처럼 거르지 않는다
         log.warning("찾는 것 추출 실패, 없이 진행: %s", e)
     return _normalize_conditions(raw, question=question)
@@ -196,7 +205,7 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
         q = "".join(question.split())
         picked = []
         for h in help_:
-            h = h.strip() if isinstance(h, str) else ""
+            h = _QUESTION_TAIL_RE.sub("", h.strip()) if isinstance(h, str) else ""
             words, rest = h.split(), "".join(h.split())
             for g in _GENERIC_HELP:
                 rest = rest.replace(g, "")
