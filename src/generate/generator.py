@@ -177,11 +177,15 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다. 코드가 만든 나이·지역 짝은 이유 문장에만 쓰고,
     # '가능'은 LLM 자신의 판단 근거(짝)가 검증될 때만 인정한다 (LLM이 사용자가 말하지 않은 '무주택'으로 '가능'이라 한 경우 차단)
     applicable = gen.get("applicable") if llm_pairs[0] else UNCLEAR
-    if applicable != LIKELY and not needs:
-        needs.append("자격 요건 충족 여부")
     for n in evidence_mod._missing_conditions(chunks) + _vague_criteria(raw):
-        if n not in needs and not any(n.split()[0] in x for x in needs):
+        key = n.split()[0]
+        same = [i for i, x in enumerate(needs) if key in x]
+        if not same:
             needs.append(n)
+        elif " — " in n and all(" — " not in needs[i] for i in same):
+            needs[same[0]] = n            # LLM은 이름만 줬는데 코드가 원문에서 기준 구절을 찾은 경우
+    if applicable != LIKELY and not needs:
+        needs.append("자격 요건 충족 여부")   # 확인할 조건을 하나도 못 찾았을 때만 (다른 조건과 함께 나오면 군더더기)
 
     how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
     deadline = meta.get("deadline")
@@ -224,7 +228,10 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
     """LLM이 준 (질문 구절, 근거 구절) 중 질문 원문에 실제로 있는 구절만 남긴다 (나이 검증과 같은 원리).
     LLM이 제도의 대상 조건을 사용자가 말한 것처럼 옮겨 적는 일을 막는다."""
     squash = lambda s: "".join(s.split())  # noqa: E731
-    q, body = squash(question), squash(" ".join(citation._body_text(c) for c in chunks))
+    # 근거 구절은 대상 조건(지원대상·선정기준)에서만 받는다. 지원내용과 짝지으면 '말씀하신 '이자를 지원받고 싶어'
+    # 조건이 이 제도의 대상('대출금에 대한 이자 지원')'처럼 원하는 도움이 조건으로 둔갑했다
+    target = [c for c in chunks if c.section in ("지원대상", "선정기준")]
+    q, body = squash(question), squash(" ".join(citation._body_text(c) for c in target))
     said: list[str] = []
     conds: list[str] = []
     for m in matches if isinstance(matches, list) else []:
@@ -345,16 +352,29 @@ def _criterion_label(criterion: str, fallback: str) -> str:
     return fallback
 
 
+_CRITERION_SPLIT_RE = re.compile(r"[()（）\[\]·•○ㅇ※\n]|\s-\s|,\s")
+# 금액·비율 형태의 숫자 ('6천만원', '150%', '9구간'). 나이('19~34세')를 소득 기준으로 착각하지 않게
+_AMOUNT_RE = re.compile(r"\d[\d,.]*\s*(?:천|만|억|원|%|퍼센트|구간|분위)")
+
+
 def _vague_criteria(sections: dict[str, str]) -> list[str]:
-    """근거에 소득·재산 조건이 있는데 금액·비율 숫자가 없으면 사용자가 소득을 밝혀도 판단할 수 없다 ('기준 이하' 등).
-    LLM이 충족으로 단정하는 일을 코드로 막는다 (프롬프트 규칙만으로는 실행마다 결과가 달랐음)."""
+    """근거의 소득·재산 조건을 코드가 직접 정리한다 (LLM이 기준을 빠뜨려도 나오게).
+
+    - 숫자(금액·비율)가 붙은 구절이 있으면 '소득 — 본인 연소득 6천만원 이하'처럼 원문 구절을 붙인다.
+    - 그런 구절이 하나도 없을 때만 '기준 금액 없음'으로 둔다: 사용자가 소득을 밝혀도 판단할 수 없으므로
+      LLM이 충족으로 단정하는 일을 막는다 (프롬프트 규칙만으로는 실행마다 결과가 달랐음).
+    예전에는 '소득'이 나오는 곳 중 한 군데라도 숫자가 없으면('소득 기준은 은행 심사로 결정') 기준 없음으로 판정했다."""
     text = " ".join(sections.get(s, "") for s in ("지원대상", "선정기준"))
     out = []
     for word in ("소득", "재산"):
-        for m in re.finditer(word, text):
-            if not re.search(r"\d", text[m.start():m.start() + 25]):
-                out.append(f"{word} 기준 (자료에 기준 금액 없음)")
-                break
+        if word not in text:
+            continue
+        pieces = [p.strip(" ,:;") for p in _CRITERION_SPLIT_RE.split(text)]
+        hits = [p for p in pieces if word in p and _AMOUNT_RE.search(p) and len("".join(p.split())) <= MAX_CRITERION_CHARS]
+        if hits:
+            out.append(f"{word} — {', '.join(dict.fromkeys(hits[:2]))}")
+        else:
+            out.append(f"{word} 기준 (자료에 기준 금액 없음)")
     return out
 
 

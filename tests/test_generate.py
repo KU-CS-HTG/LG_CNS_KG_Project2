@@ -354,6 +354,22 @@ def test_criterion_label_follows_criterion_text():
     assert lab("대학 재학 중", "학적") == "학적"                                 # 맞는 분류가 없으면 LLM 이름
 
 
+def test_income_criterion_found_by_code_even_if_one_mention_has_no_number():
+    sections = {"지원대상": "(소득기준) (미혼) 본인 연소득 6천만원 이하, (기혼) 부부합산 연소득 8천만원 이하 "
+                            "· 정확한 연소득 기준은 대출신청시 은행의 소득심사로 결정함"}        # 인천 임차보증금 이자 지원 원문
+    assert generator._vague_criteria(sections) == ["소득 — 본인 연소득 6천만원 이하, 부부합산 연소득 8천만원 이하"]
+    assert generator._vague_criteria({"선정기준": "소득이 기준 이하인 청년"}) == ["소득 기준 (자료에 기준 금액 없음)"]
+
+
+def test_reason_pairs_only_with_target_conditions_not_benefit(monkeypatch):
+    from src.common.schema import Chunk
+    ch = [Chunk("X#지원대상", "X", "가상", "지원대상", "[가상] 인천광역시에 주민등록이 되어 있는 무주택 청년", {}),
+          Chunk("X#지원내용", "X", "가상", "지원내용", "[가상] 대출금에 대한 이자 지원", {})]
+    q = "인천에 사는데 이자를 지원받고 싶어요"
+    said, conds = generator._grounded_matches(q, ch, [{"said": "이자를 지원받고 싶어", "condition": "대출금에 대한 이자 지원"}])
+    assert (said, conds) == ([], [])                                           # 원하는 도움 ↔ 지원내용은 조건 짝이 아님
+
+
 def test_needs_check_criterion_ignores_footnote_marks():
     from src.common.schema import Chunk
     ch = [Chunk("X#선정기준", "X", "가상 제도", "선정기준",
