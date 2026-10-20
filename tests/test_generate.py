@@ -22,6 +22,11 @@ def _no_real_store(request, monkeypatch):
     B의 실제 색인(indexed_sample)을 쓰는 통합 테스트는 그대로 둔다."""
     if "indexed_sample" not in request.fixturenames:
         monkeypatch.setattr("src.index.vector_store.get_service_chunks", lambda service_id: [])
+        # C는 완화 정보 때문에 search_with_info를 부른다. 공용 fake_search는 search만 바꾸므로,
+        # search_with_info가 (가짜일 수 있는) search를 그대로 쓰게 이어 준다 (완화 없음으로).
+        from src.retrieve import hybrid
+        monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
+                            hybrid.SearchResult(hybrid.search(q, f, k, mode), [], dict(f), False))
 
 
 # --- 조건 -> 필터 (C -> B 인계) ------------------------------------------------
@@ -37,8 +42,16 @@ def test_normalize_conditions_drops_invalid_values():
     raw = {"age": "27", "region": "서울특별시", "field": "주거", "situation": ["구직", "우주여행", "구직"],
            "hobby": "등산"}
     assert condition_extractor._normalize_conditions(raw) == {
-        "age": 27, "region": "서울", "field": "주거", "situation": ["구직"]}   # 목록 밖 값·모르는 키는 버림
+        "age": 27, "region": "서울", "field": "주거·자립", "situation": ["구직"]}   # 목록 밖 값·모르는 키는 버림
     assert condition_extractor._normalize_conditions({"region": "화성", "field": "여행", "age": True}) == {}
+
+
+def test_normalize_conditions_maps_field_to_real_names():
+    norm = condition_extractor._normalize_conditions
+    assert norm({"field": "고용·창업"}) == {"field": "고용·창업"}               # 보조금24 서비스분야 원문
+    assert norm({"field": "보건의료"}) == {"field": "보건·의료"}                 # 가운뎃점 없이 써도
+    assert norm({"field": "창업"}) == {"field": "고용·창업"}                     # 한쪽 낱말만 써도
+    assert norm({"field": "일자리"}) == {}                                      # 실제 분야에 없는 이름은 버림
 
 
 def test_normalize_conditions_birth_year_to_age():
@@ -66,7 +79,7 @@ def test_extract_conditions_returns_empty_on_llm_error(monkeypatch):
 def test_extract_conditions_with_llm():
     got = condition_extractor.extract_conditions(QUESTION_WITH_RESULTS)
     assert got.get("age") == 27 and got.get("region") == "서울"
-    assert got.get("field") == "주거" and "구직" in got.get("situation", [])
+    assert got.get("field") == "주거·자립" and "구직" in got.get("situation", [])
     assert condition_extractor.extract_conditions(QUESTION_NO_EVIDENCE).get("age") is None   # 추측 금지
 
 
@@ -260,6 +273,40 @@ def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
     assert generator.generate_answer(QUESTION_WITH_RESULTS, ev).no_evidence is True
 
 
+def test_not_eligible_needs_code_verified_mismatch():
+    ok = generator._verified_mismatch
+    q = "서울에 사는 27살이에요. 받을 수 있는 지원이 있나요?"
+    assert ok(q, {"said": "27살", "condition": "만 35세~59세 여성"})            # 범위 밖: 해당 없음 인정
+    assert ok(q, {"said": "27살", "condition": "24세 이하 청년"})
+    assert not ok(q, {"said": "27살", "condition": "18세~45세"})              # 범위 안 (실제 데이터에서 빠졌던 경우)
+    assert not ok(q, {"said": "27살", "condition": "만 19세~39세"})
+    assert not ok(q, {"said": "27살", "condition": "청년"})                   # 연령 범위를 읽을 수 없음
+    assert ok(q, {"said": "서울에 사는", "condition": "대전광역시에 주민등록"})   # 다른 시·도
+    assert not ok(q, {"said": "서울에 사는", "condition": "서울특별시 거주 청년"})
+    assert not ok(q, {"said": "서울에 사는", "condition": "무주택 청년"})        # 지역을 말하지 않는 구절
+    assert not ok("청년도약계좌 가입 조건이 어떻게 되나요?",                    # 나이·거주지가 아닌 구절 (실제 데이터)
+                  {"said": "청년도약계좌 가입 조건이 어떻게 되나요?", "condition": "만 15세~만 39세 이하"})
+
+
+def test_missing_conditions_skip_what_evidence_text_states():
+    from src.common.schema import Chunk
+    def ch(text):
+        return [Chunk("X#지원대상", "X", "가상 제도", "지원대상", text, {"field": "주거·자립"})]   # 실제 데이터처럼 지역·나이 메타 없음
+    assert evidence._missing_conditions(ch("[가상 제도] 서울 월세 거주 19세 ~ 39세 이하 청년")) == []   # 원문에 지역·나이가 있음
+    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년")) == [
+        "거주 지역 조건 (자료에 지역 정보 없음)", "연령 조건 (자료에 연령 정보 없음)"]                   # 원문에도 없을 때만
+    assert not any("신청기한" in n for n in evidence._missing_conditions(ch("[가상 제도] 청년")))   # 기한은 카드에 따로 표시
+
+
+def test_numeric_service_id_from_llm_still_matches(monkeypatch, sample_chunks):
+    # 실제 보조금24 서비스ID는 숫자뿐이라 LLM이 JSON 숫자로 돌려준다 (실제 데이터에서 모든 제도가 빠졌던 문제)
+    from dataclasses import replace
+    chunks = [replace(c, service_id="568000000347") for c in sample_chunks if c.service_id == "SAMPLE001"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": 568000000347, "applicable": "확인 필요", "meets_need": True}]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, {"568000000347": chunks})
+    assert answer.no_evidence is False and len(answer.recommendations) == 1
+
+
 def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
     chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 선정기준: '소득이 기준 이하' (금액 없음)
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "가능", "needs_check": [],
@@ -332,3 +379,104 @@ def test_reason_rejects_long_phrase_and_cross_type_age_match(monkeypatch):
     ]}]})
     rec = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0]
     assert "‘27살’" in rec.reason and "취업준비생" not in rec.reason and "받을 수 있는" not in rec.reason
+
+
+
+# --- 필터 완화 안내 (B의 search_with_info.relaxed) ----------------------------------
+def test_relaxed_notice_when_b_dropped_filters(fake_conditions, monkeypatch):
+    from src.retrieve import hybrid
+    fake_conditions(CASES["sr1"])                                      # age 27, 서울, 주거, 구직
+    used = {"age": 27, "field": "주거", "situation": ["구직"], "today": "2026-10-19"}   # B가 region을 풀었다
+    monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
+                        hybrid.SearchResult(list(CASES["sr1"]["results"]), [], used, True))
+    _fake_llm(monkeypatch, RuntimeError("no llm"))
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    first = answer.text.splitlines()[0]
+    assert generator.RELAXED_MARK in first and "지역(서울)" in first
+    assert "나이" not in first and "분야" not in first                   # 분야는 필터가 아니라 안내 대상이 아님
+
+
+def test_no_relaxed_notice_on_no_evidence(fake_conditions, monkeypatch):
+    from src.retrieve import hybrid
+    fake_conditions(CASES["sr1"])
+    monkeypatch.setattr(hybrid, "search_with_info", lambda q, f, k=5, mode="hybrid_filter":
+                        hybrid.SearchResult([], [], {"today": "2026-10-19"}, True))
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    assert answer.no_evidence and generator.RELAXED_MARK not in answer.text   # 근거 없음이면 완화 안내는 붙이지 않음
+
+
+def test_field_is_not_a_filter_with_real_b_search(indexed_sample, fake_conditions, monkeypatch):
+    """B 계약(PR #8): 관심 분야는 필터가 아니라 가산점. 월세 고민 + 구직 중이면 field가 '주거'여도
+    일자리 분야 제도(구직촉진수당·서울 청년수당)가 후보에서 빠지지 않고, 완화 안내도 붙지 않는다."""
+    fake_conditions(CASES["sr1"])                                      # field "주거", situation ["구직"]
+    _fake_llm(monkeypatch, RuntimeError("no llm"))
+    answer = generator.answer_question(QUESTION_WITH_RESULTS)
+    names = [r.service_name for r in answer.recommendations]
+    assert "청년월세 지원(서울)" in names
+    assert {"구직촉진수당", "서울 청년수당"} & set(names)              # 다른 분야 제도도 후보에 남는다
+    assert generator.RELAXED_MARK not in answer.text
+
+
+
+# --- 원하는 도움을 주지 않는 제도 거르기 (needs · meets_need) --------------------------
+def test_needs_from_conditions():
+    needs = generator._needs_from
+    assert needs({"help": ["관람비"], "field": "문화"}) == ["관람비"]
+    got = needs({"help": ["월세가 부담돼요"], "field": "주거", "situation": ["구직"]})
+    assert got[0] == "월세가 부담돼요" and got[1].startswith("구직")         # 월세 고민 + 구직 중: 둘 다
+    assert needs({"field": "일자리", "situation": ["구직"]}) == []            # 직접 말한 도움 없음(처지로 짐작한 분야): 거르지 않음
+    assert needs({"age": 27, "region": "서울"}) == []                         # 넓게 묻는 질문
+
+
+def test_help_must_be_quoted_from_question():
+    norm = condition_extractor._normalize_conditions
+    q = "대학 등록금이 부담돼요. 받을 수 있는 장학금이 있나요?"
+    assert norm({"help": ["등록금", "장학금", "생활비"]}, question=q)["help"] == ["등록금", "장학금"]   # 질문에 없는 '생활비'는 버림
+    assert "help" not in norm({"help": []}, question=q)
+    q2 = "청년이 해외 주식 투자에서 손실을 보면 정부가 보전해 주는 제도가 있나요?"
+    assert norm({"help": ["해외 주식 투자에서 손실을 보전해 주는 제도"]}, question=q2)["help"]   # 낱말이 모두 질문에 있음
+    assert "help" not in norm({"help": ["청년 지원", "받을 수 있는 지원"]},                     # 특정하지 않는 말뿐: 넓은 질문
+                              question="27살이 받을 수 있는 청년 지원이 뭐가 있나요?")
+
+
+def test_extract_conditions_asks_help_separately(monkeypatch):
+    def _chat(system, user):
+        return {"asked": ["기초연금"]} if system == condition_extractor.HELP_PROMPT else {}   # 조건은 없어도
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+    assert condition_extractor.extract_conditions("기초연금은 어떻게 신청하나요?") == {"help": ["기초연금"]}
+
+
+def test_service_not_meeting_need_is_dropped(fake_search, fake_conditions, monkeypatch):
+    case = fake_search("sr1")
+    fake_conditions({"conditions": {"field": "문화", "help": ["관람비"]}})    # 원하는 도움: 관람비
+    seen = {}
+
+    def _chat(system, user):
+        seen["prompt"] = user
+        return {"services": [{"service_id": c.service_id, "applicable": "확인 필요", "meets_need": False}
+                             for c in case["results"]]}
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
+    answer = generator.answer_question(case["question"])
+    assert "[사용자가 원하는 도움]" in seen["prompt"]                          # 코드가 만든 도움 목록을 LLM에 준다
+    assert answer.no_evidence                                                # 지역·나이만 맞는 제도는 안내하지 않음
+
+
+def test_meets_need_ignored_when_no_needs(fake_search, fake_conditions, monkeypatch):
+    case = fake_search("sr1")
+    fake_conditions({"conditions": {"age": 27, "region": "서울"}})           # 넓게 묻는 질문: 원하는 도움 없음
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {"services": [
+        {"service_id": c.service_id, "applicable": "확인 필요", "meets_need": False} for c in case["results"]]})
+    assert not generator.answer_question(case["question"]).no_evidence      # 거르지 않는다
+
+
+
+def test_reason_age_pairs_only_with_age_and_no_overlap(monkeypatch):
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    sid = list(ev)[0]
+    _fake_llm(monkeypatch, {"services": [{"service_id": sid, "applicable": "확인 필요", "matches": [
+        {"said": "서울에 사는 27살", "condition": "서울에 거주하며"},
+        {"said": "27살", "condition": "무주택 청년"},                    # 나이 구절 ↔ 나이 아닌 조건 -> 버림
+        {"said": "서울에", "condition": "서울에 거주하며"},               # 다른 구절에 포함 -> 버림
+    ]}]})
+    reason = generator.generate_answer(QUESTION_WITH_RESULTS, {sid: ev[sid]}).recommendations[0].reason
+    assert reason.count("‘") == 2 and "‘서울에 사는 27살’" in reason      # 질문 구절 1개 + 근거 구절 1개

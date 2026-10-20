@@ -1,0 +1,18 @@
+{
+  "synthetic": true,
+  "description": "A 전용 합성 응답. 실제 API 응답·실제 제도·검증된 API 코드북이 아님. perPage=500.",
+  "endpoints": {
+    "serviceList": [{"page": 1, "perPage": 500, "currentCount": 2, "totalCount": 2, "matchCount": 2,
+      "data": [
+        {"서비스ID": "A-SYN-001", "서비스명": "가상 청년 주거 지원", "소관기관명": "가상기관", "서비스분야": "주거", "상세조회URL": "https://www.gov.kr/synthetic/A-SYN-001"},
+        {"서비스ID": "A-SYN-002", "서비스명": "가상 일반 구직 지원", "소관기관명": "가상기관", "상세조회URL": "https://www.gov.kr/synthetic/A-SYN-002"}
+      ]}],
+    "serviceDetail": [{"page": 1, "perPage": 500, "currentCount": 2, "totalCount": 2, "matchCount": 2,
+      "data": [
+        {"서비스ID": "A-SYN-002", "지원대상": "구직 중인 성인. 추가 조건은 공식 공고 확인", "선정기준": "예산 범위 내 선정", "지원내용": "상담 지원", "신청방법": "방문 신청", "신청기한": "별도 공고"},
+        {"서비스ID": "A-SYN-001", "지원대상": "청년. 소득 기준 충족 필요", "선정기준": "중위소득 100% 이하. 단, 제외 대상은 공고 확인", "지원내용": "월 10만 원 지원\n예외: 중복 지원 불가", "신청방법": "공식 창구 확인", "신청기한": "상시"}
+      ]}],
+    "supportConditions": [{"page": 1, "perPage": 500, "currentCount": 2, "totalCount": 2, "matchCount": 2,
+      "data": [{"서비스ID": "A-SYN-001", "JA0110": 19, "JA0111": 34}, {"서비스ID": "A-SYN-002"}]}]
+  }
+}

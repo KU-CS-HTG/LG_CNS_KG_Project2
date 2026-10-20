@@ -15,19 +15,23 @@ from src.common.schema import Filters
 
 log = logging.getLogger(__name__)
 
-# 값 목록은 tests/fixtures의 메타데이터 표기에 맞춘 제안. A의 메타데이터 표기가 확정되면 여기만 고친다.
+# 지역 값은 tests/fixtures의 표기에 맞춘 제안 (실제 데이터에는 아직 지역 메타데이터가 없다. A 문서 INGEST_A.md).
 REGIONS = ("서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기",
            "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주")
-# 값 -> 뜻. 프롬프트에는 예시 문장 대신 이 정의만 넣는다 (이름만 주면 '전세집 구함'을 전세피해로 오분류함).
+# 분야 값 = A가 넣는 보조금24 '서비스분야' 원문 10가지 (2026-10-20 실제 수집 확인). 값 -> 뜻.
+# 프롬프트에는 예시 문장 대신 이 정의만 넣는다 (이름만 주면 '전세집 구함'을 전세피해로 오분류함).
+# 실제 분류는 들쭉날쭉하다(청년월세가 '생활안정'). 분야는 B의 가산점일 뿐이라 거르지는 않는다.
 FIELD_DEFS = {
-    "주거": "월세·전세·주택 구입·이사·주거비",
-    "일자리": "취업·실업·구직급여·창업·직업훈련·근로",
-    "교육": "학비·장학금·학자금·자격증·교육 프로그램",
-    "금융": "대출·이자·자산 형성·저축·채무 조정",
-    "생활": "생계비·긴급 지원·공과금 등 생활 안정",
-    "보육": "자녀 돌봄·어린이집·양육비",
-    "보건의료": "의료비·건강검진·심리 상담",
-    "문화": "문화·여가·체육·여행",
+    "고용·창업": "취업·구직·면접·직업훈련·인턴·창업·근로",
+    "주거·자립": "월세·전세·보증금·임대주택·주택 구입·주거비·자립",
+    "보육·교육": "학비·등록금·장학금·학자금·교육 프로그램·자녀 돌봄·어린이집",
+    "생활안정": "생계비·긴급 지원·교통비·자산 형성·저축·채무 등 생활 안정",
+    "보건·의료": "의료비·건강검진·정신건강·심리 상담",
+    "보호·돌봄": "돌봄 서비스·보호 시설·자립준비청년 보호",
+    "임신·출산": "임신·출산·결혼·다자녀",
+    "문화·환경": "문화·여가·체육·여행·동아리·환경",
+    "농림축산어업": "농업·어업·임업·귀농·귀어",
+    "행정·안전": "상해보험·안전 장비 등 안전",
 }
 SITUATION_DEFS = {
     "구직": "일자리를 찾고 있거나 실직·퇴사한 상태",
@@ -46,6 +50,9 @@ SITUATION_DEFS = {
 }
 FIELDS = tuple(FIELD_DEFS)
 SITUATIONS = tuple(SITUATION_DEFS)
+# '주거'·'보건의료'처럼 짧게 쓴 값 -> 실제 분야명 (가운뎃점 앞뒤 낱말, 가운뎃점을 뺀 이름)
+_FIELD_ALIASES = {**{part: name for name in FIELDS for part in name.split("·")},
+                  **{name.replace("·", ""): name for name in FIELDS}}
 
 # 정식 명칭·옛 명칭 -> 짧은 이름
 _REGION_ALIASES = {
@@ -78,6 +85,17 @@ JSON 객체 하나만 출력한다. 사용할 수 있는 키는 아래뿐이다.
 - 목록에 없는 값은 쓰지 않는다. 해당하는 값이 없으면 그 키를 뺀다.
 - 조건이 하나도 없으면 빈 객체를 출력한다."""
 
+# 질문이 찾는 것(원하는 도움·부담·제도 이름)은 따로 짧게 묻는다. 위 프롬프트에 help 키로 함께 넣었더니
+# 나이·지역 같은 조건이 없는 질문('기초연금은 어떻게 신청하나요?')에서 빈 객체만 돌려줬다 (실제 데이터 평가 q33·q34).
+HELP_PROMPT = """너는 정부 지원제도 질문에서 사용자가 찾는 것을 가리키는 구절만 뽑는 도구다.
+JSON 객체 하나만 출력한다: {"asked": [구절, ...]}
+
+- asked: 사용자가 받고 싶은 도움, 덜고 싶은 부담, 또는 묻는 제도 이름을 질문 원문에서 글자 그대로 복사한 짧은 구절.
+- 나이·사는 곳·신분·처지(취업준비생, 직장인, 대학생 등)는 넣지 않는다.
+- '지원', '혜택', '제도'처럼 무엇인지 특정하지 않는 말만 있으면 빈 배열이다."""
+# 무엇인지 특정하지 않는 말. 구절에서 이것들을 빼고 남는 것이 없으면 넓은 질문으로 본다 ('청년 지원', '받을 수 있는 지원')
+_GENERIC_HELP = ("받을수있는", "청년", "지원금", "지원", "혜택", "제도", "정책", "신청", "정부", "서비스")
+
 
 _client = None
 
@@ -103,7 +121,7 @@ def _chat_json(system: str, user: str) -> dict:
 
 
 def extract_conditions(question: str) -> dict:
-    """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거"}
+    """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거·자립"}
 
     LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게)."""
     try:
@@ -111,6 +129,10 @@ def extract_conditions(question: str) -> dict:
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("조건 추출 실패, 조건 없이 진행: %s", e)
         return {}
+    try:
+        raw["help"] = _chat_json(HELP_PROMPT, question).get("asked")
+    except Exception as e:  # 찾는 것을 못 뽑으면 넓은 질문처럼 거르지 않는다
+        log.warning("찾는 것 추출 실패, 없이 진행: %s", e)
     return _normalize_conditions(raw, question=question)
 
 
@@ -148,8 +170,11 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
         out["region"] = region
 
     field = raw.get("field")
-    if isinstance(field, str) and field.strip() in FIELDS:
-        out["field"] = field.strip()
+    if isinstance(field, str):
+        field = field.strip().replace(" ", "")
+        field = field if field in FIELDS else _FIELD_ALIASES.get(field)
+        if field:
+            out["field"] = field
 
     situation = raw.get("situation")
     if isinstance(situation, str):
@@ -161,6 +186,25 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
                 picked.append(s.strip())
         if picked:
             out["situation"] = picked
+
+    # help: 질문이 찾는 것 (C 내부용. B에게 넘기는 Filters에는 들어가지 않는다).
+    # 낱말이 모두 질문 원문에 있는 짧은 구절만 받는다 (나이와 같은 원리로 추측 차단. LLM이 조사를 조금 바꿔 쓰는 것은 허용)
+    help_ = raw.get("help")
+    if isinstance(help_, str):
+        help_ = [help_]
+    if isinstance(help_, list) and question is not None:
+        q = "".join(question.split())
+        picked = []
+        for h in help_:
+            h = h.strip() if isinstance(h, str) else ""
+            words, rest = h.split(), "".join(h.split())
+            for g in _GENERIC_HELP:
+                rest = rest.replace(g, "")
+            if (words and len("".join(words)) <= 25 and all(w in q for w in words)
+                    and len(rest) >= 2 and h not in picked):
+                picked.append(h)
+        if picked:
+            out["help"] = picked
     return out
 
 
@@ -176,6 +220,13 @@ def _normalize_region(value) -> str | None:
     if v.endswith(("시", "도")) and v[:-1] in REGIONS:
         return v[:-1]
     return None
+
+
+def _find_region(text: str) -> str | None:
+    """구절에 처음 나오는 시·도의 짧은 이름 ('서울에 사는' -> '서울', '대전광역시에 주민등록' -> '대전'). 없으면 None."""
+    found = [(text.find(name), short) for name, short in
+             [*((r, r) for r in REGIONS), *_REGION_ALIASES.items()] if name in text]
+    return min(found)[1] if found else None
 
 
 def _to_int(value) -> int | None:

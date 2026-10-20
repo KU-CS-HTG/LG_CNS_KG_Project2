@@ -27,7 +27,7 @@
 ```
 src/
   common/    config.py, schema.py                       # 전원 공용: 설정, 모듈 간 데이터 계약
-  ingest/    client, store, chunker, pipeline           # A: ① 로드, ② 분할, 정기 수집
+  ingest/    client, normalize, merge, storage, store, chunker, pipeline # A
   index/     embedder, vector_store                     # B: ③ 임베딩, ④ 벡터 저장소
   retrieve/  hybrid, filters, baseline                  # B: ⑤ 검색, 정형 필터, 비교 실험용 Baseline
   generate/  condition_extractor, evidence, generator, citation   # C
@@ -44,9 +44,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 |---|---|
 | 디렉터리 = 담당자 단위 (A `ingest` / B `index`+`retrieve`+`eval` / C `generate`+`app`) | `CLAUDE.md` 담당 영역과 1:1. 한 사람이 자기 폴더만 수정해 파일 충돌과 책임 논쟁을 없앤다. |
 | `src/common/schema.py`에 `Chunk`·`Metadata`·`Filters`·`Recommendation`·`Answer`를 한 곳에 정의 | 모듈 간 계약(A→B 조각, C→B 필터, B→C 검색 결과, C→UI 답변)을 코드로 고정해 구현 전에도 병렬 개발한다. 바꿀 때는 이 파일과 `CLAUDE.md` 인터페이스 절부터 고친다. |
-| 함수는 시그니처·docstring만 두고 `NotImplementedError` | 인터페이스만 합의하고 구현은 담당자가 한다. 합의 전인 부분(DB 스키마, 색인 진입점)은 확정하지 않는다. |
+| B/C 함수는 시그니처·docstring과 `NotImplementedError`, A는 구현됨 | 기존 공개 시그니처와 공유 타입 유지. A SQLite·pending 설계는 아래 A 계약 참조. B의 색인 진입점과 소비자 적용은 팀 합의 대기. |
 | `ingest`를 `client` / `store` / `chunker` / `pipeline`으로 분리 | ①로드와 ②분할에 대응. 수집은 API 의존, 분할은 순수 함수라 따로 테스트한다. DB는 정형 필터·Baseline 실험·변경 감지의 원천이다 (7장). |
-| `store.upsert_services`가 변경된 `service_id`를 반환, `pipeline.run`은 기본 증분 | 기획서 7장: 1일 1회 정기 수집 후 **변경분만 재색인**. 종료된 서비스는 `mark_closed` → `vector_store.remove_services`로 색인에서 뺀다. |
+| `store.upsert_services`가 변경된 활성 `service_id`를 반환, `pipeline.run`은 미확인 증분을 재전달 | 일일 증분 수집. A가 서비스 전체 교체/제거를 durable pending에 기록한다. 무인자 `mark_closed()`는 안전한 no-op. 검증된 전체 목록만 내부 소실 판정을 허가하며 현재 실 API 미검증으로 차단된다. 실제 B writer는 별도 구현 필요. |
 | `chunker`: 구조 기반(4개 항목) + 긴 항목은 Recursive, 서비스명 접두 | 8.1 문서 분할. 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고(7.1), 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | `Metadata`에 지역·소관기관·분야·신청기한·연령 범위·대상 태그 | 8.1 메타데이터. 종료된 제도와 지역·연령이 안 맞는 후보를 제거하고, 지역만 다른 중복 제도(7.1)를 구분한다. |
 | `index`(오프라인)와 `retrieve`(온라인) 분리 | 구조도의 오프라인 색인 / 온라인 질의응답 경계를 코드에 반영. 색인은 문서가 바뀔 때만 실행. |
@@ -129,17 +129,43 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 
 | 모듈 | 상태 |
 |---|---|
-| `ingest/client.py` | 구현됨 (API 호출·페이지 순회·원본 저장). 실제 응답 필드는 검증 전 |
-| `index/embedder.py` | 구현됨 (sentence-transformers, bge-m3). 가짜 모델 테스트 통과, 실제 모델은 팀원 PC에서 확인(0.553 > 0.422) |
-| `index/vector_store.py` | 구현됨 (Chroma + BM25 2-gram). 임시 폴더·가짜 임베딩 테스트 통과, 실제 모델로 샘플 색인·검색 확인 |
-| `retrieve/filters.py`, `hybrid.py` | 구현됨 (RRF 하이브리드, 서비스당 1개, 소프트 필터·단계적 완화, 분야 가산점). 가짜 임베딩 테스트 통과, 실제 데이터 품질은 미확인 |
+| `ingest/client.py` | timeout·재시도·원본/완전성 구현. OAS·최초 3건씩의 필드/페이지 관측, 전체 종료·일관성은 미검증 |
+| `ingest/normalize.py`, `store.py`, `chunker.py`, `pipeline.py` | 결정적 정제·잠정 청년 정책·SQLite·트랜잭션 pending·구조 분할·CLI 구현. 상세 운영 계약은 [INGEST_A.md](INGEST_A.md) |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
-| `eval/run_eval.py` | 구현됨 (모드별 실험·비교표·결과 JSON). 샘플 색인·가짜 임베딩으로 확인, 실제 평가는 질문 세트 정답이 필요 |
-| `eval/metrics.py` | 구현됨 (Hit Rate·Recall·MRR·`no_evidence_rate`·`evaluate`·`check_targets`) |
-| `tests/` | 125개 통과, 4개는 OPENAI_API_KEY·실제 모델이 필요해 skip |
-| 그 외 | 스켈레톤 (`NotImplementedError`) |
+| `tests/ingest/` | A 전용 합성 HTTP·임시 DB·가짜 소비자·CLI 검증. A NotImplementedError는 실패 처리, 공용 훅/fixtures 보존 |
+| 기존 `tests/`의 B/C 영역 | 구현 전(또는 OPENAI_API_KEY 없음) skip. 실제 검색·생성 품질 검증 아님 |
+| 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
+
+### 6.1 A 구현과 팀 결정 경계
+
+세 SQLite 테이블(services, ingestion_runs, pending_changes)로 상태와 인계를 보존한다. 서비스명·본문·기관·URL·기간·metadata·검증 자격을 해시하며 운영 시각을 제외한다. 활성 데이터는 청년으로 한정하고 만료/소실/청년 범위 이탈을 별개 사유로 기록한다. 성공 상세의 빈 값은 삭제, 실패/미관측은 이전 정상 관측 보존이다. `normalize.py`는 미확인 JA* 코드·본문의 자녀 나이·기관에서의 지역을 추정하지 않는다.
+
+`--full`은 DB 초기화 없이 활성 전체 조각을 pending에 재생성한다. 기본 `run()`도 이전 미확인 조각을 반환할 수 있다. 읽기·반환은 확인 응답이 아니다. [A 운영 계약](INGEST_A.md)에 필드 매핑, 확인 수준, 조건 어댑터, 스케줄, 실패 복구 및 B API를 기록했다.
+
+B의 기존 chunk_id별 upsert 설명만으로는 청크 수 감소 때 잔여 조각이 남는다. **제안:** 서비스 전체 교체/제거 후 Vector/BM25가 동일 버전을 영속 반영하면 service_id+version+event_id로 확인한다. B/C 코드는 수정하지 않았고 실제 연동은 미검증이다. 소비자 동시 실행·버전 fencing·출처 누락 표시와 잠정 청년 포함 정책은 팀 합의가 필요하다.
+
+### 6.2 A 2차 수정
+
+`merge.py`는 공통 필드의 현재 관측·성공 빈 값·키 누락·과거 fallback을 구분한다. 상세 실패 시 현재
+목록의 의미 있는 값이 과거 상세를 대체하고 목록에도 없는 상세 본문은 유지한다. 두 현재 원천 충돌은
+목록 우선/기한 보수적 선택의 명시적 규칙으로 처리하고 `_field_provenance`, `_merge_conflicts`와
+실행별 raw 감사 기록에 남긴다. 수집 시각·원천 수정일시로 최신성을 단정하지 않는다.
+
+`storage.StoragePaths`는 모든 SQLite·잠금·raw·pending 접근에 명시적으로 전달한다. live 기본값을
+유지하면서 fixture/validation은 독립 경로를 쓰며 운영 목적지·별칭·sidecar 중첩을 쓰기 전에 거부한다.
+프로그램 fixture 경로도 CLI와 동일하게 격리한다. pytest는 별도 tmp_path를 사용한다.
+HTMLParser는 td/th 셀 경계와 tr/블록 개행을 보존하고, 수정된 정규 본문은 다음 관측 때 한 번의 전체 교체를 유발할 수 있다.
+
+라이브는 격리 DB에서 1페이지×3건×3엔드포인트만 sample로 확인했다. API 오류·HTML 표는 mock/합성 검증이다.
+JA 기본 라벨을 공식 OAS에서 확인했으나 신청자/부양자·경계·특수값·지역 자격 어댑터는 보류한다.
+B 소비자는 우선 하나를 권장하며 A stale-ack 보호가 B의 stale write까지 막지는 않는다. 기관/URL 품질은
+`get_record()`로 조회하고 인용 후보 보류·표시 정책은 B/C 합의가 필요하다.
 
 ## 7. 변경 이력
+
+- 2026-10-19 A 2차 수정: 현재 목록/과거 상세 충돌, fixture 저장소 격리, HTML 표 경계 보완. 회귀 테스트와 격리 라이브 3건씩의 표본 검증. 전체 API 적합성과 실제 연령/지역·B 색인 통합은 미완료. 기획서 8.3에 설계 변경 기록.
+
+- 2026-10-19 A 구현: client 강화, normalize 추가, SQLite·실행 이력·pending 및 구조 분할·CLI 연결. A 전용 합성 fixture/테스트 추가. API 명세·실측 미검증 때문에 자동 소실 차단, JA* 자동 해석 보류. README·CLAUDE·이 문서·기획서 8.3 동기화. B/C 소유 코드·공용 스키마·설정·기존 fixtures는 보존.
 
 - 초기 스켈레톤 작성. API 연결 테스트용 `youth_benefits.py` 삭제.
 - 기획서·RAG 구조도 반영: `Metadata`/`Filters`/`Recommendation` 추가, `Answer` 구조 확장, 증분 수집·종료 처리(`store`, `pipeline`), Recursive 분할, `retrieve/baseline.py`와 `search(mode)`, `generate/evidence.py`, `eval/answer_eval.py`, 질문 세트 형식 및 기획서 예시 질문, 지표 목표 상수, 구조도·기획서를 `docs/`에 추가.

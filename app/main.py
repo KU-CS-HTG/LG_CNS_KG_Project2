@@ -29,6 +29,7 @@ EXAMPLES = [
     "대학생인데 학자금 대출 이자가 부담돼요",
     "회사를 그만두고 일자리를 찾고 있어요",
 ]
+DEMO_FIELD_BOOST = 2   # 미리보기 검색에서 관심 분야가 맞는 제도에 더하는 점수 (B의 FIELD_BOOST와 같은 역할)
 OFFICIAL_SITES = [("정부24 보조금24", "https://www.gov.kr/portal/rcvfvrSvc/main"), ("복지로", "https://www.bokjiro.go.kr")]
 
 CSS = """
@@ -119,6 +120,8 @@ a.btn:hover { background:var(--accent-soft); }
 [data-testid="stSidebar"] button:disabled { opacity:1 !important; color:var(--accent) !important; border-color:var(--accent) !important;
   background:var(--accent-soft) !important; font-weight:700; }
 [data-testid="stSidebar"] [class*="st-key-thread"] button p { text-align:left; }
+.relaxed { font-size:.88rem; line-height:1.55; border-radius:12px; padding:.6rem .85rem; margin:.1rem 0 .8rem;
+  background:var(--warn-soft); border:1px solid rgba(217,119,6,.25); }
 .demo { font-size:.82rem; border-radius:10px; padding:.5rem .75rem; background:var(--warn-soft); color:var(--warn); font-weight:600; }
 </style>
 """
@@ -143,34 +146,46 @@ def _sample_chunks() -> list[Chunk]:
 
 
 def _demo_search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]:
-    """미리보기용 간이 검색: 글자 2-gram 겹침 점수 + 지역·연령 소프트 필터. 상위 k개 서비스의 전체 항목을 돌려준다
-    (실제 B는 서비스당 조각 1개. 전체 항목은 C의 _expand_service가 합의 후 가져올 몫을 미리 보여 주는 것)."""
+    """미리보기용 간이 검색: 글자 2-gram 겹침 점수 + B와 같은 규칙. 상위 k개 서비스의 전체 항목을 돌려준다
+    (실제 B는 서비스당 조각 1개이고, 전체 항목은 C의 _expand_service가 get_service_chunks로 가져온다).
+    B 규칙(CLAUDE.md 인터페이스): 거르는 조건은 신청기한·지역·나이, 관심 분야는 거르지 않고 가산점."""
+    from src.retrieve import filters as rules
     grams = lambda s: {s[i:i + 2] for i in range(len(s) - 1)}  # noqa: E731
     q = grams(re.sub(r"\s+", "", query))
     by_service: dict[str, list[Chunk]] = {}
-    for c in _sample_chunks():
-        m = c.metadata
-        if m.get("deadline") and m["deadline"] < filters.get("today", "0000"):   # 신청기한 지난 제도 제외
-            continue
-        if filters.get("region") and m.get("region") not in (None, "", "전국", filters["region"]):
-            continue
-        age = filters.get("age")
-        if age is not None and ((m.get("age_min") or 0) > age or age > (m.get("age_max") or 200)):
-            continue
+    for c in rules.apply_filters(_sample_chunks(), filters):      # 기한·지역·나이 (B와 같은 함수)
         by_service.setdefault(c.service_id, []).append(c)
-    scored = sorted(by_service.values(), key=lambda cs: -max(len(q & grams(re.sub(r"\s+", "", c.text))) for c in cs))
+
+    def score(cs: list[Chunk]) -> float:
+        overlap = max(len(q & grams(re.sub(r"\s+", "", c.text))) for c in cs)
+        boost = DEMO_FIELD_BOOST if rules.field_matches(cs[0].metadata.get("field"), filters.get("field")) else 0
+        return overlap + boost
+
+    scored = sorted(by_service.values(), key=lambda cs: -score(cs))
     return [c for cs in scored[:k] for c in cs]
+
+
+def _demo_search_with_info(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter"):
+    """미리보기용 search_with_info: B와 같은 순서(filters.relax)로 결과가 없으면 조건을 하나씩 푼다."""
+    from src.retrieve import filters as rules
+    current, relaxed = dict(filters), False
+    while True:
+        chunks = _demo_search(query, current, k, mode)
+        softer = rules.relax(current)
+        if chunks or softer == current:
+            return hybrid.SearchResult(chunks, [], current, relaxed)
+        current, relaxed = softer, True
 
 
 def _ask(question: str) -> Answer:
     if _search_ready():
         return generator.answer_question(question)
-    original = hybrid.search
-    hybrid.search = _demo_search
+    original = hybrid.search, hybrid.search_with_info
+    hybrid.search, hybrid.search_with_info = _demo_search, _demo_search_with_info
     try:
         return generator.answer_question(question)
     finally:
-        hybrid.search = original
+        hybrid.search, hybrid.search_with_info = original
 
 
 # --- 렌더링 ----------------------------------------------------------------------------
@@ -223,6 +238,9 @@ def _render_answer(answer: Answer, show_follow: bool = True) -> None:
                     unsafe_allow_html=True)
         return
     situation, follow = _parse_text(answer.text)
+    relaxed = next((line for line in answer.text.splitlines() if generator.RELAXED_MARK in line), "")
+    if relaxed:                                  # B가 결과가 없어 조건을 푼 경우 (소프트 필터를 투명하게)
+        st.markdown(f'<div class="relaxed">🔎 {_e(relaxed)}</div>', unsafe_allow_html=True)
     chips = "".join(f'<span class="chip">{_e(s.strip())}</span>' for s in situation.split(",") if s.strip())
     st.markdown(f'<div class="summary">{chips}<span>상황에 맞는 지원제도 <b>{len(answer.recommendations)}개</b>를 찾았어요.</span></div>',
                 unsafe_allow_html=True)
