@@ -273,6 +273,15 @@ def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
     assert generator.generate_answer(QUESTION_WITH_RESULTS, ev).no_evidence is True
 
 
+def test_numeric_service_id_from_llm_still_matches(monkeypatch, sample_chunks):
+    # 실제 보조금24 서비스ID는 숫자뿐이라 LLM이 JSON 숫자로 돌려준다 (실제 데이터에서 모든 제도가 빠졌던 문제)
+    from dataclasses import replace
+    chunks = [replace(c, service_id="568000000347") for c in sample_chunks if c.service_id == "SAMPLE001"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": 568000000347, "applicable": "확인 필요", "meets_need": True}]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, {"568000000347": chunks})
+    assert answer.no_evidence is False and len(answer.recommendations) == 1
+
+
 def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
     chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 선정기준: '소득이 기준 이하' (금액 없음)
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "가능", "needs_check": [],

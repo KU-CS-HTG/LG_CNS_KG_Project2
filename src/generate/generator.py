@@ -110,7 +110,8 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str])
     # 원하는 도움을 주는 제도인지는 구조화된 값(meets_need)으로 받아 코드로 적용한다
     # (applicable의 '관련 없음' 규칙만으로는 지역·나이만 맞는 제도가 섞였음: 공연 관람비 질문에 청년월세)
 
-    by_id = {s.get("service_id"): s for s in out.get("services") or [] if isinstance(s, dict)}
+    # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다
+    by_id = {str(s.get("service_id")).strip(): s for s in out.get("services") or [] if isinstance(s, dict)}
     recs: list[Recommendation] = []
     for sid, chunks in evidence.items():
         gen = by_id.get(sid)
