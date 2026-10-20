@@ -224,6 +224,14 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit("색인이 비어 있습니다. 먼저: python -m src.index.vector_store --sample  (또는 A의 파이프라인 결과 색인)")
 
     names = list(EXPERIMENTS) if args.experiment == "all" else [args.experiment]
+    if "baseline" in names:
+        from src.retrieve import baseline
+
+        if baseline.active_count() == 0:
+            if args.experiment == "baseline":
+                raise SystemExit("baseline은 A의 SQLite 저장소(data/services.db)가 필요합니다. 먼저: python -m src.ingest.pipeline")
+            print("[건너뜀] baseline: A의 SQLite 저장소(data/services.db)가 없거나 비어 있습니다 (python -m src.ingest.pipeline)\n")
+            names.remove("baseline")
     results = []
     for name in names:
         try:

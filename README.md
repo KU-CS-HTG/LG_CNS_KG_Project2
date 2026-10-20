@@ -401,7 +401,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 | 관심 분야는 필터가 아니라 가산점 (`FIELD_BOOST`) | 분야는 자격이 아니라 관심사이고, 질문에서 뽑은 분야 이름이 데이터의 서비스분야와 달라도(예: "주거" vs "주거·자립") 제도가 사라지지 않아야 한다. 화면 테스트에서 분야가 "주거" 하나로 뽑히자 구직 지원 제도가 통째로 걸러지는 문제가 발견되어 B·C 합의로 바꿨다. |
 | 벡터 저장소는 Chroma, 소프트 필터는 저장할 때 빈 값을 대체값으로 바꿔 처리 | 나중에 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓴다. Chroma는 "값이 없으면 통과"를 쿼리로 표현하기 어려워, 색인 시 빈 값을 통과하는 값으로 저장해 해결했다. |
 | BM25는 `rank_bm25` + 글자 2-gram, 색인은 저장된 텍스트에서 자동 재생성 | 한국어 조사·두 글자 단어를 다루면서 추가 설치(형태소 분석기)가 필요 없다. Chroma에 BM25가 없어 따로 두되, 색인 버전 파일로 동기화한다. 부족하면 `kiwipiepy`로 교체하고 Baseline 실험에서 비교한다. |
-| `retrieve/baseline.py`, `search(mode=...)` | Baseline → Vector → Hybrid → Hybrid+필터 비교 실험으로 하이브리드 효과를 검증한다. `mode` 기본값이 서비스 경로라 시그니처는 호환된다. |
+| `retrieve/baseline.py`(질문→키워드→`store.sql_keyword_search`→키워드 종류 수로 순위, 서비스명 가중, 필터 없음), `search(mode=...)` | Baseline → Vector → Hybrid → Hybrid+필터 비교 실험으로 하이브리드 효과를 검증한다. `mode` 기본값이 서비스 경로라 시그니처는 호환된다. |
 | `evidence.py`(근거 선별), `Answer`에 `no_evidence` | 질문당 제도를 3~5개로 제한하고, 근거 없음 응답을 UI·평가가 구분해 쓴다. |
 | `app/`은 `answer_question()` 하나만 호출 | UI 교체와 백엔드 수정이 서로 영향을 주지 않는다. |
 | 평가 채점 단위는 `service_id` | 분할 방식이 바뀌어도 질문 세트를 재사용한다. |
@@ -489,7 +489,7 @@ python -m src.index.vector_store --sample --full
 python -m eval.run_eval --experiment all --questions tests/fixtures/sample_eval_questions.jsonl --today 2026-10-19 --no-save
 ```
 
-**실제 질문 세트의 정답 채우는 법**은 위 "정답 채우는 법"과 [`docs/LABELING.md`](docs/LABELING.md)를 보세요. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
+**실제 질문 세트의 정답 채우는 법**은 위 "정답 채우는 법"과 [`docs/LABELING.md`](docs/LABELING.md)를 보세요. `baseline`은 A의 SQLite 저장소(`data/services.db`, `python -m src.ingest.pipeline`로 생성)가 있어야 하며, 없으면 `all`에서 건너뜁니다. 키워드 추출은 조사만 떼는 단순 방식이고 정형 필터는 쓰지 않습니다.
 
 출력 예 (예상 형식, 수치는 예시):
 
