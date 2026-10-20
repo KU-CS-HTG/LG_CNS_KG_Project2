@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from src.common import config
@@ -123,14 +124,18 @@ def _chat_json(system: str, user: str) -> dict:
 def extract_conditions(question: str) -> dict:
     """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거·자립"}
 
-    LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게)."""
+    LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게).
+    조건 호출과 찾는 것(help) 호출은 서로 관계없어 동시에 보낸다 (차례로 하면 약 2초, 동시에 하면 약 1초)."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cond = pool.submit(_chat_json, SYSTEM_PROMPT, question)
+        asked = pool.submit(_chat_json, HELP_PROMPT, question)
     try:
-        raw = _chat_json(SYSTEM_PROMPT, question)
+        raw = cond.result()
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("조건 추출 실패, 조건 없이 진행: %s", e)
         return {}
     try:
-        raw["help"] = _chat_json(HELP_PROMPT, question).get("asked")
+        raw["help"] = asked.result().get("asked")
     except Exception as e:  # 찾는 것을 못 뽑으면 넓은 질문처럼 거르지 않는다
         log.warning("찾는 것 추출 실패, 없이 진행: %s", e)
     return _normalize_conditions(raw, question=question)
