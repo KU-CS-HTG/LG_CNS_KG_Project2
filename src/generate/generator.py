@@ -163,7 +163,8 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     (실제 데이터: 나이·지역 없이 '면접 비용 지원'만 물으면 모든 카드의 이유가 같은 일반 문구였다)."""
     meta = _merged_meta(chunks)
     raw = _sections(chunks)
-    said, conds = _grounded_matches(question, chunks, gen.get("matches"))
+    llm_pairs = _grounded_matches(question, chunks, gen.get("matches"))
+    said, conds = _merge_pairs(_code_matches(question, chunks), llm_pairs)
     if said:
         reason = f"말씀하신 {', '.join(f'‘{s}’' for s in said)} 조건이 이 제도의 대상" \
                  + (f"({', '.join(f'‘{c}’' for c in conds)})" if conds else "") + "에 해당될 수 있어요."
@@ -173,7 +174,9 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
         reason = GENERIC_REASON
 
     needs = _needs_with_criteria(gen.get("needs_check"), chunks)
-    applicable = gen.get("applicable") if said else UNCLEAR   # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다
+    # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다. 코드가 만든 나이·지역 짝은 이유 문장에만 쓰고,
+    # '가능'은 LLM 자신의 판단 근거(짝)가 검증될 때만 인정한다 (LLM이 사용자가 말하지 않은 '무주택'으로 '가능'이라 한 경우 차단)
+    applicable = gen.get("applicable") if llm_pairs[0] else UNCLEAR
     if applicable != LIKELY and not needs:
         needs.append("자격 요건 충족 여부")
     for n in evidence_mod._missing_conditions(chunks) + _vague_criteria(raw):
@@ -245,6 +248,7 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
 
 
 MAX_CRITERION_CHARS = 60   # 확인 필요 기준 구절 최대 길이(공백 제외). 선정기준 문단을 통째로 옮기는 것을 막는다
+MAX_REGION_PIECE_CHARS = 40   # 이유 문장에 넣는 거주지 근거 구절 최대 길이 (긴 전입 조건 문장이 그대로 들어가지 않게)
 
 
 def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
@@ -268,10 +272,70 @@ def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
             continue
         if crit and (len(squash(crit)) > MAX_CRITERION_CHARS or squash(crit) not in body):
             crit = ""
-        text = f"{name} — {crit}" if crit else name
+        text = f"{_criterion_label(crit, name)} — {crit}" if crit else name
         if text not in out:
             out.append(text)
     return out
+
+
+def _code_matches(question: str, chunks: list[Chunk]) -> tuple[list[str], list[str]]:
+    """나이·거주지 짝은 코드가 직접 만든다: 질문의 '26살'·'서울' ↔ 근거 지원대상·선정기준의 연령 범위·시도 구절.
+
+    LLM이 said에 질문 문장 전체를 넣어(20자 제한에 걸려) 나이·지역이 맞는데도 이유가 일반 문구가 되는 일이 잦았다.
+    나이는 범위 안일 때만, 지역은 같은 시·도가 원문에 있을 때만 짝짓는다."""
+    target = " ".join(citation._body_text(c) for c in chunks if c.section in ("지원대상", "선정기준"))
+    said: list[str] = []
+    conds: list[str] = []
+    age = _AGE_RE.search(question)
+    if age:
+        n = int(re.match(r"\d+", age.group()).group())
+        for m in _AGE_RANGE_RE.finditer(target):
+            if int(m.group(1)) <= n <= int(m.group(2)):
+                said.append(age.group().strip())
+                conds.append(m.group().strip())
+                break
+    region = condition_extractor._find_region(question)
+    if region and region in _regions_in(target):
+        word = next((w for w in question.split() if region in w or any(
+            full in w for full, short in condition_extractor._REGION_ALIASES.items() if short == region)), region)
+        names = [region, *(full for full, short in condition_extractor._REGION_ALIASES.items() if short == region)]
+        for piece in re.split(r"[,，·\n○ㅇ※*()]|\s-\s", target):
+            piece = piece.strip(" -•▪◦")
+            if any(nm in piece for nm in names) and len("".join(piece.split())) <= MAX_REGION_PIECE_CHARS:
+                said.append(word.strip(".,?!"))
+                conds.append(piece)
+                break
+    return said, conds
+
+
+def _merge_pairs(*pairs: tuple[list[str], list[str]]) -> tuple[list[str], list[str]]:
+    """여러 출처의 (질문 구절들, 근거 구절들)을 합치고, 다른 구절에 들어 있는 구절은 뺀다.
+    기호는 무시하고 비교한다 ('- 부산광역시에 주민등록…'과 '부산광역시에 주민등록…(배우자 포함)'이 둘 다 나오던 문제)."""
+    squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%]", "", s)  # noqa: E731
+    said = list(dict.fromkeys(s for p in pairs for s in p[0]))
+    conds = list(dict.fromkeys(c for p in pairs for c in p[1]))
+    said = [s for s in said if not any(s != o and squash(s) in squash(o) for o in said)]
+    conds = [c for c in conds if not any(c != o and squash(c) in squash(o) for o in conds)]
+    return said, conds
+
+
+# 기준 구절 내용으로 조건 이름을 붙인다 (LLM이 '보증금 8천만원 이하, 월세 60만원 이하'를 '거주지'라고 하는 등 이름이 어긋났다).
+# 위에서부터 먼저 맞는 것을 쓴다. 맞는 게 없으면 LLM이 준 이름을 그대로 쓴다.
+_CRITERION_LABELS = (
+    ("소득", re.compile(r"소득|학자금\s*지원\s*\d*\s*구간|차상위|수급")),
+    ("재산", re.compile(r"재산|자산|자동차")),
+    ("주택 조건", re.compile(r"보증금|월세|전세|임차|주택|무주택")),
+    ("거주지", re.compile("|".join(("도내", "관내", "전입", "주민등록", *condition_extractor.REGIONS,
+                                    *condition_extractor._REGION_ALIASES)))),
+    ("연령", re.compile(r"\d+\s*세")),
+)
+
+
+def _criterion_label(criterion: str, fallback: str) -> str:
+    for label, pattern in _CRITERION_LABELS:
+        if pattern.search(criterion):
+            return label
+    return fallback
 
 
 def _vague_criteria(sections: dict[str, str]) -> list[str]:

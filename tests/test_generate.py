@@ -332,6 +332,28 @@ def test_needs_check_shows_criterion_quoted_from_evidence(monkeypatch, sample_ch
     assert "가구 구성" in rec.needs_check
 
 
+def test_reason_pairs_age_and_region_by_code_when_llm_said_is_too_long(monkeypatch):
+    from src.common.schema import Chunk
+    ch = [Chunk("X#지원대상", "X", "가상 월세", "지원대상", "[가상 월세] 서울 월세 거주 19세 ~ 39세 이하 청년 1인 가구", {}),
+          Chunk("X#신청방법", "X", "가상 월세", "신청방법", "[가상 월세] 부산 센터 방문", {})]
+    q = "서울에서 혼자 사는 26살인데 월세 내고 나면 생활비가 빠듯해요"
+    _fake_llm(monkeypatch, {"services": [{"service_id": "X", "applicable": "확인 필요",
+                                          "matches": [{"said": q, "condition": "서울 월세 거주"}]}]})   # 질문 통째 -> 버림
+    rec = generator.generate_answer(q, {"X": ch}).recommendations[0]
+    assert "‘서울에서’" in rec.reason and "‘26살’" in rec.reason                # 코드가 직접 짝지음
+    assert "서울 월세 거주 19세 ~ 39세 이하 청년 1인 가구" in rec.reason
+    assert generator._code_matches("부산 사는 42살이에요", ch) == ([], [])        # 범위 밖 나이, 대상에 없는 지역(신청방법만)은 짝 없음
+
+
+def test_criterion_label_follows_criterion_text():
+    lab = generator._criterion_label
+    assert lab("임차 보증금 8천만원 이하, 월세 60만원 이하 건물 월세 거주", "거주지") == "주택 조건"
+    assert lab("기준 중위소득 150% 이하 무주택자", "소득") == "소득"
+    assert lab("일반재산 1억 3천만원 이하, 자동차 2,500만원 미만", "재산") == "재산"
+    assert lab("도내 고교출신 도내 대학생 재학생", "학적") == "거주지"
+    assert lab("대학 재학 중", "학적") == "학적"                                 # 맞는 분류가 없으면 LLM 이름
+
+
 def test_needs_check_criterion_ignores_footnote_marks():
     from src.common.schema import Chunk
     ch = [Chunk("X#선정기준", "X", "가상 제도", "선정기준",
