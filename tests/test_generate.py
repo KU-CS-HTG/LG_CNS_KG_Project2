@@ -42,8 +42,16 @@ def test_normalize_conditions_drops_invalid_values():
     raw = {"age": "27", "region": "서울특별시", "field": "주거", "situation": ["구직", "우주여행", "구직"],
            "hobby": "등산"}
     assert condition_extractor._normalize_conditions(raw) == {
-        "age": 27, "region": "서울", "field": "주거", "situation": ["구직"]}   # 목록 밖 값·모르는 키는 버림
+        "age": 27, "region": "서울", "field": "주거·자립", "situation": ["구직"]}   # 목록 밖 값·모르는 키는 버림
     assert condition_extractor._normalize_conditions({"region": "화성", "field": "여행", "age": True}) == {}
+
+
+def test_normalize_conditions_maps_field_to_real_names():
+    norm = condition_extractor._normalize_conditions
+    assert norm({"field": "고용·창업"}) == {"field": "고용·창업"}               # 보조금24 서비스분야 원문
+    assert norm({"field": "보건의료"}) == {"field": "보건·의료"}                 # 가운뎃점 없이 써도
+    assert norm({"field": "창업"}) == {"field": "고용·창업"}                     # 한쪽 낱말만 써도
+    assert norm({"field": "일자리"}) == {}                                      # 실제 분야에 없는 이름은 버림
 
 
 def test_normalize_conditions_birth_year_to_age():
@@ -71,7 +79,7 @@ def test_extract_conditions_returns_empty_on_llm_error(monkeypatch):
 def test_extract_conditions_with_llm():
     got = condition_extractor.extract_conditions(QUESTION_WITH_RESULTS)
     assert got.get("age") == 27 and got.get("region") == "서울"
-    assert got.get("field") == "주거" and "구직" in got.get("situation", [])
+    assert got.get("field") == "주거·자립" and "구직" in got.get("situation", [])
     assert condition_extractor.extract_conditions(QUESTION_NO_EVIDENCE).get("age") is None   # 추측 금지
 
 

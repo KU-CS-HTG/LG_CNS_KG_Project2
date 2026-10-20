@@ -15,19 +15,23 @@ from src.common.schema import Filters
 
 log = logging.getLogger(__name__)
 
-# 값 목록은 tests/fixtures의 메타데이터 표기에 맞춘 제안. A의 메타데이터 표기가 확정되면 여기만 고친다.
+# 지역 값은 tests/fixtures의 표기에 맞춘 제안 (실제 데이터에는 아직 지역 메타데이터가 없다. A 문서 INGEST_A.md).
 REGIONS = ("서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기",
            "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주")
-# 값 -> 뜻. 프롬프트에는 예시 문장 대신 이 정의만 넣는다 (이름만 주면 '전세집 구함'을 전세피해로 오분류함).
+# 분야 값 = A가 넣는 보조금24 '서비스분야' 원문 10가지 (2026-10-20 실제 수집 확인). 값 -> 뜻.
+# 프롬프트에는 예시 문장 대신 이 정의만 넣는다 (이름만 주면 '전세집 구함'을 전세피해로 오분류함).
+# 실제 분류는 들쭉날쭉하다(청년월세가 '생활안정'). 분야는 B의 가산점일 뿐이라 거르지는 않는다.
 FIELD_DEFS = {
-    "주거": "월세·전세·주택 구입·이사·주거비",
-    "일자리": "취업·실업·구직급여·창업·직업훈련·근로",
-    "교육": "학비·장학금·학자금·자격증·교육 프로그램",
-    "금융": "대출·이자·자산 형성·저축·채무 조정",
-    "생활": "생계비·긴급 지원·공과금 등 생활 안정",
-    "보육": "자녀 돌봄·어린이집·양육비",
-    "보건의료": "의료비·건강검진·심리 상담",
-    "문화": "문화·여가·체육·여행",
+    "고용·창업": "취업·구직·면접·직업훈련·인턴·창업·근로",
+    "주거·자립": "월세·전세·보증금·임대주택·주택 구입·주거비·자립",
+    "보육·교육": "학비·등록금·장학금·학자금·교육 프로그램·자녀 돌봄·어린이집",
+    "생활안정": "생계비·긴급 지원·교통비·자산 형성·저축·채무 등 생활 안정",
+    "보건·의료": "의료비·건강검진·정신건강·심리 상담",
+    "보호·돌봄": "돌봄 서비스·보호 시설·자립준비청년 보호",
+    "임신·출산": "임신·출산·결혼·다자녀",
+    "문화·환경": "문화·여가·체육·여행·동아리·환경",
+    "농림축산어업": "농업·어업·임업·귀농·귀어",
+    "행정·안전": "상해보험·안전 장비 등 안전",
 }
 SITUATION_DEFS = {
     "구직": "일자리를 찾고 있거나 실직·퇴사한 상태",
@@ -46,6 +50,9 @@ SITUATION_DEFS = {
 }
 FIELDS = tuple(FIELD_DEFS)
 SITUATIONS = tuple(SITUATION_DEFS)
+# '주거'·'보건의료'처럼 짧게 쓴 값 -> 실제 분야명 (가운뎃점 앞뒤 낱말, 가운뎃점을 뺀 이름)
+_FIELD_ALIASES = {**{part: name for name in FIELDS for part in name.split("·")},
+                  **{name.replace("·", ""): name for name in FIELDS}}
 
 # 정식 명칭·옛 명칭 -> 짧은 이름
 _REGION_ALIASES = {
@@ -105,7 +112,7 @@ def _chat_json(system: str, user: str) -> dict:
 
 
 def extract_conditions(question: str) -> dict:
-    """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거"}
+    """예: {"age": 27, "region": "서울", "situation": ["구직"], "field": "주거·자립"}
 
     LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게)."""
     try:
@@ -150,8 +157,11 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
         out["region"] = region
 
     field = raw.get("field")
-    if isinstance(field, str) and field.strip() in FIELDS:
-        out["field"] = field.strip()
+    if isinstance(field, str):
+        field = field.strip().replace(" ", "")
+        field = field if field in FIELDS else _FIELD_ALIASES.get(field)
+        if field:
+            out["field"] = field
 
     situation = raw.get("situation")
     if isinstance(situation, str):
