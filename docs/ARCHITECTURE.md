@@ -32,7 +32,7 @@ src/
   retrieve/  hybrid, filters, baseline                  # B: ⑤ 검색, 정형 필터, 비교 실험용 Baseline
   generate/  condition_extractor, evidence, generator, citation   # C
 app/         main.py                                    # C: UI
-eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
+eval/        metrics, answer_eval, run_eval, label_helper, questions.jsonl, results/
 tests/       pytest. fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
@@ -83,6 +83,9 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 놓친 질문 목록(정답 순위·실제 검색 결과)과 범주별 표 | 점수만으로는 원인을 알 수 없다. 약한 질문 유형과 실패 사례를 바로 보여 분할·필터·임베딩·BM25 중 무엇을 손볼지 정하는 근거가 된다. |
 | `--experiment all`이 기획서 9.4용 마크다운 표를 출력, 구현 전 baseline은 건너뜀 | 비교 실험 결과를 9.4에 그대로 옮겨 적도록 한다. |
 | `test_run_eval`(질문 세트 파일 형식 점검 포함) | 가짜 검색으로 집계를, 샘플 색인으로 `main` 전체 흐름을 검증한다. 팀이 `questions.jsonl`을 고친 뒤 id 중복·필드 누락·근거 없음 질문의 정답 여부가 깨지지 않았는지도 확인한다. |
+| `eval/label_helper.py` (질문 정답 채우기 도구)를 `eval/`에 둠, 사용법은 `docs/LABELING.md` | 정답은 A의 파이프라인이 끝나기 전에도, 검색 시스템과 독립적으로 정해야 한다(순환 평가 방지). 그래서 보조금24 API에서 서비스 목록을 직접 받아 키워드로 찾는 별도 도구로 만들었다. `eval/questions.jsonl`을 고치는 도구라 평가(`eval/`)에 둔다. 팀원 전원이 쓰므로 사용법과 기준을 문서로 남긴다. |
+| 정답 기준: 질문당 5개 이내 핵심 제도, 질문에 없는 자격 조건은 따지지 않음, 기한 지난 제도 제외, **지역 없는 질문은 전국 단위 제도** | Recall@K의 분모가 정답 수라 정답이 많으면 목표를 달성할 수 없다. 자격(소득 등)은 답변 단계의 "확인 필요"로 처리되므로 검색 정답에서는 가능성만 본다. 실제 서비스는 지역을 추가 질문으로 받으므로 지역 없는 첫 질문의 정답은 전국 제도로 하고, 지역 제도는 `followup`으로 만든 별도 문항(`filters.region`, `follow_up_of`)에서 평가한다. |
+| 도구가 전국/지역(소관기관), 기한 지남(신청기한 문자열)을 추정해 보여 주고, 저장 시 지역·기한이 안 맞으면 경고 | 약 1만 건에서 기준에 맞는 제도를 사람이 고르기 쉽게 하되, 두 값은 자유 형식 문자열에서 추정하는 것이라 판정을 강제하지 않고 경고로만 다룬다. `check`는 id·이름 오류(종료 코드 1)와 경고를 구분한다. |
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
@@ -200,3 +203,5 @@ Interest field remains a score boost; age/region/deadline semantics and C full-s
 - `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.
 - `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.
 - 관심 분야를 필터에서 가산점으로 변경(B·C 합의): `vector_store.build_where`와 `filters.apply_filters`에서 field 조건 제거, `filters.relax`는 지역→연령만 풀고 field·situation은 유지(`filters_used`에 그대로 남아 완화 안내에는 지역·연령만 나옴), `filters.field_matches`와 `hybrid.boost_by_field` 추가, `config.FIELD_BOOST`, `schema.Filters` 설명 갱신. 관련 테스트 수정·추가(분야가 달라도 제도가 남는 회귀 테스트 포함). C 코드는 변경 없음.
+- 평가 질문 정답을 Claude가 실제 서비스 목록(보조금24 전체 10,969건)을 읽고 1차로 채우고 사람이 검수하는 방식으로 변경(팀 합의). `eval/label_helper.py`에 출처 기록(`set`·`none`의 `--source/--note/--confidence`), 일괄 반영 `apply`, 검수 `review`, `status`의 검수 대기 수를 추가하고 테스트 3개 추가. `eval/questions.jsonl`에 정답과 `label_*`·`reviewed` 필드를 채우고 지역 후속 문항 q35(경기)·q36(서울)을 추가. LABELING.md §8.2.1에 검수 절차 기록.
+- 평가 질문 정답 채우기 도구 `eval/label_helper.py`와 `tests/test_label_helper.py`(45개)를 저장소에 추가하고, 사용 안내 `docs/LABELING.md`(준비·정답 기준·대화형 사용법·유형별 가이드·후속 질문·검증·팀 작업 방식)를 작성. README 7장의 정답 채우는 법을 요약+링크로 교체하고 필드(`relevant_service_names`, `follow_up_of`)를 추가.

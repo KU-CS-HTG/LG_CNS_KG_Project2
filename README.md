@@ -355,10 +355,10 @@ src/
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
 app/         main.py                                               # C: UI
-eval/        metrics, answer_eval, run_eval, questions.jsonl, results/
+eval/        metrics, answer_eval, run_eval, label_helper(정답 채우기 도구), questions.jsonl, results/
 tests/       fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
-docs/        사전기획서.docx, ARCHITECTURE.md, images/
+docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기 안내), images/
 ```
 
 | 담당 | 맡은 단계 | 디렉터리 |
@@ -418,13 +418,16 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
   - 사용: `evaluate(retrieved, relevant)`가 K=3·5·10 지표를 한 번에 계산하고 `check_targets(...)`가 잠정 목표 달성 여부를 알려 줍니다. 예: 두 질문의 결과가 `[["a","b","c"], ["x","a"]]`, 정답이 `[{"b"}, {"a"}]`이면 Hit Rate@3 = 1.0, MRR = (1/2 + 1/2) ÷ 2 = 0.5.
 - 답변: Answer Correctness, Faithfulness, Citation Accuracy
 - 실험 순서: Baseline(SQL+키워드) → Vector → BM25 → Hybrid → Hybrid+정형 필터 → 최종. 결과는 `eval/results/`에 저장하고 요약을 기획서 9.4에 기록합니다. Top-K는 3 / 5 / 10을 비교합니다.
-- 질문 세트: `eval/questions.jsonl` (현재 초안 34문항, **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
+- 질문 세트: `eval/questions.jsonl` (현재 36문항(상황형 중심 34 + 지역 후속 2), **청년 상황형 질문 중심** — 1.1 참고). 한 줄에 한 질문(JSON)이며 필드는 다음과 같습니다.
 
   | 필드 | 설명 |
   |---|---|
   | `id`, `category`, `question` | 식별자, 범주(상황형·제도명 아는 질문·지역·연령 조건·근거 없음 등), 질문 |
   | `topic` (선택) | 사람이 보는 주제 분류(구직·주거·교육·금융·결혼·출산·양육·창업·건강·교통·자립 등). 약한 주제를 찾는 용도이며 평가 계산에는 쓰이지 않음 |
-  | `relevant_service_ids` | 정답 `service_id` 목록. 수집 후 팀원이 데이터에서 직접 확인해 채움 |
+  | `relevant_service_ids` | 정답 `service_id` 목록 (보조금24 서비스ID). 팀원이 데이터를 읽고 `eval/label_helper.py`로 채움 |
+  | `relevant_service_names` (자동) | 정답 제도 이름. 도구가 정답과 함께 적어 두며 사람이 검수하기 위한 값 (평가 계산에는 안 쓰임) |
+  | `label_source`·`reviewed`·`label_confidence`·`label_note` (자동) | 정답을 Claude가 1차로 채웠을 때의 출처·사람 검수 여부·신뢰도·근거 (LABELING.md §8.2.1). 평가 계산에는 안 쓰임 |
+  | `follow_up_of` (자동) | `followup` 명령으로 만든 후속 문항이 어느 질문에서 왔는지 |
   | `expected_answer` | 기대하는 답변(사람이 읽는 설명, 답변 평가용) |
   | `expect_no_answer` | 근거가 없어 "모른다"고 답해야 하는 질문이면 `true` |
   | `filters` (선택) | 이 질문의 정형 조건. LLM 조건 추출과 분리해서 검색만 평가하려고 정답 조건을 직접 적음. 예: `{"age": 27, "region": "서울"}` (`hybrid_filter` 실험에서만 사용) |
@@ -444,10 +447,31 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 기한 지난 제도 | 2 | 신청이 끝난 제도를 물었을 때 후보에서 제외되는지 |
 | 근거 없음 | 3 | 아직 없는 제도, 청년 범위 밖(기초연금), 존재하지 않는 제도 |
 
-- **정답은 모두 비어 있습니다.** 수집된 데이터에 이 제도들이 실제로 있는지 모르기 때문에, 데이터가 들어온 뒤 팀원이 확인해서 채웁니다. 데이터에 없는 제도·상황이면 질문을 바꾸거나 삭제합니다(기획서 9.1의 메모와 같음). 제도명 질문과 기한 지난 제도 질문의 실제 제도명은 예시이므로 데이터에 있는 제도로 교체해도 됩니다.
-- `expected_answer`는 정답 서비스를 모르는 상태에서 쓴 **일반적인 기대 답변 설명**입니다. 구체적인 제도명·금액은 데이터를 보고 보강합니다.
-- `todo`가 남은 질문은 평가에서 제외되고 개수가 경고로 표시되므로, 채울수록 평가 대상이 늘어납니다. `tests/test_run_eval.py`가 질문마다 정답·근거 없음·`todo` 중 하나가 있는지 점검합니다.
-- 팀원이 문항을 나눠 채우세요. 예: 주제별(구직·주거·교육…)로 담당을 정하고, 채운 질문에서 `todo`를 지우고 `relevant_service_ids`를 넣습니다.
+- **정답은 모두 비어 있습니다.** 수집된 데이터에 이 제도들이 실제로 있는지 모르기 때문에, 데이터가 들어온 뒤 팀원이 **데이터를 직접 읽고** 채웁니다.
+  데이터에 없는 제도·상황이면 질문을 바꾸거나 삭제합니다(기획서 9.1의 메모와 같음). 제도명 질문과 기한 지난 제도 질문의 실제 제도명은 예시이므로 데이터에 있는 제도로 교체해도 됩니다.
+- `expected_answer`는 정답 서비스를 모르는 상태에서 쓴 **일반적인 기대 답변 설명**입니다. `todo`가 남은 질문은 평가에서 제외되므로 채울수록 평가 대상이 늘어납니다.
+- 팀원이 문항을 나눠 채웁니다 (분담 제안은 [`docs/LABELING.md`](docs/LABELING.md) §9.1).
+
+#### 정답 채우는 법 — 요약 (전체 안내: [`docs/LABELING.md`](docs/LABELING.md))
+
+정답 채우기 전용 도구 `eval/label_helper.py`가 있습니다. 보조금24 서비스 목록을 내려받아 키워드로 찾아보고, **사람이 읽고 판단해서** 고른 `서비스ID`를 질문에 기록합니다.
+
+```bash
+python -m eval.label_helper fetch                  # 서비스 목록 내려받기 (한 번만, .env의 GOV24_API_KEY 필요)
+python -m eval.label_helper status                 # 진행 상황
+python -m eval.label_helper label --only q01,q02   # 내 담당 문항을 대화형으로 채우기 (한 문항씩 저장)
+python -m eval.label_helper followup q01 --region 서울   # 지역을 알려 준 뒤의 후속 질문 문항 만들기
+python -m eval.label_helper check                  # 정답 id·이름·지역·기한 검증 (오류 0건이 되게)
+python -m eval.label_helper review                 # Claude가 1차로 채운 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
+```
+
+정답 기준 (자세한 이유와 예외는 LABELING.md §3):
+- **그 제도 하나만으로도 좋은 답이 되는** 제도만, 한 질문에 **5개 이내** (정답이 많으면 Recall이 구조적으로 낮아짐).
+- 질문에 나오지 않은 소득·가구 조건은 따지지 않고(답변 단계의 "확인 필요"), **신청기한이 지난 제도·청년이 아닌 제도는 제외**.
+- **지역이 없는 질문의 정답은 전국 단위 제도**입니다. 실제 서비스는 지역을 추가 질문으로 받기 때문에, 지역 제도는 `followup`으로 만든 별도 문항("서울에 살아요. …")에서 채웁니다.
+- 복합 질문("월세 + 취업 준비")은 필요마다 따로 검색해 각각 2~3개.
+- **우리 검색 시스템의 결과를 정답으로 베끼지 않습니다** (검색이 맞춘 것만 정답이 되어 점수가 부풀려짐).
+- 근거 없음 질문은 키워드를 바꿔 3번 이상 찾아도 없을 때만 `none`/`keep`.
 
 ### 7.1 검색 평가 실행 — `python -m eval.run_eval`
 
@@ -465,7 +489,7 @@ python -m src.index.vector_store --sample --full
 python -m eval.run_eval --experiment all --questions tests/fixtures/sample_eval_questions.jsonl --today 2026-10-19 --no-save
 ```
 
-**실제 질문 세트의 정답 채우는 법**: A의 데이터가 색인된 뒤, 팀원이 질문마다 **수집 데이터를 직접 읽어** 답이 되는 제도의 `service_id`를 `relevant_service_ids`에 넣고 `todo`를 지웁니다. 검색 결과를 그대로 베껴 정답으로 쓰면 평가가 순환(검색이 맞춘 것만 정답)이 되므로 쓰지 마세요. 근거가 없어야 하는 질문은 `relevant_service_ids`를 비우고 `expect_no_answer`를 `true`로 둡니다. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
+**실제 질문 세트의 정답 채우는 법**은 위 "정답 채우는 법"과 [`docs/LABELING.md`](docs/LABELING.md)를 보세요. `baseline`은 `retrieve/baseline.py`가 구현되면 포함되며, 그 전에는 `all`에서 건너뜁니다.
 
 출력 예 (예상 형식, 수치는 예시):
 
@@ -508,6 +532,7 @@ python -m src.index.vector_store       # B: legacy direct index CLI; no pending 
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
+python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (docs/LABELING.md)
 ```
 
 모델 다운로드 시 나오는 `Warning: You are sending unauthenticated requests to the HF Hub` 경고는 무시해도 됩니다. 없애려면 `.env`에 `HF_TOKEN=<Hugging Face 토큰>`을 넣거나(다운로드도 빨라짐), 모델을 이미 받은 뒤라면 `HF_HUB_OFFLINE=1`을 넣으세요(`.env.example` 참고).
@@ -570,6 +595,7 @@ def test_예시(fake_search, fake_conditions):
 |---|---|
 | `src/ingest/` | 수집·정제·SQLite·분할·pending·CLI 구현. OAS·첫 페이지 표본 확인, 실제 연령/지역 어댑터·전체 적합성 미검증, 자동 소실 차단 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
+| `eval/label_helper.py` | 구현됨 (B). 질문 정답 채우기 도구(검색·전국/지역 구분·기한 경고·대화형·후속 질문·검증). 가짜 데이터로 테스트(`tests/test_label_helper.py`). 실제 API 응답으로는 미확인 (`fields` 명령으로 필드 확인 필요) |
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
 | 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
 | 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
