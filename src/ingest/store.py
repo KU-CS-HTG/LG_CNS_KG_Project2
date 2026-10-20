@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -11,6 +10,7 @@ from pathlib import Path
 
 from src.common.schema import Chunk
 from src.ingest.storage import StoragePaths, resolve_storage
+from src.ingest.locking import file_lock
 from src.ingest.normalize import (  # public compatibility
     build_metadata, clean_service, content_hash, is_youth_service, youth_inclusion_reasons,
 )
@@ -62,29 +62,8 @@ def ingestion_lock(*, storage: StoragePaths | None = None):
     """OS file lock; process death releases it, so a stale file never blocks recovery."""
     paths = storage.validated() if storage is not None else resolve_storage()
     path = Path(str(paths.db_path) + ".ingest.lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    try:
-        if os.name == "nt":
-            import msvcrt
-            if path.stat().st_size == 0:
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError:
-                raise RuntimeError("ingestion_already_running") from None
-        else:
-            import fcntl
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                raise RuntimeError("ingestion_already_running") from None
+    with file_lock(path, "ingestion_already_running"):
         yield
-    finally:
-        # Closing the handle releases the lock on both platforms.
-        handle.close()
 
 
 def start_run(run_id: str, *, storage: StoragePaths | None = None) -> None:
@@ -237,6 +216,14 @@ def _close_missing(con, listing, run_id: str) -> list[str]:
 
 def apply_run(run_id: str, services: list[dict], listing, *, full: bool, today: str,
               summary: dict, storage: StoragePaths | None = None) -> dict:
+    """Public mutation participates in the source DB/consumer lock protocol."""
+    with ingestion_lock(storage=storage):
+        return _apply_run_locked(run_id, services, listing, full=full, today=today,
+                                 summary=summary, storage=storage)
+
+
+def _apply_run_locked(run_id: str, services: list[dict], listing, *, full: bool, today: str,
+                      summary: dict, storage: StoragePaths | None = None) -> dict:
     """DB records, events and completed run summary commit in a single transaction."""
     from src.ingest.chunker import chunk_service
     with connection(storage=storage) as con:
