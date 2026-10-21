@@ -64,7 +64,8 @@ header[data-testid="stHeader"] { background: transparent; }
 .summary { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.1rem 0 .9rem; font-size:.98rem; }
 .chip { font-size:.8rem; font-weight:600; padding:.2rem .6rem; border-radius:999px; background:var(--accent-soft); color:var(--accent); }
 
-.card { border:1px solid var(--line); background:var(--surface); border-radius:16px; padding:1.05rem 1.15rem 1rem; margin:0 0 .85rem; }
+[class*="st-key-card_"] { border:1px solid var(--line); background:var(--surface); border-radius:16px;
+  padding:1.05rem 1.15rem 1rem; margin:0 0 .85rem; gap:.6rem !important; }
 .card-head { display:flex; gap:.75rem; align-items:flex-start; margin-bottom:.75rem; }
 .num { flex:none; width:1.75rem; height:1.75rem; border-radius:50%; background:var(--accent); color:#fff;
   font-weight:700; font-size:.9rem; display:flex; align-items:center; justify-content:center; margin-top:.1rem; }
@@ -82,9 +83,11 @@ header[data-testid="stHeader"] { background: transparent; }
 .box .v { font-size:.92rem; line-height:1.55; }
 .deadline { display:inline-block; margin-top:.35rem; font-size:.78rem; font-weight:600; opacity:.8; }
 
-.check { border-radius:12px; padding:.6rem .85rem; background:var(--warn-soft); margin-bottom:.6rem; }
-.check .k { font-size:.8rem; font-weight:700; color:var(--warn); margin-bottom:.15rem; }
-.check ul { margin:0; padding-left:1.1rem; } .check li { font-size:.9rem; line-height:1.55; }
+/* 자격 체크리스트 (확인이 필요한 조건을 사용자가 스스로 체크) */
+[class*="st-key-checklist_"] { border-radius:12px; padding:.65rem .9rem .55rem; background:var(--warn-soft); gap:.35rem !important; }
+.ck-title { font-size:.84rem; font-weight:700; color:var(--warn); line-height:1.4; }
+.ck-sub { font-size:.78rem; opacity:.7; line-height:1.4; padding-bottom:.7rem; }   /* markdown 블록의 음수 아래 여백 상쇄 */
+[class*="st-key-checklist_"] label p { font-size:.9rem; line-height:1.5; }
 
 details.src { border-top:1px dashed var(--line); padding-top:.55rem; }
 details.src summary { cursor:pointer; font-size:.85rem; font-weight:600; opacity:.75; list-style:none; }
@@ -226,33 +229,80 @@ def _parse_text(text: str) -> tuple[str, str]:
     return (situation.group(1) if situation else ""), (follow.group(1).strip() if follow else "")
 
 
-def _card(i: int, r: Recommendation) -> str:
+def _badge(total: int, checked: int) -> str:
+    """카드 머리의 판정 배지. 확인할 조건이 있으면 사용자가 체크리스트에서 체크한 수에 따라 바뀐다.
+    모두 체크해도 '해당 가능성 높음'(생성 판정)과 구분해 '체크한 조건 모두 충족'으로 쓴다 (사용자 자가 확인이므로)."""
+    if not total:
+        return '<span class="badge ok">해당 가능성 높음</span>'
+    if checked >= total:
+        return '<span class="badge ok">✓ 체크한 조건 모두 충족</span>'
+    if checked:
+        return f'<span class="badge check">확인 필요 {total}건 중 {checked}건 체크</span>'
+    return f'<span class="badge check">확인 필요 {total}건</span>'
+
+
+def _check_label(item: str) -> str:
+    """확인 필요 항목 -> 체크박스 문구 (markdown). '소득 — 본인 연소득 6천만원 이하'는 조건 이름을 굵게."""
+    name, sep, criterion = item.partition(" — ")
+    return f"**{_md(name.strip())}** — {_md(criterion.strip())}" if sep else _md(item)
+
+
+def _md(s: str) -> str:
+    """markdown 특수문자 이스케이프 (체크박스 문구는 HTML이 아니라 markdown으로 그려진다)."""
+    return re.sub(r"([\\`*_\[\]<>#~|$])", r"\\\1", s)
+
+
+def _card_head(i: int, r: Recommendation, checked: int) -> str:
     how, _, deadline = r.how_to_apply.partition(" / 신청기한: ")
-    badge = ('<span class="badge check">확인 필요 %d건</span>' % len(r.needs_check)) if r.needs_check \
-        else '<span class="badge ok">해당 가능성 높음</span>'
-    checks = "".join(f"<li>{_e(n)}</li>" for n in r.needs_check)
-    quotes = "".join(f'<div class="quote">{_e(c.quote)}</div>' for c in r.citations)
-    url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
     return f"""
-<div class="card">
-  <div class="card-head">
-    <div class="num">{i}</div>
-    <div><div class="title">{_e(r.service_name)}</div><div class="agency">🏛 {_e(r.agency)}</div></div>
-    {badge}
-  </div>
-  <div class="reason">{_e(r.reason)}</div>
-  <div class="grid">
-    <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div></div>
-    <div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e(how)}</div>
-      {f'<span class="deadline">📅 신청기한 · {_e(deadline)}</span>' if deadline else ''}</div>
-  </div>
-  {f'<div class="check"><div class="k">⚠️ 확인이 필요한 조건</div><ul>{checks}</ul></div>' if checks else ''}
-  <details class="src"><summary>근거 원문 {len(r.citations)}건 보기</summary>{quotes}</details>
-  {f'<div class="links"><a class="btn" href="{_e(url)}" target="_blank" rel="noopener">상세 페이지 열기 ↗</a></div>' if url else ''}
+<div class="card-head">
+  <div class="num">{i}</div>
+  <div><div class="title">{_e(r.service_name)}</div><div class="agency">🏛 {_e(r.agency)}</div></div>
+  {_badge(len(r.needs_check), checked)}
+</div>
+<div class="reason">{_e(r.reason)}</div>
+<div class="grid">
+  <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div></div>
+  <div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e(how)}</div>
+    {f'<span class="deadline">📅 신청기한 · {_e(deadline)}</span>' if deadline else ''}</div>
 </div>"""
 
 
-def _render_answer(answer: Answer, show_follow: bool = True) -> None:
+def _card_sources(r: Recommendation) -> str:
+    quotes = "".join(f'<div class="quote">{_e(c.quote)}</div>' for c in r.citations)
+    url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
+    return (f'<details class="src"><summary>근거 원문 {len(r.citations)}건 보기</summary>{quotes}</details>'
+            + (f'<div class="links"><a class="btn" href="{_e(url)}" target="_blank" rel="noopener">상세 페이지 열기 ↗</a></div>'
+               if url else ''))
+
+
+def _save_check(key: str) -> None:
+    st.session_state.checks[key] = bool(st.session_state.get(key))
+
+
+def _card(i: int, r: Recommendation, key: str) -> None:
+    """제도 카드 1장. 확인이 필요한 조건은 자격 체크리스트로 보여 준다 (사용자가 스스로 해당 여부를 체크).
+
+    체크는 화면 안에서만 쓰고 답변·검색을 바꾸지 않는다. Streamlit은 화면에 그려지지 않은 위젯의 상태를 지우므로
+    (다른 주제를 보고 돌아오면 체크가 풀림) 체크 상태는 session_state.checks에 따로 저장한다.
+    배지는 카드 머리에 있으므로 체크박스보다 먼저 그리며 저장된 상태를 읽는다."""
+    saved = st.session_state.checks
+    keys = [f"chk_{key}_{j}" for j in range(len(r.needs_check))]
+    checked = sum(1 for k in keys if saved.get(k))
+    with st.container(key=f"card_{key}"):
+        st.markdown(_card_head(i, r, checked), unsafe_allow_html=True)
+        if r.needs_check:
+            with st.container(key=f"checklist_{key}"):
+                st.markdown('<div class="ck-title">✅ 자격 체크리스트</div>'
+                            '<div class="ck-sub">원문 기준을 보고 해당하는 조건을 체크해 보세요.</div>',
+                            unsafe_allow_html=True)
+                for k, item in zip(keys, r.needs_check):
+                    st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
+        st.markdown(_card_sources(r), unsafe_allow_html=True)
+
+
+def _render_answer(answer: Answer, show_follow: bool = True, key: str = "") -> None:
+    """key: 이 답변을 구분하는 값 (주제 번호_메시지 번호). 카드 체크리스트 위젯의 key에 쓴다."""
     if answer.no_evidence:
         links = "".join(f'<a class="btn" href="{u}" target="_blank" rel="noopener">{_e(n)} ↗</a>' for n, u in OFFICIAL_SITES)
         body = "<br>".join(_e(line) for line in answer.text.splitlines())
@@ -266,7 +316,8 @@ def _render_answer(answer: Answer, show_follow: bool = True) -> None:
     chips = "".join(f'<span class="chip">{_e(s.strip())}</span>' for s in situation.split(",") if s.strip())
     st.markdown(f'<div class="summary">{chips}<span>상황에 맞는 지원제도 <b>{len(answer.recommendations)}개</b>를 찾았어요.</span></div>',
                 unsafe_allow_html=True)
-    st.markdown("".join(_card(i, r) for i, r in enumerate(answer.recommendations, 1)), unsafe_allow_html=True)
+    for i, r in enumerate(answer.recommendations, 1):
+        _card(i, r, f"{key}_{i}")
     if follow and show_follow:
         st.markdown(f'<div class="callout"><b>💬 더 정확히 안내해 드릴게요</b><br>{_e(follow)}</div>', unsafe_allow_html=True)
     st.markdown('<div class="disclaimer">※ 최종 신청 자격은 담당 기관에서 확인하세요. 답변은 수집된 공공데이터에 근거하며 '
@@ -303,7 +354,10 @@ def _sidebar() -> None:
 
         st.markdown("**답변 읽는 법**")
         st.markdown('<div class="legend"><span class="badge ok">해당 가능성 높음</span><div>밝혀 주신 조건으로 자격이 맞아요</div></div>'
-                    '<div class="legend"><span class="badge check">확인 필요</span><div>소득·가구 등 더 확인할 조건이 있어요</div></div>',
+                    '<div class="legend"><span class="badge check">확인 필요</span><div>소득·가구 등 더 확인할 조건이 있어요. '
+                    '카드의 자격 체크리스트에서 해당하는 조건을 체크해 보세요</div></div>'
+                    '<div class="legend"><span class="badge ok">✓ 체크한 조건 모두 충족</span>'
+                    '<div>체크리스트를 모두 체크했어요 (스스로 확인한 결과예요)</div></div>',
                     unsafe_allow_html=True)
         st.markdown("**잘 물어보는 팁**")
         st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요. "
@@ -314,6 +368,7 @@ def _sidebar() -> None:
         st.write("")
         if st.button("🗑 대화 모두 지우기", use_container_width=True):
             st.session_state.threads, st.session_state.current, st.session_state.follow = [], None, False
+            st.session_state.checks = {}            # 주제 번호를 다시 쓰므로 체크 상태도 지운다
             st.rerun()
 
 
@@ -330,7 +385,7 @@ def _render_thread(thread: list[dict]) -> None:
                     tag = '<div class="fu-tag">↳ 위 질문에 이어서</div>' if msg.get("follow") else ""
                     st.markdown(f"{tag}<div>{_e(msg['content'])}</div>", unsafe_allow_html=True)
                 else:
-                    _render_answer(msg["content"], show_follow=i != last_answer)
+                    _render_answer(msg["content"], show_follow=i != last_answer, key=f"{st.session_state.current}_{i}")
 
 
 def _merged_question(thread: list[dict], new: str) -> str:
@@ -346,6 +401,7 @@ def main() -> None:
     st.session_state.setdefault("threads", [])     # 주제별 대화 [[{role, content}, ...], ...]
     st.session_state.setdefault("current", None)   # 화면에 보이는 주제 번호 (None = 첫 화면)
     st.session_state.setdefault("follow", False)   # True면 다음 입력을 지금 주제에 이어서 묻는다
+    st.session_state.setdefault("checks", {})      # 자격 체크리스트 체크 상태 {위젯 key: bool}
     if _search_ready():
         _warm_up()                                  # 첫 화면을 보는 동안 검색 준비
     _sidebar()
