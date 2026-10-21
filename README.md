@@ -477,6 +477,7 @@ python -m eval.label_helper review                 # Claude가 1차로 채운 �
 
 ```
 python -m eval.run_eval --experiment hybrid_filter --k 5
+python -m eval.sweep                                   # Hybrid 가중치·RRF_K·FIELD_BOOST 탐색 (MRR 순 표)
 python -m eval.run_eval --experiment all --today 2026-10-19       # 전체 비교표 (재현하려면 --today 고정)
 ```
 
@@ -595,6 +596,7 @@ def test_예시(fake_search, fake_conditions):
 |---|---|
 | `src/ingest/` | 수집·정제·SQLite·분할·pending·CLI 구현. OAS·첫 페이지 표본 확인, 실제 연령/지역 어댑터·전체 적합성 미검증, 자동 소실 차단 |
 | `src/common/config.py`, `src/common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
+| `eval/sweep.py` | 구현됨 (B). Hybrid 매개변수 격자 탐색, 후보 캐시. 가짜 임베딩 색인으로 테스트(`tests/test_sweep.py`). 실제 색인 결과는 사용자가 실행해 확인 |
 | `eval/label_helper.py` | 구현됨 (B). 질문 정답 채우기 도구(검색·전국/지역 구분·기한 경고·대화형·후속 질문·검증). 가짜 데이터로 테스트(`tests/test_label_helper.py`). 실제 API 응답으로는 미확인 (`fields` 명령으로 필드 확인 필요) |
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
 | 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
