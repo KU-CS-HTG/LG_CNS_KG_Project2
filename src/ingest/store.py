@@ -11,6 +11,7 @@ from pathlib import Path
 from src.common.schema import Chunk
 from src.ingest.storage import StoragePaths, resolve_storage
 from src.ingest.locking import file_lock
+from src.ingest.policy import POLICY_ID, inclusion_decision, is_included_service
 from src.ingest.normalize import (  # public compatibility
     build_metadata, clean_service, content_hash, is_youth_service, youth_inclusion_reasons,
 )
@@ -112,8 +113,8 @@ def _enqueue(con, service_id: str, version: int, action: str, reason, chunks: li
 
 
 def _status(service: dict, today: str) -> tuple[str, str | None]:
-    if not is_youth_service(service):
-        return "inactive", "youth_scope_exit"
+    if not is_included_service(service):
+        return "inactive", "policy_scope_exit"
     if service.get("deadline") and service["deadline"] < today:
         return "inactive", "expired"
     return "active", None
@@ -124,7 +125,7 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
 
     changed_ids = []
     counts = dict(new=0, changed=0, unchanged=0, deferred=0, included=0, excluded=0,
-                  removals={}, status_reasons={})
+                  removals={}, status_reasons={}, inclusion_outcomes={})
     seen = set()
     for incoming in services:
         service = dict(incoming)
@@ -133,7 +134,9 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
             raise ValueError("duplicate_service_input")
         seen.add(sid)
         old = con.execute("SELECT * FROM services WHERE service_id=?", (sid,)).fetchone()
-        included = is_youth_service(service)
+        decision = inclusion_decision(service)
+        counts["inclusion_outcomes"][decision["outcome"]] = counts["inclusion_outcomes"].get(decision["outcome"], 0) + 1
+        included = decision["outcome"] != "exclude"
         counts["included" if included else "excluded"] += 1
         status, reason = _status(service, today)
         if reason:
@@ -142,13 +145,18 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
         # or permission to reopen an API-disappeared service from retained text.
         incomplete = service.get("_inclusion_complete", True) is False
         if old and incomplete and (
-            reason == "youth_scope_exit" or old["reason"] in ("api_disappeared", "youth_scope_exit")
+            reason == "policy_scope_exit" or old["reason"] in ("api_disappeared", "youth_scope_exit", "policy_scope_exit")
         ):
             counts["deferred"] += 1
             continue
         digest = content_hash(service)
         service["content_hash"] = digest
-        service["inclusion_reasons"] = youth_inclusion_reasons(service)
+        service["inclusion_policy"] = decision
+        service["inclusion_reasons"] = decision["reasons"]
+        if old and old["reason"] == "youth_scope_exit" and included:
+            service["_previous_scope_reason"] = old["reason"]
+        elif old and json.loads(old["payload"]).get("_previous_scope_reason"):
+            service["_previous_scope_reason"] = json.loads(old["payload"])["_previous_scope_reason"]
         version = (old["version"] if old else 0)
         changed = not old or old["content_hash"] != digest or old["status"] != status or old["reason"] != reason
         if changed:
@@ -156,10 +164,10 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
             counts["changed" if old else "new"] += 1
         else:
             counts["unchanged"] += 1
-        if reason == "youth_scope_exit":
-            # Do not retain non-youth section text/source snapshots. Minimal audit only.
+        if reason == "policy_scope_exit":
+            # Excluded institutional records retain minimal audit; raw replay restores content.
             payload = {key: service.get(key) for key in
-                       ("service_id", "service_name", "agency", "detail_url", "inclusion_reasons", "content_hash", "data_quality")}
+                       ("service_id", "service_name", "agency", "detail_url", "inclusion_reasons", "inclusion_policy", "content_hash", "data_quality", "_acquisition")}
             payload["_field_provenance"] = {key: value for key, value in service.get("_field_provenance", {}).items()
                                              if key in ("service_name", "agency", "field", "application_period", "detail_url")}
         else:
@@ -183,7 +191,7 @@ def _apply(con, services: list[dict], run_id: str | None, today: str) -> tuple[l
 
 
 def upsert_services(services: list[dict], *, storage: StoragePaths | None = None) -> list[str]:
-    """Normalized input; enforce provisional youth scope; return new/changed active IDs."""
+    """Normalized input; enforce dataset policy; return new/changed active IDs."""
     from src.ingest.pipeline import seoul_today
     with ingestion_lock(storage=storage):
         with connection(storage=storage) as con:
@@ -229,6 +237,7 @@ def _apply_run_locked(run_id: str, services: list[dict], listing, *, full: bool,
     with connection(storage=storage) as con:
         _, counts = _apply(con, services, run_id, today)
         counts["deferred"] += summary.get("diagnostics", {}).get("invalid_records", 0)
+        counts["deferred"] += len(summary.get("replay_deferred", []))
         removed = _close_missing(con, listing, run_id)
         if removed:
             counts["removals"]["api_disappeared"] = len(removed)
@@ -248,7 +257,7 @@ def _apply_run_locked(run_id: str, services: list[dict], listing, *, full: bool,
                 chunks = chunk_service(json.loads(row["payload"]))
                 _enqueue(con, row["service_id"], row["version"], "replace", None, chunks)
         pending = con.execute("SELECT action, chunks FROM pending_changes").fetchall()
-        result = {**summary, **counts,
+        result = {**summary, **counts, "inclusion_policy_id": POLICY_ID,
                   "pending_changes": len(pending),
                   "pending_removals": sum(r["action"] == "remove" for r in pending),
                   "chunks": sum(len(json.loads(r["chunks"])) for r in pending)}
@@ -260,7 +269,7 @@ def _apply_run_locked(run_id: str, services: list[dict], listing, *, full: bool,
 
 
 def load_services(service_ids: list[str] | None = None, *, storage: StoragePaths | None = None) -> list[dict]:
-    """Active youth records only, ordered by ID. [] means no IDs."""
+    """Active included records only, ordered by ID. [] means no IDs."""
     if service_ids == []:
         return []
     with connection(storage=storage) as con:

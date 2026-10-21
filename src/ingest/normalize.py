@@ -133,7 +133,9 @@ def clean_service(raw: dict, conditions: dict | None = None) -> dict:
     service["deadline"] = parse_deadline(service["application_period"])
     service["eligibility"] = verified_eligibility(conditions)
     service["data_quality"] = ["missing_" + key for key in ("agency", "detail_url") if not service[key]]
-    service["inclusion_reasons"] = youth_inclusion_reasons(service)
+    from src.ingest.policy import inclusion_decision
+    service["inclusion_policy"] = inclusion_decision(service)
+    service["inclusion_reasons"] = service["inclusion_policy"]["reasons"]
     service["content_hash"] = content_hash(service)
     return service
 

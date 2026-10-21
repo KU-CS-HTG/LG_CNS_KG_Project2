@@ -79,7 +79,7 @@ def _print_summary(summary: dict) -> None:
     for name, endpoint in summary.get("endpoints", {}).items():
         print(f"수집 {name}: {endpoint['status']} / {endpoint['count']}건 / {endpoint['pages']}페이지"
               f" / 계약 검증={endpoint['verified']} / 진단={endpoint['diagnostics']}")
-    print(f"청년 포함 {summary.get('included', 0)} / 제외 {summary.get('excluded', 0)} (잠정 정책)")
+    print(f"데이터 포함 {summary.get('included', 0)} / 제외 {summary.get('excluded', 0)} / 정책 {summary.get('inclusion_policy_id')}")
     print(f"신규 {summary.get('new', 0)} / 변경 {summary.get('changed', 0)} / "
           f"동일 {summary.get('unchanged', 0)} / 판단 유보 {summary.get('deferred', 0)}")
     print(f"상태·제거 사유: {summary.get('removals', {})}")
@@ -123,6 +123,9 @@ def _execute(full: bool = False, *, max_pages: int | None = None, per_page: int 
                         collection.verified = False
                     client.write_json(paths.raw_dir / run_id / f"{collection.endpoint}-summary.json", collection.summary())
             services, diagnostics = _join(collections, storage=paths)
+            acquisition = {"run_id": run_id, "acquired_at": store.get_run(run_id, storage=paths)["started_at"]}
+            for service in services:
+                service["_acquisition"] = acquisition
             conflicts = diagnostics.pop("field_conflicts")
             client.write_json(paths.raw_dir / run_id / "merge-conflicts.json", conflicts)
             diagnostics["field_conflict_count"] = len(conflicts)
