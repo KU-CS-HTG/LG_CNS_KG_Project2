@@ -82,6 +82,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .box .k { font-size:.78rem; font-weight:700; opacity:.6; margin-bottom:.2rem; }
 .box .v { font-size:.92rem; line-height:1.55; }
 .deadline { display:inline-block; margin-top:.35rem; font-size:.78rem; font-weight:600; opacity:.8; }
+.upcoming { color:var(--accent); background:var(--accent-soft); padding:.05rem .45rem; border-radius:999px; }
 
 /* 자격 체크리스트 (확인이 필요한 조건을 사용자가 스스로 체크) */
 [class*="st-key-checklist_"] { border-radius:12px; padding:.65rem .9rem .55rem; background:var(--warn-soft); gap:.35rem !important; }
@@ -264,8 +265,19 @@ def _card_head(i: int, r: Recommendation, checked: int) -> str:
 <div class="grid">
   <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div></div>
   <div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e(how)}</div>
-    {f'<span class="deadline">📅 신청 기간 · {_e(deadline)}</span>' if deadline else ''}</div>
+    {_deadline_html(deadline)}</div>
 </div>"""
+
+
+def _deadline_html(deadline: str) -> str:
+    """신청 기간 줄. 아직 접수 전인 제도('신청 예정 · ...')는 강조색으로 구분한다."""
+    if not deadline:
+        return ""
+    mark = f"{generator.UPCOMING_MARK} · "
+    if deadline.startswith(mark):
+        return (f'<span class="deadline"><span class="upcoming">⏳ {generator.UPCOMING_MARK}</span> '
+                f'{_e(deadline[len(mark):])}</span>')
+    return f'<span class="deadline">📅 신청 기간 · {_e(deadline)}</span>'
 
 
 def _card_sources(r: Recommendation) -> str:

@@ -362,6 +362,77 @@ def test_application_period_comes_from_ingest_record(monkeypatch, sample_chunks,
     assert not called and not (tmp_path / "none.db").exists()
 
 
+@pytest.mark.parametrize("text, expired", [
+    # 마감이 확실히 지난 기간 (deadline이 비어 B의 기한 필터를 통과하던 실제 원문들)
+    ("2026년 상반기", True),
+    ("(2026년 2학기) (1차) 2026년 5월 22일~6월 22일 (2차) 2026년 8월 12일~ 9월 9일", True),
+    ("2026. 9. 1.(화) 09:00~9. 10.(목) 18:00까지", True),
+    ("2026. 5. 6. ~ 6. 1. (사업종료)", True),
+    ("2026년은 신규 대상자 미 모집", True),
+    ("25년 신청기한 : 2025.2.1. ~ 2025.4.30.", True),
+    ("2025/1/10~2025/12/12(또는 예산 소진 시까지)", True),          # 끝 날짜가 있는 마감
+    ("2025.03.01.~10.15. (매월 20일 ~ 익월 15일 접수, 모집인원 초과 시 선착순 마감)", True),
+    ("(상반기)2026. 3 ~ 4월 / (하반기)2026. 8 ~ 9월", True),         # '(하반기)'는 소제목
+    # 거르지 않는 기간
+    ("2026.01.26~2026.12.18", False),
+    ("20260201~20261215", False),
+    ("’26년 1월 ~ 예산 소진 시까지", False),                        # 열린 끝
+    ("2024. 5. ~", False),
+    ("상반기 : 2026-01-02~2026-02-13 / 하반기 : 미정", False),
+    ("2026.4.~ 12. 매월 1~10일 신청 ※ 선착순 접수로 예산 소진 시 조기 마감", False),
+    ("연1회 신청(8월말~9월초)", False),                              # 연도 없음 (해마다 반복될 수 있음)
+    ("상시신청", False),
+    ("", False),
+])
+def test_period_expired(text, expired):
+    from datetime import date
+    assert generator._period_expired(text, date(2026, 10, 21)) is expired
+
+
+def test_expired_services_are_dropped_and_upcoming_marked(monkeypatch, sample_chunks, tmp_path):
+    from datetime import date
+    periods = {"SAMPLE001": "2026년 상반기", "SAMPLE004": "2099.11.01~2099.11.30"}
+    db = tmp_path / "services.db"
+    db.write_text("")
+    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(generator.ingest_store, "get_record",
+                        lambda sid: {"payload": {"application_period": periods.get(sid, "")}})
+    kept = generator._drop_expired(sample_chunks, date(2026, 10, 21))
+    assert not any(c.service_id == "SAMPLE001" for c in kept)                     # 마감 지남 -> 후보에서 제외
+    assert any(c.service_id == "SAMPLE004" for c in kept)                         # 시행 예정 -> 남김
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE004"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE004", "applicable": "확인 필요", "meets_need": True}]})
+    rec = generator._generate("구직 중이에요", {"SAMPLE004": chunks}, [], None).recommendations[0]
+    assert rec.how_to_apply.endswith(f" / 신청기한: {generator.UPCOMING_MARK} · 2099.11.01~2099.11.30")
+
+
+def test_expired_slots_are_refilled_without_changing_top_order(fake_conditions, monkeypatch, sample_chunks):
+    # 처음부터 후보 수를 키우면 B의 순위가 바뀌어(q03) 기한 지난 제도가 빠졌을 때만 더 큰 검색으로 채운다
+    from src.retrieve import hybrid
+    by_sid = {}
+    for c in sample_chunks:
+        by_sid.setdefault(c.service_id, c)
+    order = list(by_sid)                                       # 검색 순위 (k가 커도 같은 순서라고 가정)
+    calls = []
+
+    def search(query, filters, k=5, mode="hybrid_filter"):
+        calls.append(k)
+        return hybrid.SearchResult([by_sid[s] for s in order[:k]], [], filters, False)
+    monkeypatch.setattr(hybrid, "search_with_info", search)
+    fake_conditions({"conditions": {}})
+    _fake_llm(monkeypatch, {})
+    monkeypatch.setattr(generator, "_application_period", lambda sid: "")
+    generator._answer_with_evidence("받을 수 있는 지원")
+    assert calls == [5]                                        # 빠진 제도가 없으면 예전과 같은 검색 한 번
+
+    calls.clear()
+    expired = order[1]
+    monkeypatch.setattr(generator, "_application_period", lambda sid: "2020년 상반기" if sid == expired else "")
+    _, selected = generator._answer_with_evidence("받을 수 있는 지원")
+    assert calls == [5, 15]
+    assert list(selected) == [s for s in order if s != expired][:5]   # 원래 순서 유지, 빈자리는 6위로 채움
+
+
 def _fake_two_calls(monkeypatch, answer_out: dict, checklist_out: dict):
     """답변 생성과 자격 체크리스트 추출이 같은 _chat_json을 쓰므로 시스템 프롬프트로 나눠 돌려준다."""
     monkeypatch.setattr("src.generate.condition_extractor._chat_json",

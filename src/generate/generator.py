@@ -8,9 +8,11 @@
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 
 from src.common import config
@@ -292,6 +294,9 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
     deadline = meta.get("deadline")
     period = _application_period(chunks[0].service_id)
+    start = _period_start(period)
+    if start and start > date.today() and not _OPEN_PERIOD_RE.search(period):
+        period = f"{UPCOMING_MARK} · {period}"     # 아직 접수 전인 제도 (마감 지난 제도는 _drop_expired가 이미 뺐다)
     how += f" / 신청기한: {period or (f'{deadline}까지' if deadline else '상시 또는 정보 없음')}"
 
     return Recommendation(
@@ -306,6 +311,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
 
 
 MAX_PERIOD_CHARS = 120   # 카드에 보여 줄 신청기한 원문 최대 길이 (공고 안내 문단이 통째로 붙는 것 방지)
+UPCOMING_MARK = "신청 예정"   # 신청 시작일이 아직 오지 않은 제도의 신청기한 앞에 붙인다 (시행 예정 제도도 안내하되 구분)
 
 
 def _application_period(service_id: str) -> str:
@@ -611,7 +617,15 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     # 지역을 말했으면 후보를 넉넉히 받아 다른 지역 지자체 제도를 뺀 뒤 상위 5개를 고른다 (_drop_other_regions)
     k = config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR if region else config.DEFAULT_TOP_K
     result = hybrid.search_with_info(question, filters, k=k)
-    chunks, region_relaxed = _drop_other_regions(result.chunks, region)
+    today = date.fromisoformat(filters.get("today") or date.today().isoformat())
+    chunks = _drop_expired(result.chunks, today)
+    if len(chunks) < len(result.chunks) and not region:
+        # 기한 지난 제도가 빠진 자리만 더 큰 검색으로 채운다. 처음부터 k를 키우면 B의 후보 수(k*5)가 늘어 상위 순위가
+        # 달라졌다 (면접 비용 질문에서 면접정장 제도들이 6위 밖으로 밀려 근거 없음, 평가 q03)
+        more = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
+        seen = {c.service_id for c in result.chunks}
+        chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
+    chunks, region_relaxed = _drop_other_regions(chunks, region)
     selected = evidence_mod.select_evidence(chunks)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
     used = dict(result.filters_used)
@@ -623,7 +637,98 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     return answer, selected
 
 
-REGION_CANDIDATE_FACTOR = 3   # 지역을 말했을 때 받는 검색 후보 배수 (5 -> 15개 중 다른 지역 제도를 빼고 5개)
+REGION_CANDIDATE_FACTOR = 3   # 검색 후보 배수 (지역을 말했거나 기한 지난 제도가 빠졌을 때 5 -> 15개에서 5개를 고른다)
+
+
+def _drop_expired(chunks: list[Chunk], today: date) -> list[Chunk]:
+    """신청기한 원문으로 보아 마감이 확실히 지난 제도를 뺀다 (CLAUDE.md: 신청기한이 지난 제도는 후보에서 제외).
+
+    B의 기한 필터는 A가 날짜로 해석한 deadline만 보는데, '2026년 상반기'·'(1차) 5월 22일~6월 22일 (2차) 8월 12일~9월 9일'·
+    '2026. 9. 1.~9. 10.'은 deadline이 비어 지난 제도가 그대로 나왔다 (연도가 적힌 기간 134건 중 상당수).
+    원문을 읽을 수 없으면 거르지 않는다."""
+    cache: dict[str, bool] = {}
+    keep = []
+    for c in chunks:
+        if c.service_id not in cache:
+            cache[c.service_id] = _period_expired(_application_period(c.service_id), today)
+        if not cache[c.service_id]:
+            keep.append(c)
+    return keep
+
+
+# 끝이 열린 기간: 날짜가 지났어도 마감으로 보지 않는다. '예산 소진'·'마감 시'는 '~' 바로 뒤에 올 때만 열린 끝이다
+# ('2025/1/10~2025/12/12(또는 예산 소진 시까지)'는 끝 날짜가 있는 마감, '2026. 3월 ~ 예산 소진 시까지'는 열린 끝)
+_OPEN_PERIOD_RE = re.compile(r"상시|수시|연중|미정|~\s*(?:\(예정\))?\s*$"
+                             r"|~\s*(?:예산|한도|지원\s*대상|모집\s*인원|인원)[^~/]*?(?:소진|마감)")
+_CLOSED_PERIOD_RE = re.compile(r"사업\s*종료|모집\s*종료|미\s*모집")
+_PERIOD_TOKEN_RE = re.compile(
+    r"(?P<y>20\d\d|\d\d(?=\s*년))\s*(?:년|[.\-/])\s*(?P<m>\d{1,2})(?:\s*(?:월|[.\-/])\s*(?P<d>\d{1,2})(?!\d))?"   # 2026.5.22 / 2026년 5월 / 26년 5월
+    r"|(?P<y8>20\d\d)(?P<m8>\d\d)(?P<d8>\d\d)"                                                              # 20260201
+    r"|(?P<yh>20\d\d|\d\d(?=\s*년))\s*년?\s*(?P<half>상반기|하반기)"                                          # 2026년 상반기 (소제목 '(하반기)'는 아님)
+    r"|(?P<yo>20\d\d|\d\d(?=\s*년))\s*년"                                                                    # 2026년
+    r"|(?P<md_m>\d{1,2})\s*(?:월\s*|\.\s*)(?P<md_d>\d{1,2})\s*(?:일|\.)"                                     # 6월 22일 / 6.19.
+    r"|(?P<mo>\d{1,2})\s*월"                                                                                 # 12월
+    r"|(?<=~)\s*(?P<mo2>\d{1,2})\s*\.(?!\s*\d)")                                                            # '~ 12.' (월만)
+
+
+def _period_end(text: str) -> date | None:
+    """신청기한 원문에서 가장 늦은 날짜 (연도를 알 수 있는 날짜만). 연도 없는 날짜는 앞에 나온 연도를 이어 쓴다
+    ('2026. 6. 8.~6.19.'). 일이 없으면 그 달 말일, '2026년 상반기'는 6월 30일·'하반기'는 12월 31일. 연도가 하나도 없으면 None
+    ('8월말~9월초'처럼 해마다 반복될 수 있는 기간)."""
+    dates = _period_dates(text)
+    return max(end for _, end in dates) if dates else None
+
+
+def _period_start(text: str) -> date | None:
+    """신청기한 원문에서 가장 이른 날짜 (일이 없으면 그 달 1일, 상·하반기는 1월·7월 1일). 연도가 없으면 None."""
+    dates = _period_dates(text)
+    return min(start for start, _ in dates) if dates else None
+
+
+def _period_dates(text: str) -> list[tuple[date, date]]:
+    """신청기한 원문의 날짜들 -> [(그 날짜가 가리키는 첫날, 마지막 날)]. '2026. 5'는 (5/1, 5/31), '2026.5.22'는 (5/22, 5/22)."""
+    year: int | None = None
+    ends: list[tuple[date, date]] = []
+
+    def add(y: int | None, m: int, d: int | None = None, first_month: int | None = None) -> None:
+        if y is None or not 1 <= m <= 12:
+            return
+        last = calendar.monthrange(y, m)[1]
+        if d and d >= 1:
+            ends.append((date(y, m, min(d, last)), date(y, m, min(d, last))))
+        else:
+            ends.append((date(y, first_month or m, 1), date(y, m, last)))
+
+    for t in _PERIOD_TOKEN_RE.finditer(text):
+        g = t.groupdict()
+        if g["y"]:
+            year = int(g["y"]) + (2000 if len(g["y"]) == 2 else 0)
+            add(year, int(g["m"]), int(g["d"]) if g["d"] else None)
+        elif g["y8"]:
+            year = int(g["y8"])
+            add(year, int(g["m8"]), int(g["d8"]))
+        elif g["half"]:
+            year = int(g["yh"]) + (2000 if len(g["yh"]) == 2 else 0)
+            first, last_month = (1, 6) if g["half"] == "상반기" else (7, 12)
+            add(year, last_month, first_month=first)
+        elif g["yo"]:
+            year = int(g["yo"]) + (2000 if len(g["yo"]) == 2 else 0)
+        elif g["md_m"]:
+            add(year, int(g["md_m"]), int(g["md_d"]))
+        elif g["mo"] or g["mo2"]:
+            add(year, int(g["mo"] or g["mo2"]))
+    return ends
+
+
+def _period_expired(text: str, today: date) -> bool:
+    """신청기한 원문으로 보아 마감이 확실히 지났는가. 끝이 열린 기간·연도 없는 기간·빈 값은 False (거르지 않는다)."""
+    text = " ".join((text or "").split())
+    if not text or _OPEN_PERIOD_RE.search(text):
+        return False
+    if _CLOSED_PERIOD_RE.search(text):
+        return True
+    end = _period_end(text)
+    return end is not None and end < today
 
 
 def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[Chunk], bool]:
