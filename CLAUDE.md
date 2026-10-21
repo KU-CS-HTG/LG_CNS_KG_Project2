@@ -81,6 +81,7 @@ python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승�
 python -m pytest tests/ingest -q -ra   # A: mock HTTP·임시 SQLite, 미구현 skip 금지
 python -m src.ingest.handoff --dry-run # inspect pending; no index/model initialization
 python -m src.ingest.handoff --apply   # cached model only, apply→verify→exact ack; stops on first failure
+python -m src.index.embed_shard run --shard 0/3 --out data/embed_shards/part0.npz   # B: 임베딩 계산 분담 (merge·coverage 하위 명령, 주 PC는 EMBEDDING_CACHE=data/embed_shards 로 handoff --apply)
 python -m src.index.vector_store       # legacy direct B CLI; bypasses consumer locking/ack
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)

@@ -21,6 +21,25 @@ Kind = Literal["passage", "query"]
 
 _model = None
 _model_name: str | None = None
+_cache = None
+_cache_source: str | None = None
+cache_stats = {"hits": 0, "misses": 0}      # 미리 계산한 벡터를 쓴 수 / 모델로 계산한 수 (embed_texts 누적)
+
+
+def _get_cache():
+    """config.EMBEDDING_CACHE의 미리 계산한 벡터를 지연 로딩한다. 경로가 바뀌면 다시 불러온다. 설정이 없으면 None."""
+    global _cache, _cache_source
+    source = str(config.EMBEDDING_CACHE) if config.EMBEDDING_CACHE else None
+    if source is None:
+        _cache, _cache_source = None, None
+        return None
+    if _cache is None or _cache_source != source:
+        from src.index import embed_cache
+
+        cache = embed_cache.VectorCache.load_many(source)
+        cache.check_model(config.EMBEDDING_MODEL, config.EMBEDDING_MAX_SEQ_LENGTH)   # 모델·길이가 다르면 섞이지 않게 거부
+        _cache, _cache_source = cache, source
+    return _cache
 
 
 def _get_model():
@@ -57,14 +76,33 @@ def embed_texts(texts: list[str], kind: Kind = "passage") -> list[list[float]]:
         raise ValueError(f"kind는 'passage' 또는 'query'여야 합니다: {kind!r}")
     if not texts:
         return []
-    vectors = _get_model().encode(
-        _with_prefix(list(texts), kind),
-        batch_size=config.EMBEDDING_BATCH_SIZE,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=len(texts) > 500,
-    )
-    return vectors.tolist()
+    texts = list(texts)
+    cache = _get_cache()
+    result: list[list[float] | None] = [None] * len(texts)
+    todo = list(range(len(texts)))
+    if cache is not None:                      # 미리 계산한 벡터가 있는 텍스트는 모델을 부르지 않는다
+        from src.index import embed_cache
+
+        todo = []
+        for i, text in enumerate(texts):
+            row = cache.get(embed_cache.text_key(config.EMBEDDING_MODEL, kind, text))
+            if row is None:
+                todo.append(i)
+            else:
+                result[i] = row.tolist()
+        cache_stats["hits"] += len(texts) - len(todo)
+    cache_stats["misses"] += len(todo)
+    if todo:
+        vectors = _get_model().encode(
+            _with_prefix([texts[i] for i in todo], kind),
+            batch_size=config.EMBEDDING_BATCH_SIZE,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=len(todo) > 500,
+        )
+        for i, vector in zip(todo, vectors.tolist()):
+            result[i] = vector
+    return result  # type: ignore[return-value]
 
 
 def embed_query(text: str) -> list[float]:
