@@ -66,16 +66,29 @@ def answer_correctness(answer: Answer, question: dict) -> float:
     return _CORRECTNESS_SCORE.get(str(out.get("verdict", "")).strip(), 0.0)
 
 
-def faithfulness(answer: Answer, evidence_text: str) -> float:
+def faithfulness(answer: Answer, evidence_text: str, by_service: dict[str, str] | None = None) -> float:
     """답변의 주장(제도별 해당 가능 이유·지원내용·신청방법) 중 근거로 뒷받침되는 비율.
-    주장이 없으면(근거 없음 응답) 지어낸 것이 없으므로 1."""
-    claims = _claims(answer)
-    if not claims:
+    주장이 없으면(근거 없음 응답) 지어낸 것이 없으므로 1.
+
+    by_service(서비스명 -> 그 제도의 근거)가 있으면 제도마다 따로, 그 제도의 근거만 보고 채점한다.
+    제도 5개·주장 15개를 한 번에 채점하면 따로 채점할 때 통과하는 주장도 근거 없음으로 흔들렸고(q09·q35),
+    다른 제도의 근거로 통과하는 일도 막을 수 있다. 서비스명이 없는 제도는 전체 근거로 채점한다."""
+    groups: dict[str, list[str]] = {}
+    for r in answer.recommendations:
+        text = (by_service or {}).get(r.service_name, evidence_text)
+        groups.setdefault(text, []).extend(_claims(Answer(text="", recommendations=[r])))
+    total = sum(len(cs) for cs in groups.values())
+    if not total:
         return 1.0
+    return sum(_supported(text, claims) for text, claims in groups.items() if claims) / total
+
+
+def _supported(evidence_text: str, claims: list[str]) -> int:
+    """claims 중 evidence_text로 뒷받침되는 주장 수 (LLM 한 번 호출)."""
     numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, 1))
     out = condition_extractor._chat_json(FAITHFULNESS_PROMPT, f"[근거]\n{evidence_text}\n\n[주장]\n{numbered}")
     supported = {v.get("id") for v in out.get("verdicts", []) if isinstance(v, dict) and v.get("supported") is True}
-    return sum(1 for i in range(1, len(claims) + 1) if i in supported) / len(claims)
+    return sum(1 for i in range(1, len(claims) + 1) if i in supported)
 
 
 def citation_accuracy(answer: Answer, evidence_text: str) -> float:
@@ -131,6 +144,11 @@ def _evidence_text(selected: dict) -> str:
     return "\n".join(c.text for cs in selected.values() for c in cs)
 
 
+def _evidence_by_service(selected: dict) -> dict[str, str]:
+    """서비스명 -> 그 제도의 근거 텍스트 (Faithfulness 제도별 채점용)."""
+    return {cs[0].service_name: _evidence_text({sid: cs}) for sid, cs in selected.items() if cs}
+
+
 def service_match(answer: Answer, selected: dict, question: dict, indexed) -> dict:
     """정답 제도(relevant_service_ids)를 답변에서 안내했는가 (코드 판정, LLM 채점보다 객관적).
 
@@ -169,7 +187,7 @@ def evaluate(questions: list[dict], indexed=_indexed) -> dict:
                 no_evidence=answer.no_evidence,
                 services=[r.service_name for r in answer.recommendations],
                 correctness=answer_correctness(answer, q),
-                faithfulness=faithfulness(answer, ev_text),
+                faithfulness=faithfulness(answer, ev_text, _evidence_by_service(selected)),
                 citation_accuracy=citation_accuracy(answer, ev_text),
                 **service_match(answer, selected, q, indexed),
             )

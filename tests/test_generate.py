@@ -246,6 +246,23 @@ def test_faithfulness_counts_supported_claims(monkeypatch):
     assert answer_eval.faithfulness(Answer(text=NO_EVIDENCE_MESSAGE, no_evidence=True), "") == 1.0
 
 
+def test_faithfulness_judges_each_service_with_its_own_evidence(monkeypatch):
+    """제도별로 따로, 그 제도의 근거만 넘겨 채점한다 (한 번에 채점하면 판정이 흔들림)."""
+    from eval import answer_eval
+    from src.common.schema import Recommendation
+    recs = [Recommendation(service_name=n, agency="기관", reason="", benefit=f"{n} 지원", how_to_apply="")
+            for n in ("가", "나")]
+    calls = []
+    def judge(system, user):
+        calls.append(user)
+        return {"verdicts": [{"id": 1, "supported": "근거가" in user}]}
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", judge)
+    score = answer_eval.faithfulness(Answer(text="", recommendations=recs), "근거가\n근거나",
+                                     {"가": "근거가", "나": "근거나"})
+    assert len(calls) == 2 and "근거나" not in calls[0] and "근거가" not in calls[1]
+    assert score == 0.5
+
+
 @pytest.mark.skipif(not config.OPENAI_API_KEY, reason="OPENAI_API_KEY 없음")
 def test_faithfulness_with_llm_catches_made_up_claim():
     from eval import answer_eval
@@ -318,6 +335,20 @@ def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chun
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요"}]})   # meets_need 판정 없음
     rec = generator._generate(q, {"SAMPLE001": chunks}, [], ["월세가 부담돼요"]).recommendations[0]
     assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
+
+
+def test_reason_names_only_the_needs_the_service_meets(monkeypatch, sample_chunks):
+    # 처지(구직)만 맞은 제도에 질문 구절('월세가 부담되고')로 이유를 붙이면 틀린 이유가 된다 (평가 q01)
+    from dataclasses import replace
+    rent = [c for c in sample_chunks if c.service_id == "SAMPLE001"]                    # 원문에 '월세'가 있는 제도
+    job = [replace(c, text=c.text.replace("월세", "구직활동")) for c in rent]             # 원문에 '월세'가 없는 제도
+    q = "월세가 부담되고 취업을 준비하고 있어요"
+    needs = ["월세가 부담되고", "구직(일자리를 찾고 있거나 실직·퇴사한 상태)"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "meets_need": True}]})
+    def reason(chunks):
+        return generator._generate(q, {"SAMPLE001": chunks}, needs, ["월세가 부담되고"]).recommendations[0].reason
+    assert "‘월세가 부담되고’에 도움" in reason(rent)
+    assert "‘구직 상황’에 도움" in reason(job) and "월세" not in reason(job)
 
 
 def test_needs_check_shows_criterion_quoted_from_evidence(monkeypatch, sample_chunks):

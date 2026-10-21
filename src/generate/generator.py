@@ -45,8 +45,7 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
   "{NOT_RELEVANT}"이다. 비슷한 제도로 대신 답하는 것은 추측이다.
 - 각 제도의 meets_need: [사용자가 원하는 도움]이 주어지면, 그 제도의 지원내용이 그중 하나라도 직접 도와주면 true,
-  아니면 false다. 지역·나이·신분이 맞는다는 것은 meets_need의 근거가 아니다. [사용자가 원하는 도움]이 없으면 true다.
-- 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
+  아니면 false다. 지역·나이·신분이 맞는다는 것은 meets_need의 근거가 아니다. [사용자가 원하는 도움]이 없으면 true다.- 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
   "{LIKELY}" = 근거에 적힌 자격 조건을 사용자가 밝힌 정보로 모두 충족함,
   "{UNCLEAR}" = 근거가 부족하거나, 사용자가 밝히지 않은 자격 조건(소득·가구·재산 등)이 하나라도 있음,
   "{NOT_ELIGIBLE}" = 근거에 적힌 연령 범위나 지역이 사용자가 질문에서 직접 밝힌 나이·거주지와 명백히 다를 때만.
@@ -70,8 +69,7 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 
 출력 형식:
 {{"situation": 사용자 상황을 쉼표로 이은 짧은 구,
-  "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부, "meets_need": true 또는 false,
-                "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
+  "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부, "meets_need": true 또는 false,                "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
                 "mismatch": {{"said": 질문 원문 구절, "condition": 근거 원문 구절}} ("{NOT_ELIGIBLE}"일 때만),
                 "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약,
                 "needs_check": [{{"item": 조건 이름, "criterion": 근거 원문 구절 또는 ""}}]}}],
@@ -130,12 +128,34 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
             continue
         if needs and gen.get("meets_need") is False:
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
-        recs.append(_to_recommendation(question, chunks, gen, asked if gen.get("meets_need") is True else None))
+        recs.append(_to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
+                                       if gen.get("meets_need") is True else None))
 
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
     return Answer(text=text, recommendations=recs)
+
+
+_JOSA_RE = re.compile(r"(?:이나|으로|에서|에게|까지|부터|을|를|이|가|은|는|도|나|의|에|와|과|로)$")
+
+
+def _met_asked(chunks: list[Chunk], needs: list[str], asked: list[str] | None) -> list[str] | None:
+    """meets_need가 true인 제도의 이유 문장에 쓸 '원하는 도움' 구절 (코드 검증).
+
+    needs에는 질문 구절(help)과 처지(구직 등)가 함께 있어 LLM의 meets_need가 처지 때문에 true일 수 있다.
+    그때 질문 구절로 이유를 붙이면 틀린 이유가 됐다 ('월세가 부담되고'에 국민취업지원제도, 평가 q01·q10).
+    그래서 구절의 핵심 단어('월세')가 제도 원문에 있는 구절만 쓰고, 하나도 없으면 처지('구직 상황')로 쓴다.
+    (LLM에 어느 도움을 충족했는지 함께 묻는 방법은 항목 하나만 늘어도 meets_need 판정이 흔들려 쓰지 않는다.)"""
+    if not asked:
+        return None
+    body = re.sub(r"[^0-9A-Za-z가-힣]", "", " ".join(c.text for c in chunks))     # 서비스명 포함
+    def in_body(phrase: str) -> bool:
+        words = (_JOSA_RE.sub("", w) for w in re.findall(r"[0-9A-Za-z가-힣]+", phrase))
+        return any(len(w) >= 2 and w not in condition_extractor._GENERIC_HELP and w in body for w in words)
+    phrases = [a for a in asked if in_body(a)]
+    situations = [n.split("(")[0] for n in needs if n not in asked]
+    return phrases or [f"{s} 상황" for s in situations] or asked
 
 
 def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[str] | None = None) -> str:
