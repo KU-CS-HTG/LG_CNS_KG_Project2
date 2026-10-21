@@ -290,12 +290,14 @@ def test_not_eligible_needs_code_verified_mismatch():
 
 def test_missing_conditions_skip_what_evidence_text_states():
     from src.common.schema import Chunk
-    def ch(text):
-        return [Chunk("X#지원대상", "X", "가상 제도", "지원대상", text, {"field": "주거·자립"})]   # 실제 데이터처럼 지역·나이 메타 없음
-    assert evidence._missing_conditions(ch("[가상 제도] 서울 월세 거주 19세 ~ 39세 이하 청년")) == []   # 원문에 지역·나이가 있음
-    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년")) == [
-        "거주 지역 조건 (자료에 지역 정보 없음)", "연령 조건 (자료에 연령 정보 없음)"]                   # 원문에도 없을 때만
-    assert not any("신청기한" in n for n in evidence._missing_conditions(ch("[가상 제도] 청년")))   # 기한은 카드에 따로 표시
+    def ch(text, agency="국토교통부"):
+        return [Chunk("X#지원대상", "X", "가상 제도", "지원대상", text, {"field": "주거·자립", "agency": agency})]
+    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년")) == []                        # 전국 제도: 지역 조건 없음
+    assert evidence._missing_conditions(ch("[가상 제도] 무주택 청년", "충청남도 공주시")) == [
+        "거주 지역 조건 (소관기관: 충청남도 공주시, 원문 확인)"]                                      # 지자체 제도인데 원문에 지역 없음
+    assert evidence._missing_conditions(ch("[가상 제도] 서울 월세 거주 청년", "서울특별시")) == []   # 원문에 지역이 있음
+    assert not any("연령" in n or "신청기한" in n                                                   # 연령·기한은 여기서 안 붙임
+                   for n in evidence._missing_conditions(ch("[가상 제도] 청년", "경기도")))
 
 
 def test_numeric_service_id_from_llm_still_matches(monkeypatch, sample_chunks):
@@ -316,6 +318,81 @@ def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chun
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요"}]})   # meets_need 판정 없음
     rec = generator._generate(q, {"SAMPLE001": chunks}, [], ["월세가 부담돼요"]).recommendations[0]
     assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
+
+
+def test_needs_check_shows_criterion_quoted_from_evidence(monkeypatch, sample_chunks):
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # 지원대상: '만 19~34세 무주택 청년' 등
+    body = " ".join(c.text for c in chunks)
+    quoted = "만 19~34세" if "만 19~34세" in body else body.split("]")[-1].strip()[:15]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "needs_check": [
+        {"item": "연령", "criterion": quoted},                      # 근거 원문에 있음 -> 기준까지 표시
+        {"item": "소득", "criterion": "기준 중위소득 999% 이하"},     # 근거에 없는 수치 -> 이름 + 원문 확인 안내
+        "병역 의무"]}]})                                             # 예전 형식(문자열). 원문에 없는 조건 -> 뺌
+    rec = generator.generate_answer(QUESTION_WITH_RESULTS, {"SAMPLE001": chunks}).recommendations[0]
+    assert f"연령 — {quoted}" in rec.needs_check
+    assert f"소득 {generator.NO_CRITERION}" in rec.needs_check and not any("999%" in n for n in rec.needs_check)
+    assert not any("병역" in n for n in rec.needs_check)
+
+
+def test_reason_pairs_age_and_region_by_code_when_llm_said_is_too_long(monkeypatch):
+    from src.common.schema import Chunk
+    ch = [Chunk("X#지원대상", "X", "가상 월세", "지원대상", "[가상 월세] 서울 월세 거주 19세 ~ 39세 이하 청년 1인 가구", {}),
+          Chunk("X#신청방법", "X", "가상 월세", "신청방법", "[가상 월세] 부산 센터 방문", {})]
+    q = "서울에서 혼자 사는 26살인데 월세 내고 나면 생활비가 빠듯해요"
+    _fake_llm(monkeypatch, {"services": [{"service_id": "X", "applicable": "확인 필요",
+                                          "matches": [{"said": q, "condition": "서울 월세 거주"}]}]})   # 질문 통째 -> 버림
+    rec = generator.generate_answer(q, {"X": ch}).recommendations[0]
+    assert "‘서울에서’" in rec.reason and "‘26살’" in rec.reason                # 코드가 직접 짝지음
+    assert "서울 월세 거주 19세 ~ 39세 이하 청년 1인 가구" in rec.reason
+    assert generator._code_matches("부산 사는 42살이에요", ch) == ([], [])        # 범위 밖 나이, 대상에 없는 지역(신청방법만)은 짝 없음
+
+
+def test_drop_other_region_local_services():
+    from src.common.schema import Chunk
+    def ch(sid, agency):
+        return Chunk(f"{sid}#지원대상", sid, sid, "지원대상", f"[{sid}] 청년 면접비", {"agency": agency})
+    chunks = [ch("A", "충청북도 충주시"), ch("B", "대구광역시"), ch("C", "고용노동부"), ch("D", "대구광역시 수성구")]
+    kept, relaxed = generator._drop_other_regions(chunks, "대구")
+    assert [c.service_id for c in kept] == ["B", "C", "D"] and relaxed is False     # 다른 지역 지자체만 빠짐, 전국 제도는 남음
+    kept, relaxed = generator._drop_other_regions([ch("A", "충청북도 충주시")], "대구")
+    assert [c.service_id for c in kept] == ["A"] and relaxed is True                # 다 빠지면 그대로 두고 완화로 알림
+    assert generator._drop_other_regions(chunks, None) == (chunks, False)            # 지역을 안 말하면 그대로
+
+
+def test_criterion_label_follows_criterion_text():
+    lab = generator._criterion_label
+    assert lab("임차 보증금 8천만원 이하, 월세 60만원 이하 건물 월세 거주", "거주지") == "주택 조건"
+    assert lab("기준 중위소득 150% 이하 무주택자", "소득") == "소득"
+    assert lab("일반재산 1억 3천만원 이하, 자동차 2,500만원 미만", "재산") == "재산"
+    assert lab("도내 고교출신 도내 대학생 재학생", "학적") == "거주지"
+    assert lab("대학 재학 중", "학적") == "학적"                                 # 맞는 분류가 없으면 LLM 이름
+
+
+def test_income_criterion_found_by_code_even_if_one_mention_has_no_number():
+    sections = {"지원대상": "(소득기준) (미혼) 본인 연소득 6천만원 이하, (기혼) 부부합산 연소득 8천만원 이하 "
+                            "· 정확한 연소득 기준은 대출신청시 은행의 소득심사로 결정함"}        # 인천 임차보증금 이자 지원 원문
+    assert generator._vague_criteria(sections) == ["소득 — 본인 연소득 6천만원 이하, 부부합산 연소득 8천만원 이하"]
+    assert generator._vague_criteria({"선정기준": "소득이 기준 이하인 청년"}) == ["소득 기준 (자료에 기준 금액 없음)"]
+
+
+def test_reason_pairs_only_with_target_conditions_not_benefit(monkeypatch):
+    from src.common.schema import Chunk
+    ch = [Chunk("X#지원대상", "X", "가상", "지원대상", "[가상] 인천광역시에 주민등록이 되어 있는 무주택 청년", {}),
+          Chunk("X#지원내용", "X", "가상", "지원내용", "[가상] 대출금에 대한 이자 지원", {})]
+    q = "인천에 사는데 이자를 지원받고 싶어요"
+    said, conds = generator._grounded_matches(q, ch, [{"said": "이자를 지원받고 싶어", "condition": "대출금에 대한 이자 지원"}])
+    assert (said, conds) == ([], [])                                           # 원하는 도움 ↔ 지원내용은 조건 짝이 아님
+
+
+def test_needs_check_criterion_ignores_footnote_marks():
+    from src.common.schema import Chunk
+    ch = [Chunk("X#선정기준", "X", "가상 제도", "선정기준",
+                "[가상 제도] ㅇ (소득) 청년 원가구*의 소득이 기준 중위소득 100% 이하", {})]
+    got = generator._needs_with_criteria([{"item": "소득", "criterion": "청년 원가구의 소득이 기준 중위소득 100% 이하"}], ch)
+    assert got == ["소득 — 청년 원가구의 소득이 기준 중위소득 100% 이하"]     # 원문의 '*'를 빼고 옮겨도 인정
+    assert generator._needs_with_criteria([{"item": "소득", "criterion": "기준 중위소득 120% 이하"}], ch) == [
+        f"소득 {generator.NO_CRITERION}"]                                    # 지어낸 수치는 빼고 원문 확인 안내
+    assert generator._needs_with_criteria([{"item": "병역", "criterion": ""}], ch) == []   # 원문에 없는 조건은 뺌
 
 
 def test_vague_income_criteria_stays_needs_check(monkeypatch, sample_chunks):
@@ -373,11 +450,14 @@ def test_answer_eval_runner(fake_search, fake_conditions, monkeypatch):
     monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)
     case = fake_search("sr1")
     fake_conditions(case)
+    shown = case["results"][0].service_id                   # 검색 1위 제도 (원문 대체 경로라 그대로 안내됨)
     result = answer_eval.evaluate([{"id": "t1", "question": case["question"], "expected_answer": "주거 지원 안내",
-                                    "expect_no_answer": False}])
-    assert result["counts"] == {"total": 1, "scored": 1, "errors": 0}
+                                    "expect_no_answer": False, "relevant_service_ids": [shown, "OUT_OF_SCOPE"]}],
+                                  indexed=lambda sid: sid != "OUT_OF_SCOPE")
+    assert result["counts"] == {"total": 1, "scored": 1, "errors": 0, "service_labeled": 1, "unreachable_ids": 1}
     assert result["metrics"]["citation_accuracy"] == 1.0 and result["metrics"]["answer_correctness"] == 1.0
-    assert "답변 평가" in answer_eval.format_report(result)
+    assert result["metrics"]["service_hit"] == 1.0 and result["metrics"]["service_recall"] == 1.0   # 색인 밖 정답은 분모에서 뺌
+    assert "정답 제도 안내" in answer_eval.format_report(result)
 
 
 def test_reason_rejects_long_phrase_and_cross_type_age_match(monkeypatch):
@@ -448,6 +528,10 @@ def test_help_must_be_quoted_from_question():
     assert norm({"help": ["해외 주식 투자에서 손실을 보전해 주는 제도"]}, question=q2)["help"]   # 낱말이 모두 질문에 있음
     assert "help" not in norm({"help": ["청년 지원", "받을 수 있는 지원"]},                     # 특정하지 않는 말뿐: 넓은 질문
                               question="27살이 받을 수 있는 청년 지원이 뭐가 있나요?")
+    q3 = "자격증 시험이나 어학 시험 응시료를 지원받을 수 있나요?"                           # 질문 어미는 잘라 낸다 (이유 문장용)
+    assert norm({"help": [q3[:-1]]}, question=q3)["help"] == ["자격증 시험이나 어학 시험 응시료"]
+    q4 = "대학생인데 자취방을 구해야 해요. 주거비를 지원받을 수 있을까요?"                  # '있을까요' 앞에서 잘려 온 경우
+    assert norm({"help": ["주거비를 지원받을 수"]}, question=q4)["help"] == ["주거비"]
 
 
 def test_extract_conditions_asks_help_separately(monkeypatch):

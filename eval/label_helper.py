@@ -774,6 +774,23 @@ def cmd_set(args) -> None:
     print(f"{args.qid} ← {[get(by_id[i], 'name') for i in args.ids]}")
 
 
+def drop_question(questions: list[dict], qid: str) -> dict:
+    """질문 하나를 세트에서 뺀다. 이 질문에서 만든 후속 문항(follow_up_of)이 있으면 먼저 정리하도록 중단한다."""
+    q = find_question(questions, qid)
+    children = [x["id"] for x in questions if x.get("follow_up_of") == qid]
+    if children:
+        raise SystemExit(f"{qid}에서 만든 후속 문항이 있습니다: {', '.join(children)}. 먼저 그 문항을 drop 하세요")
+    questions.remove(q)
+    return q
+
+
+def cmd_drop(args) -> None:
+    qs = load_questions()
+    q = drop_question(qs, args.qid)
+    save_questions(qs)   # 저장 전 백업은 save_questions가 data/raw/label_backups/ 에 만든다
+    print(f"{args.qid} 를 질문 세트에서 뺐습니다: {q['question'][:40]} (남은 {len(qs)}개). id는 다시 쓰이지 않으니 번호가 비어도 괜찮습니다")
+
+
 def cmd_none(args) -> None:
     qs = load_questions()
     set_no_answer(find_question(qs, args.qid), source=args.source, note=args.note, confidence=args.confidence)
@@ -898,6 +915,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("qid")
     _add_provenance_args(p)
     p.set_defaults(fn=cmd_none)
+    p = sub.add_parser("drop", help="질문을 세트에서 삭제 (폐기)")
+    p.add_argument("qid")
+    p.set_defaults(fn=cmd_drop)
     p = sub.add_parser("apply", help="결정 JSON({qid: {ids, note, confidence, todo}})을 한꺼번에 반영 (사람 검수 전으로 표시)")
     p.add_argument("file")
     p.add_argument("--source", default="claude", help="채운 주체 (기본 claude)")

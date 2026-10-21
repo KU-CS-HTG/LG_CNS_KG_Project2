@@ -49,17 +49,21 @@ def _expand_service(service_id: str, hits: list[Chunk]) -> list[Chunk]:
     return hits + [c for c in more if c.service_id == service_id]
 
 
-_AGE_TEXT_RE = re.compile(r"\d+\s*(세|살)|\d{2,4}\s*년\s*생")
 _REGION_TEXT_RE = re.compile("|".join(("주민등록", "거주", *REGIONS)))
+# 지자체 소관기관: 시·도 이름으로 시작하거나 시·군·구로 끝남 ('경기도', '충청남도 공주시', '서울특별시 강남구')
+_LOCAL_AGENCY_RE = re.compile(r"^(?:" + "|".join(REGIONS) + r"|충청|전라|경상)|(?:시|군|구|도)$")
 
 
 def _missing_conditions(chunks: list[Chunk]) -> list[str]:
     """정형 조건 값이 비어 있어 단정할 수 없는 항목 ("확인 필요"로 표시할 목록, 사용자 문구).
 
-    메타데이터가 비어 있어도 근거 원문에 지역·나이가 적혀 있으면 넣지 않는다 (원문 조건은 LLM이 비교해
-    이유·확인 필요에 반영한다). 실제 데이터는 지역·나이 메타데이터가 아직 없어(A 문서 INGEST_A.md)
-    모든 카드에 같은 줄이 붙고, 원문에 '서울 19~39세'가 있는데도 '지역 정보 없음'이 나왔다.
-    신청기한은 카드의 신청방법 줄에 항상 표시되므로 여기에 넣지 않는다."""
+    실제 데이터는 지역·나이 메타데이터가 모두 비어 있어(A 문서 INGEST_A.md) 예전처럼 '정보 없음'을 붙이면
+    모든 카드에 같은 줄이 붙었다. 그래서
+    - 거주지: 지자체 제도(소관기관이 시·도·시군구)인데 원문에 지역이 없을 때만, 어느 지자체인지 함께 표시한다.
+      전국 제도(중앙부처·공공기관)는 지역 조건이 없으므로 넣지 않는다 (국가장학금에 '지역 정보 없음'이 붙던 문제).
+    - 연령: 넣지 않는다. 원문에 나이 기준이 있으면 LLM·코드가 '연령 — 만 19~34세'로 보여 주고,
+      나이가 확인되지 않으면 이유 문장에 나이 짝을 만들지 않아 자격을 단정하지 않는다.
+    - 신청기한은 카드의 신청방법 줄에 항상 표시되므로 넣지 않는다."""
     meta: dict = {}
     for c in chunks:                       # 조각마다 메타데이터가 다를 수 있으므로 값이 있는 쪽을 모은다
         for key, value in c.metadata.items():
@@ -68,10 +72,9 @@ def _missing_conditions(chunks: list[Chunk]) -> list[str]:
     text = " ".join(c.text for c in chunks)
 
     needs: list[str] = []
-    if not meta.get("region") and not _REGION_TEXT_RE.search(text):
-        needs.append("거주 지역 조건 (자료에 지역 정보 없음)")
-    if meta.get("age_min") is None and meta.get("age_max") is None and not _AGE_TEXT_RE.search(text):
-        needs.append("연령 조건 (자료에 연령 정보 없음)")
+    agency = meta.get("agency") or ""
+    if not meta.get("region") and not _REGION_TEXT_RE.search(text) and _LOCAL_AGENCY_RE.search(agency):
+        needs.append(f"거주 지역 조건 (소관기관: {agency}, 원문 확인)")
     return needs
 
 

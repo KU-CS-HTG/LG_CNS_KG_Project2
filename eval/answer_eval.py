@@ -11,11 +11,13 @@
     python -m eval.answer_eval --limit 5 --no-save   # 앞 5문항만 빠르게
 전제: 검색 색인이 있어야 한다 (python -m src.index.vector_store ...). 질문 하나에 LLM을 최대 4번 부른다
 (조건 추출·생성·Faithfulness·Correctness). 답변 평가는 정답 서비스(relevant_service_ids)가 없어도 expected_answer로 채점한다.
+정답 서비스가 있으면 '정답 제도를 안내했는가'(service_hit·service_recall)도 코드로 잰다 (색인 밖 정답은 분모에서 뺌).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -96,10 +98,21 @@ def _claims(answer: Answer) -> list[str]:
     claims = []
     for r in answer.recommendations:
         how = r.how_to_apply.split(" / 신청기한: ")[0]
-        for label, text in (("해당 가능 이유", r.reason), ("지원내용", r.benefit), ("신청방법", how)):
+        for label, text in (("해당 가능 이유", _need_claim(r.reason)), ("지원내용", r.benefit), ("신청방법", how)):
             if text and NOT_IN_EVIDENCE not in text and text != GENERIC_REASON:
                 claims.append(f"[{r.service_name}] {label}: {text}")
     return claims
+
+
+_NEED_REASON_RE = re.compile(r"^말씀하신 (.+)에 도움이 될 수 있는 제도예요")
+
+
+def _need_claim(reason: str) -> str:
+    """'말씀하신 ‘X’에 도움이 될 수 있는 제도예요'(generator가 meets_need 판정으로 만드는 이유)를 채점용 주장
+    '이 제도의 지원은 X 중 하나 이상과 직접 관련된다'로 바꾼다. 그대로 넘기면 채점 규칙('말씀하신 ...'은 판정하지 않음)에
+    걸려 판정할 내용이 없다며 모두 근거 없음이 됐다 (Faithfulness 0.95 -> 0.77). 빼지 않고 실제 주장으로 채점한다."""
+    m = _NEED_REASON_RE.match(reason or "")
+    return f"이 제도의 지원은 {m.group(1)} 중 하나 이상과 직접 관련된다." if m else reason
 
 
 def _squash(s: str) -> str:
@@ -111,22 +124,54 @@ def answer_with_evidence(question: str) -> tuple[Answer, str]:
     """generator.answer_question과 같은 흐름으로 답하고, 생성에 넘긴 근거(evidence_text)도 함께 돌려준다.
     (answer_question은 Answer만 돌려주므로 Faithfulness·Citation Accuracy 채점용으로 근거까지 받는다.)"""
     answer, selected = generator._answer_with_evidence(question)
-    return answer, "\n".join(c.text for cs in selected.values() for c in cs)
+    return answer, _evidence_text(selected)
 
 
-def evaluate(questions: list[dict]) -> dict:
-    """질문마다 답변을 만들어 세 지표를 채점하고 평균을 낸다. 한 질문이 실패해도 나머지는 계속한다."""
+def _evidence_text(selected: dict) -> str:
+    return "\n".join(c.text for cs in selected.values() for c in cs)
+
+
+def service_match(answer: Answer, selected: dict, question: dict, indexed) -> dict:
+    """정답 제도(relevant_service_ids)를 답변에서 안내했는가 (코드 판정, LLM 채점보다 객관적).
+
+    - indexed(service_id) -> bool: 색인에 있는 제도인가. 청년 범위 밖이라 색인에 없는 정답은 시스템이 찾을 수 없으므로
+      분모에서 빼고 개수만 따로 남긴다 (라벨 1차본에서 정답 88개 중 22개가 색인 밖이었다).
+    - Recommendation에는 service_id가 없어(공용 schema) 생성에 넘긴 근거의 서비스명으로 되찾는다.
+    정답이 없거나 근거 없음 질문이면 빈 dict (평균에서 빠진다)."""
+    relevant = list(dict.fromkeys(question.get("relevant_service_ids") or []))
+    if not relevant or question.get("expect_no_answer"):
+        return {}
+    reachable = [s for s in relevant if indexed(s)]
+    out = {"unreachable_ids": [s for s in relevant if s not in reachable]}
+    if not reachable:
+        return out
+    name_to_id = {cs[0].service_name: sid for sid, cs in selected.items() if cs}
+    shown = {name_to_id.get(r.service_name) for r in answer.recommendations}
+    hit = [s for s in reachable if s in shown]
+    out.update(service_hit=1.0 if hit else 0.0, service_recall=len(hit) / len(reachable))
+    return out
+
+
+def _indexed(service_id: str) -> bool:
+    from src.index import vector_store
+    return bool(vector_store.get_service_chunks(service_id))
+
+
+def evaluate(questions: list[dict], indexed=_indexed) -> dict:
+    """질문마다 답변을 만들어 지표를 채점하고 평균을 낸다. 한 질문이 실패해도 나머지는 계속한다."""
     rows = []
     for q in questions:
         row = {"id": q.get("id"), "question": q["question"], "expect_no_answer": bool(q.get("expect_no_answer"))}
         try:
-            answer, ev_text = answer_with_evidence(q["question"])
+            answer, selected = generator._answer_with_evidence(q["question"])
+            ev_text = _evidence_text(selected)
             row.update(
                 no_evidence=answer.no_evidence,
                 services=[r.service_name for r in answer.recommendations],
                 correctness=answer_correctness(answer, q),
                 faithfulness=faithfulness(answer, ev_text),
                 citation_accuracy=citation_accuracy(answer, ev_text),
+                **service_match(answer, selected, q, indexed),
             )
         except Exception as e:  # 네트워크·키 오류 등: 기록만 하고 평균에서 뺀다
             row["error"] = f"{type(e).__name__}: {e}"
@@ -134,16 +179,21 @@ def evaluate(questions: list[dict]) -> dict:
 
     ok = [r for r in rows if "error" not in r]
     mean = lambda key, rs=ok: round(sum(r[key] for r in rs) / len(rs), 4) if rs else None  # noqa: E731
+    labeled = [r for r in ok if "service_hit" in r]
     return {
         "experiment": "answer_eval",
         "time": datetime.now().isoformat(timespec="seconds"),
         "config": {"model": config.GENERATION_MODEL, "k": config.DEFAULT_TOP_K},
-        "counts": {"total": len(rows), "scored": len(ok), "errors": len(rows) - len(ok)},
+        "counts": {"total": len(rows), "scored": len(ok), "errors": len(rows) - len(ok),
+                   "service_labeled": len(labeled),
+                   "unreachable_ids": sum(len(r.get("unreachable_ids", [])) for r in ok)},
         "metrics": {
             "answer_correctness": mean("correctness"),
             "faithfulness": mean("faithfulness"),
             "citation_accuracy": mean("citation_accuracy"),
             "no_answer_correctness": mean("correctness", [r for r in ok if r["expect_no_answer"]]),
+            "service_hit": mean("service_hit", labeled),
+            "service_recall": mean("service_recall", labeled),
         },
         "questions": rows,
     }
@@ -155,6 +205,9 @@ def format_report(result: dict) -> str:
     lines = [f"=== 답변 평가 ({cnt['scored']}/{cnt['total']}문항 채점, 오류 {cnt['errors']}) ===",
              f"Answer Correctness {fmt(m['answer_correctness'])}  |  Faithfulness {fmt(m['faithfulness'])}"
              f"  |  Citation Accuracy {fmt(m['citation_accuracy'])}  |  근거 없음 질문 정확도 {fmt(m['no_answer_correctness'])}",
+             f"정답 제도 안내 (정답 있는 {cnt.get('service_labeled', 0)}문항): 1개 이상 안내 {fmt(m.get('service_hit'))}"
+             f"  |  정답 회수율 {fmt(m.get('service_recall'))}"
+             f"  (색인 밖이라 뺀 정답 {cnt.get('unreachable_ids', 0)}개)",
              "", "낮은 점수 (Correctness < 1 또는 Faithfulness < 1):"]
     low = [r for r in result["questions"] if "error" in r or r["correctness"] < 1 or r["faithfulness"] < 1]
     for r in low[:10]:

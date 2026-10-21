@@ -63,7 +63,9 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   신분·상황끼리. 한쪽에서 다른 종류를 추론해 짝짓지 않는다.
   condition은 근거 원문에서 글자 그대로 복사한 짧은 구절이다. 맞는 쌍이 없으면 빈 배열이다.
 - 소득·재산·가구처럼 질문에 없는 조건은 matches에 넣지 말고 needs_check로 보낸다.
-- needs_check에는 사용자가 밝히지 않았거나 근거로 판단할 수 없는 자격 조건을 짧은 명사구로 모두 적는다.
+- needs_check에는 사용자가 밝히지 않았거나 근거로 판단할 수 없는 자격 조건을 모두 적는다.
+  item은 조건 이름(소득·재산·거주지·연령·가구 등 짧은 명사구), criterion은 그 기준이 적힌 [근거] 원문 구절을
+  글자 그대로 복사한다(금액·비율·지역·나이가 적힌 부분). [근거]에 기준이 적혀 있지 않으면 criterion은 빈 문자열이다.
 - 모든 문장은 한국어 존댓말로 짧게 쓴다.
 
 출력 형식:
@@ -71,7 +73,8 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   "services": [{{"service_id": [근거]의 id, "applicable": 해당 여부, "meets_need": true 또는 false,
                 "matches": [{{"said": 질문 원문 구절, "condition": 근거 원문 구절}}],
                 "mismatch": {{"said": 질문 원문 구절, "condition": 근거 원문 구절}} ("{NOT_ELIGIBLE}"일 때만),
-                "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약, "needs_check": [문자열, ...]}}],
+                "benefit": 지원내용 요약, "how_to_apply": 신청방법 요약,
+                "needs_check": [{{"item": 조건 이름, "criterion": 근거 원문 구절 또는 ""}}]}}],
   "follow_up": 더 정확히 안내하려고 사용자에게 되물을 질문 1문장 (필요 없으면 빈 문자열)}}
 [근거]의 모든 제도를 services에 한 번씩 넣는다."""
 
@@ -160,7 +163,8 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     (실제 데이터: 나이·지역 없이 '면접 비용 지원'만 물으면 모든 카드의 이유가 같은 일반 문구였다)."""
     meta = _merged_meta(chunks)
     raw = _sections(chunks)
-    said, conds = _grounded_matches(question, chunks, gen.get("matches"))
+    llm_pairs = _grounded_matches(question, chunks, gen.get("matches"))
+    said, conds = _merge_pairs(_code_matches(question, chunks), llm_pairs)
     if said:
         reason = f"말씀하신 {', '.join(f'‘{s}’' for s in said)} 조건이 이 제도의 대상" \
                  + (f"({', '.join(f'‘{c}’' for c in conds)})" if conds else "") + "에 해당될 수 있어요."
@@ -169,13 +173,19 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     else:
         reason = GENERIC_REASON
 
-    needs = _str_list(gen.get("needs_check"))
-    applicable = gen.get("applicable") if said else UNCLEAR   # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다
-    if applicable != LIKELY and not needs:
-        needs.append("자격 요건 충족 여부")
+    needs = _needs_with_criteria(gen.get("needs_check"), chunks)
+    # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다. 코드가 만든 나이·지역 짝은 이유 문장에만 쓰고,
+    # '가능'은 LLM 자신의 판단 근거(짝)가 검증될 때만 인정한다 (LLM이 사용자가 말하지 않은 '무주택'으로 '가능'이라 한 경우 차단)
+    applicable = gen.get("applicable") if llm_pairs[0] else UNCLEAR
     for n in evidence_mod._missing_conditions(chunks) + _vague_criteria(raw):
-        if n not in needs and not any(n.split()[0] in x for x in needs):
+        key = n.split()[0]
+        same = [i for i, x in enumerate(needs) if key in x]
+        if not same:
             needs.append(n)
+        elif " — " in n and all(" — " not in needs[i] for i in same):
+            needs[same[0]] = n            # LLM은 이름만 줬는데 코드가 원문에서 기준 구절을 찾은 경우
+    if applicable != LIKELY and not needs:
+        needs.append("자격 요건 충족 여부")   # 확인할 조건을 하나도 못 찾았을 때만 (다른 조건과 함께 나오면 군더더기)
 
     how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
     deadline = meta.get("deadline")
@@ -218,7 +228,10 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
     """LLM이 준 (질문 구절, 근거 구절) 중 질문 원문에 실제로 있는 구절만 남긴다 (나이 검증과 같은 원리).
     LLM이 제도의 대상 조건을 사용자가 말한 것처럼 옮겨 적는 일을 막는다."""
     squash = lambda s: "".join(s.split())  # noqa: E731
-    q, body = squash(question), squash(" ".join(citation._body_text(c) for c in chunks))
+    # 근거 구절은 대상 조건(지원대상·선정기준)에서만 받는다. 지원내용과 짝지으면 '말씀하신 '이자를 지원받고 싶어'
+    # 조건이 이 제도의 대상('대출금에 대한 이자 지원')'처럼 원하는 도움이 조건으로 둔갑했다
+    target = [c for c in chunks if c.section in ("지원대상", "선정기준")]
+    q, body = squash(question), squash(" ".join(citation._body_text(c) for c in target))
     said: list[str] = []
     conds: list[str] = []
     for m in matches if isinstance(matches, list) else []:
@@ -241,16 +254,127 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
     return said, conds
 
 
+MAX_CRITERION_CHARS = 60   # 확인 필요 기준 구절 최대 길이(공백 제외). 선정기준 문단을 통째로 옮기는 것을 막는다
+NO_CRITERION = "(기준은 원문 확인)"   # 기준 구절을 옮겨 오지 못한 확인 필요 조건에 붙이는 안내
+MAX_REGION_PIECE_CHARS = 40   # 이유 문장에 넣는 거주지 근거 구절 최대 길이 (긴 전입 조건 문장이 그대로 들어가지 않게)
+
+
+def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
+    """확인 필요 조건에 근거 원문의 기준을 붙인다: '소득 — 기준 중위소득 150% 이하'.
+
+    이름만 있으면('소득 기준') 사용자가 결국 원문을 열어 봐야 했다. 기준 구절은 근거 원문에 글자 그대로 있을 때만
+    붙인다 (LLM이 금액·비율을 지어내거나 바꿔 쓰는 일 차단, 이유 문장의 matches와 같은 원리).
+    기준 구절이 없으면 그 조건 이름이 원문에 나올 때만 '(기준은 원문 확인)'을 붙여 남기고, 원문에 없는 조건은 뺀다."""
+    # 글자·숫자·%만 남겨 비교한다: 원문의 각주 표시('원가구*의')·괄호·따옴표를 LLM이 빼고 옮겨도 같은 구절로 본다
+    # (내용은 정확한데 '*' 하나 때문에 기준이 빠졌다). 금액·비율 숫자는 그대로 검증된다.
+    squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%]", "", s)  # noqa: E731
+    body = squash(" ".join(citation._body_text(c) for c in chunks))
+    out: list[str] = []
+    if isinstance(items, (str, dict)):
+        items = [items]
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, dict):
+            name, crit = _str(it.get("item")).strip(), _str(it.get("criterion")).strip().strip("‘’'\"")
+        else:                                  # 예전 형식(문자열)도 받는다
+            name, crit = _str(it).strip(), ""
+        if not name:
+            continue
+        if crit and (len(squash(crit)) > MAX_CRITERION_CHARS or squash(crit) not in body):
+            crit = ""
+        if crit:
+            text = f"{_criterion_label(crit, name)} — {crit}"
+        elif any(len(w) >= 2 and squash(w) in body for w in name.split()):
+            text = f"{name} {NO_CRITERION}"     # 원문에 그 조건이 언급은 되지만 기준 구절을 옮겨 오지 못함
+        else:
+            continue                           # 원문에 없는 조건 (월세자금보증에 근거 없이 '가구'가 붙던 문제)
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def _code_matches(question: str, chunks: list[Chunk]) -> tuple[list[str], list[str]]:
+    """나이·거주지 짝은 코드가 직접 만든다: 질문의 '26살'·'서울' ↔ 근거 지원대상·선정기준의 연령 범위·시도 구절.
+
+    LLM이 said에 질문 문장 전체를 넣어(20자 제한에 걸려) 나이·지역이 맞는데도 이유가 일반 문구가 되는 일이 잦았다.
+    나이는 범위 안일 때만, 지역은 같은 시·도가 원문에 있을 때만 짝짓는다."""
+    target = " ".join(citation._body_text(c) for c in chunks if c.section in ("지원대상", "선정기준"))
+    said: list[str] = []
+    conds: list[str] = []
+    age = _AGE_RE.search(question)
+    if age:
+        n = int(re.match(r"\d+", age.group()).group())
+        for m in _AGE_RANGE_RE.finditer(target):
+            if int(m.group(1)) <= n <= int(m.group(2)):
+                said.append(age.group().strip())
+                conds.append(m.group().strip())
+                break
+    region = condition_extractor._find_region(question)
+    if region and region in _regions_in(target):
+        word = next((w for w in question.split() if region in w or any(
+            full in w for full, short in condition_extractor._REGION_ALIASES.items() if short == region)), region)
+        names = [region, *(full for full, short in condition_extractor._REGION_ALIASES.items() if short == region)]
+        for piece in re.split(r"[,，·\n○ㅇ※*()]|\s-\s", target):
+            piece = piece.strip(" -•▪◦")
+            if any(nm in piece for nm in names) and len("".join(piece.split())) <= MAX_REGION_PIECE_CHARS:
+                said.append(word.strip(".,?!"))
+                conds.append(piece)
+                break
+    return said, conds
+
+
+def _merge_pairs(*pairs: tuple[list[str], list[str]]) -> tuple[list[str], list[str]]:
+    """여러 출처의 (질문 구절들, 근거 구절들)을 합치고, 다른 구절에 들어 있는 구절은 뺀다.
+    기호는 무시하고 비교한다 ('- 부산광역시에 주민등록…'과 '부산광역시에 주민등록…(배우자 포함)'이 둘 다 나오던 문제)."""
+    squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%]", "", s)  # noqa: E731
+    said = list(dict.fromkeys(s for p in pairs for s in p[0]))
+    conds = list(dict.fromkeys(c for p in pairs for c in p[1]))
+    said = [s for s in said if not any(s != o and squash(s) in squash(o) for o in said)]
+    conds = [c for c in conds if not any(c != o and squash(c) in squash(o) for o in conds)]
+    return said, conds
+
+
+# 기준 구절 내용으로 조건 이름을 붙인다 (LLM이 '보증금 8천만원 이하, 월세 60만원 이하'를 '거주지'라고 하는 등 이름이 어긋났다).
+# 위에서부터 먼저 맞는 것을 쓴다. 맞는 게 없으면 LLM이 준 이름을 그대로 쓴다.
+_CRITERION_LABELS = (
+    ("소득", re.compile(r"소득|학자금\s*지원\s*\d*\s*구간|차상위|수급")),
+    ("재산", re.compile(r"재산|자산|자동차")),
+    ("주택 조건", re.compile(r"보증금|월세|전세|임차|주택|무주택")),
+    ("거주지", re.compile("|".join(("도내", "관내", "전입", "주민등록", *condition_extractor.REGIONS,
+                                    *condition_extractor._REGION_ALIASES)))),
+    ("연령", re.compile(r"\d+\s*세")),
+)
+
+
+def _criterion_label(criterion: str, fallback: str) -> str:
+    for label, pattern in _CRITERION_LABELS:
+        if pattern.search(criterion):
+            return label
+    return fallback
+
+
+_CRITERION_SPLIT_RE = re.compile(r"[()（）\[\]·•○ㅇ※\n]|\s-\s|,\s")
+# 금액·비율 형태의 숫자 ('6천만원', '150%', '9구간'). 나이('19~34세')를 소득 기준으로 착각하지 않게
+_AMOUNT_RE = re.compile(r"\d[\d,.]*\s*(?:천|만|억|원|%|퍼센트|구간|분위)")
+
+
 def _vague_criteria(sections: dict[str, str]) -> list[str]:
-    """근거에 소득·재산 조건이 있는데 금액·비율 숫자가 없으면 사용자가 소득을 밝혀도 판단할 수 없다 ('기준 이하' 등).
-    LLM이 충족으로 단정하는 일을 코드로 막는다 (프롬프트 규칙만으로는 실행마다 결과가 달랐음)."""
+    """근거의 소득·재산 조건을 코드가 직접 정리한다 (LLM이 기준을 빠뜨려도 나오게).
+
+    - 숫자(금액·비율)가 붙은 구절이 있으면 '소득 — 본인 연소득 6천만원 이하'처럼 원문 구절을 붙인다.
+    - 그런 구절이 하나도 없을 때만 '기준 금액 없음'으로 둔다: 사용자가 소득을 밝혀도 판단할 수 없으므로
+      LLM이 충족으로 단정하는 일을 막는다 (프롬프트 규칙만으로는 실행마다 결과가 달랐음).
+    예전에는 '소득'이 나오는 곳 중 한 군데라도 숫자가 없으면('소득 기준은 은행 심사로 결정') 기준 없음으로 판정했다."""
     text = " ".join(sections.get(s, "") for s in ("지원대상", "선정기준"))
     out = []
     for word in ("소득", "재산"):
-        for m in re.finditer(word, text):
-            if not re.search(r"\d", text[m.start():m.start() + 25]):
-                out.append(f"{word} 기준 (자료에 기준 금액 없음)")
-                break
+        if word not in text:
+            continue
+        pieces = [p.strip(" ,:;") for p in _CRITERION_SPLIT_RE.split(text)]
+        hits = [p for p in pieces if word in p and _AMOUNT_RE.search(p) and len("".join(p.split())) <= MAX_CRITERION_CHARS]
+        if hits:
+            out.append(f"{word} — {', '.join(dict.fromkeys(hits[:2]))}")
+        else:
+            out.append(f"{word} 기준 (자료에 기준 금액 없음)")
     return out
 
 
@@ -325,12 +449,6 @@ def _str(v) -> str:
     return v.strip() if isinstance(v, str) else ""
 
 
-def _str_list(v) -> list[str]:
-    if isinstance(v, str):
-        v = [v]
-    return [s.strip() for s in v if isinstance(s, str) and s.strip()] if isinstance(v, list) else []
-
-
 def answer_question(question: str) -> Answer:
     """온라인 전체 흐름: 조건 추출 -> 검색(필터 완화 재시도) -> 근거 선별 -> 생성. app은 이 함수만 호출한다.
 
@@ -343,14 +461,44 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     """answer_question의 본체. 생성에 넘긴 근거도 함께 돌려준다 (답변 평가가 같은 흐름으로 채점하도록)."""
     conditions = condition_extractor.extract_conditions(question)
     filters = condition_extractor.to_filters(conditions)
+    region = conditions.get("region")
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
-    result = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K)
-    selected = evidence_mod.select_evidence(result.chunks)
+    # 지역을 말했으면 후보를 넉넉히 받아 다른 지역 지자체 제도를 뺀 뒤 상위 5개를 고른다 (_drop_other_regions)
+    k = config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR if region else config.DEFAULT_TOP_K
+    result = hybrid.search_with_info(question, filters, k=k)
+    chunks, region_relaxed = _drop_other_regions(result.chunks, region)
+    selected = evidence_mod.select_evidence(chunks)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
-    notice = _relaxed_notice(filters, result.filters_used) if result.relaxed else ""
+    used = dict(result.filters_used)
+    if region_relaxed:
+        used.pop("region", None)
+    notice = _relaxed_notice(filters, used) if (result.relaxed or region_relaxed) else ""
     if notice and not answer.no_evidence:
         answer.text = f"{notice}\n\n{answer.text}"
     return answer, selected
+
+
+REGION_CANDIDATE_FACTOR = 3   # 지역을 말했을 때 받는 검색 후보 배수 (5 -> 15개 중 다른 지역 제도를 빼고 5개)
+
+
+def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[Chunk], bool]:
+    """사용자가 말한 시·도와 다른 지역의 지자체 제도를 뺀다. (남은 조각, 지역 조건을 풀었는가)
+
+    수집 데이터에 지역 메타데이터가 없어 B의 지역 필터가 아무것도 거르지 못하고, 원문에 '충주시'만 있으면
+    시·도 비교도 안 돼 '대구 사는 24살' 질문에 충주시 면접비 지원이 나왔다. 소관기관이 지자체('충청북도 충주시')면
+    그 시·도를 제도의 지역으로 본다. 전국 제도(중앙부처·공공기관)는 남긴다.
+    다 빠지면 원래 후보를 그대로 쓰고 지역 조건을 풀었다고 알린다 (소프트 필터, CLAUDE.md)."""
+    if not region:
+        return chunks, False
+    keep = [c for c in chunks if _agency_region(c.metadata.get("agency") or "") in (None, region)]
+    return (keep, False) if keep else (chunks, True)
+
+
+def _agency_region(agency: str) -> str | None:
+    """지자체 소관기관의 시·도 짧은 이름 ('충청북도 충주시' -> '충북'). 전국 기관이면 None."""
+    if not evidence_mod._LOCAL_AGENCY_RE.search(agency):
+        return None
+    return condition_extractor._find_region(agency)
 
 
 # B가 결과가 없을 때 푸는 조건 (CLAUDE.md: 지역 -> 연령. 관심 분야는 필터가 아니라 가산점이라 풀지 않는다)
