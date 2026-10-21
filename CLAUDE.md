@@ -1,15 +1,15 @@
 # 프로젝트: 개인 맞춤형 정부 지원제도 탐색 및 안내 서비스 (RAG)
 
-사용자가 생활 상황을 자연어로 질문하면, 공공데이터에서 해당 가능성이 있는 정부 지원제도를 찾아 자격조건·신청 절차를 **출처와 함께** 안내하는 RAG 서비스. **1차 데이터 범위는 청년층 대상 제도**(README 1.1). 설계 근거는 `docs/사전기획서.docx`(1~9장)를 따른다.
+사용자가 생활 상황을 자연어로 질문하면, 공공데이터에서 해당 가능성이 있는 정부 지원제도를 찾아 자격조건·신청 절차를 **출처와 함께** 안내하는 RAG 서비스. **Dataset scope includes general personal/household support for young users**(README 1.1). 설계 근거는 `docs/사전기획서.docx`(1~9장)를 따른다.
 
 ## 데이터
-- 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (전체 약 1만 건 중 **청년 대상만 사용**. 판정은 `ingest.store.is_youth_service`, 기준값은 `config.YOUTH_*` — 제안 단계, 팀 합의 후 확정)
+- 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (general personal/household support included; `ingest.policy.inclusion_decision` / `personal-household-v1`. Youth matching remains a tag, not the dataset gate)
 - 서비스 1건 = 서비스명, 지원대상, 선정기준, 지원내용, 신청방법, 신청기한, 소관기관, 상세 링크 + 지원조건(정형)
 - 원본 응답은 `data/raw/`에 저장하고 커밋하지 않는다. API 키는 `.env`에만 둔다(커밋 금지).
 
 ## 파이프라인 (RAG 구조도 기준)
 오프라인 색인 — 문서가 바뀔 때만 다시 실행
-1. ① 로드: API 수집·정제 → 청년 대상 필터 → DB 적재
+1. ① 로드: API collection/normalization → versioned personal/household scope → SQLite
 2. ② 분할: 서비스 항목별(지원대상/선정기준/지원내용/신청방법) 구조 기반 분할, 조각 앞에 서비스명 접두
 3. ③ 임베딩: 로컬 다국어 모델(bge-m3 우선, 자원 부족 시 multilingual-e5)
 4. ④ 벡터 저장소: 조각 + 메타데이터(지역·소관기관·분야·신청기한·대상조건) 저장
@@ -36,11 +36,23 @@
 - C의 최종 출력: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
 - 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
 - A 구현 계약: `docs/INGEST_A.md`. `pipeline.run(full=False)`는 기존 `list[Chunk]`를 유지하고 이전 미확인 조각도 재전달한다. B는 `store.get_pending_changes()`의 서비스 전체 교체/제거를 두 색인에 적용한 후 service_id+version+event_id로 `acknowledge_changes()`한다. The A-owned `handoff` consumer applies stored event snapshots through existing B APIs, verifies both retrieval paths and acknowledges exact tokens. Real Chroma/fake-embedding integration is tested; actual-model and production-data integration remain unverified.
-- `mark_closed()` 단독 호출은 안전하게 아무 작업도 하지 않는다. 내부 `apply_run()`은 검증된 완전 목록으로만 소실을 판정하며, 현재 API 세부 계약 미검증 상태에서는 자동 소실이 차단된다. `--full`은 활성 조각 재생성이고 DB·이력·pending 제거를 보존한다.
+- `mark_closed()` 단독 호출은 안전하게 아무 작업도 하지 않는다. 내부 `apply_run()`은 검증된 완전 목록으로만 소실을 판정하며, 현재 API 세부 계약 미검증 상태에서는 자동 소실이 차단된다. `--full` still collects APIs and requeues active chunks without resetting DB/history/pending. It does not restore discarded excluded content; use historical raw reprocessing.
 - A 2차 수정: `merge.py`는 현재 관측과 과거 fallback을 구분하며 상세 실패 때 현재 목록의 공통 값이 과거 상세보다 우선한다. 명시적 빈 값·정상 행의 키 누락·응답 실패를 구분하고 필드 출처/충돌을 A 저장소에 남긴다. 두 현재 원천의 우선순위와 기한 충돌 정책은 `docs/INGEST_A.md` 참조. 수정일시를 필드별 최신성 근거로 추정하지 않는다.
 - `storage.StoragePaths`를 전달해 config 전역 변경 없이 실행별 DB/raw를 선택한다. fixture/validation의 운영 DB·raw·sidecar·lock 경로 및 resolved 별칭은 쓰기 전에 거부한다. `run_fixture()`와 CLI에 같은 격리를 적용한다. HTMLParser는 표 셀/행 경계를 보존하며 정제 변경은 다음 관측 시 한 번의 해시/전체 조각 갱신을 유발할 수 있다.
 - 격리 live 표본은 세 엔드포인트 3건씩 확인했으나 전체 종료·빈 스냅샷·실제 연령/지역 어댑터는 미검증이다. JA0110/JA0111 기본 라벨은 OAS에서 확인했어도 신청자/부양자 의미 등을 자동 추정하지 않는다.
 - Supported handoff uses one worker per target index, holding index→source-DB OS locks through apply/verify/ack. `pipeline._execute`, `store.upsert_services` and public `store.apply_run` share the source lock; the pipeline calls `_apply_run_locked` only while holding it. Competing processes fail immediately. Stale-ack protection alone does not synchronize arbitrary direct B writers. provenance 품질은 `store.get_record(service_id)`로 조회하고 후보 보류·C 표시 방침은 합의한다.
+
+## Dataset inclusion and historical replay (2026-10-21)
+
+`policy.py` owns include/provisional/exclude decisions independently of labels and applicant eligibility.
+General household/dependent benefits remain included; only explicit institution-only target
+assertions support exclusion. Ambiguity is provisional inclusion, not ineligibility.
+`reprocess.py` reuses ONE A raw acquisition run, validates summaries/pages/IDs, uses the
+existing merge/normalize/store/chunker path and creates complete pending snapshots.
+Historical observations never become fresh or authorize disappearance. Older/unknown-order
+observations defer; an API-disappeared record needs a new observation. Run source/index
+inspection with `python -m src.ingest.coverage`; exact commands and limits: `docs/INGEST_A.md`.
+No abandoned readiness/packaging/telemetry subsystem is part of this scope change.
 
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.

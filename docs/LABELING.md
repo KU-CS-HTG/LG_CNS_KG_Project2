@@ -4,6 +4,18 @@
 정답을 채워야 검색 평가(`python -m eval.run_eval`)가 의미 있는 점수를 냅니다. 팀원 전원이 함께 하는 작업이고,
 도구는 [`eval/label_helper.py`](../eval/label_helper.py)입니다. (평가 지표와 실행법은 README 7장)
 
+## Dataset scope agreement (2026-10-21)
+
+Young users may use general personal/household benefits, including employment, housing,
+income, marriage, pregnancy/childbirth, parenting and dependent support. Do not remove a
+gold answer merely because it lacks youth wording or is absent from a bounded A sample.
+Inclusion is separate from individual eligibility and human label relevance. Existing regional,
+deadline and answer-selection guidance still applies. No labels are rewritten by A's classifier
+or raw replay. Compact existence inspection: `python -m src.ingest.coverage --db-path ...
+--index-dir ... --only q15,q16,q23` (see INGEST_A.md for complete PowerShell commands).
+This does not calculate retrieval quality or validate a label from retrieval results.
+The standalone list cache used below does not contain A's detailed acquisition-run contract.
+
 ## 0. 5분 요약
 
 ```powershell
@@ -100,7 +112,7 @@ git add eval/questions.jsonl && git commit -m "eval: q01,q02 정답 지정"   # 
 |---|---|
 | 신청기한이 **이미 지난** 제도 | 서비스는 기한이 지난 제도를 안내하지 않음 (도구가 `[기한 지남?]`으로 경고) |
 | 질문과 **조금만 관련 있는** 제도 | 정답이 늘어 Recall이 낮아지고 사람마다 기준이 달라짐 |
-| 대상이 **청년이 아닌** 제도 (노인, 영유아 등) | 1차 범위가 청년층 (README 1.1) |
+| **Explicit institution-only** programs with no personal/household applicability | Dataset policy personal-household-v1; absence of youth wording or a child beneficiary alone does not exclude a program |
 | 지역만 다른 **같은 제도의 다른 버전** | 질문의 지역에 맞는 것만. 지역이 없으면 전국 단위 제도를 우선 (§3.4) |
 
 ### 3.3 개수: 5개 이내

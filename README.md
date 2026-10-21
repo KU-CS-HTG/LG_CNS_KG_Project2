@@ -1,6 +1,6 @@
 # 개인 맞춤형 정부 지원제도 탐색 및 안내 서비스 (RAG)
 
-사용자가 생활 상황을 자연어로 질문하면(예: "서울에 사는 27살 취업준비생이 받을 수 있는 청년 지원 제도"), 공공데이터에서 해당 가능성이 있는 정부 지원제도를 찾아 **자격조건·신청 절차를 출처와 함께** 안내하는 RAG 서비스입니다. **1차 범위는 청년층 대상 제도**입니다([1.1](#11-데이터-범위--청년층-우선)).
+사용자가 생활 상황을 자연어로 질문하면(예: "서울에 사는 27살 취업준비생이 받을 수 있는 청년 지원 제도"), 공공데이터에서 해당 가능성이 있는 정부 지원제도를 찾아 **자격조건·신청 절차를 출처와 함께** 안내하는 RAG 서비스입니다. **The audience is young users; the dataset includes general personal/household benefits** (1.1).
 
 - 설계 근거: [`docs/사전기획서.docx`](docs/사전기획서.docx) (1~9장)
 - 상세 설계 이유·변경 이력: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
@@ -13,26 +13,33 @@
 
 ## 1. 데이터
 
-- 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (전체 약 1만 건 중 **청년 대상 제도만 사용**, 건수는 수집 후 확정)
+- 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (전체 약 1만 건 중 **general personal/household programs included**, counts depend on observed sources)
 - 서비스 1건 = 서비스명, 지원대상, 선정기준, 지원내용, 신청방법, 신청기한, 소관기관, 상세 링크 + 지원조건(정형)
 - 원본 응답은 `data/raw/`에 저장하고 **커밋하지 않습니다**. API 키는 `.env`에만 두고 **커밋하지 않습니다**.
 - 첨부 문서·이미지는 수집하지 않고 상세 링크로 대신합니다.
 
-### 1.1 데이터 범위 — 청년층 우선
+### 1.1 Dataset scope — young users, personal/household benefits
 
-프로젝트는 우선 **청년층 관련 제도**를 기준으로 진행합니다. 기획서의 대표 사용자(취업을 준비하는 청년, 신혼부부 등) 중 청년을 먼저 다루고, 구조는 다른 대상으로 확장할 수 있게 둡니다.
+The audience is young users (청년 사용자). Indexed programs include general individual
+and household support: employment, housing, education, income/living, marriage,
+pregnancy, childbirth, parenting and care, including benefits through children or dependents.
 
-| 항목 | 내용 | 상태 |
-|---|---|---|
-| 범위 | 보조금24 전체(약 1만 건) 중 청년 대상 서비스만 DB·색인에 적재 | 결정 |
-| 청년의 나이 | 청년기본법은 만 19~34세지만 지자체 조례는 만 18~39세까지 다양 → 수집은 넓게 `config.YOUTH_AGE_RANGE = (19, 39)`로 잡고, 개별 제도의 정확한 연령은 `Metadata.age_min/age_max`와 사용자 나이 필터(`Filters.age`)로 판단 | **제안, 팀 합의 필요** |
-| 판정 방법 | 지원조건의 연령 범위가 위 구간과 겹치거나, 서비스명·지원대상·선정기준에 `config.YOUTH_KEYWORDS`(청년·대학생·사회초년생·취업준비·구직 등)가 있으면 청년 대상. 연령도 키워드도 없으면 제외 (`ingest.store.is_youth_service`, A 담당) | **제안, 팀 합의 필요** |
-| 범위 밖 질문 | 예: "65세인데 받을 수 있는 연금은?" → 색인에 근거가 없으므로 기존 규칙대로 **모른다고 답하고 담당 기관·공식 사이트를 안내** (`no_evidence`). 청년 전용 서비스라는 안내 문구를 둘지는 C가 결정 | 제안 |
-| 평가 질문 | `eval/questions.jsonl`은 청년 상황형 질문(구직·주거·교육·금융·신혼 등) 중심으로 작성하고, 범위 밖·근거 없음 질문도 일부 포함 | 제안 |
-| 확장 | 판정 기준만 바꾸면(`is_youth_service`, `config`) 다른 대상(신혼·양육·노인 등)으로 넓힐 수 있게 범위 판정을 한 곳에 모았다 | - |
+`ingest.policy.inclusion_decision()` centralizes `personal-household-v1`: `include`
+with evidence, `provisional` when applicability is uncertain, or `exclude` for explicit
+institution-only recipient statements. Absence of youth keywords, older/dependent
+ages, or business wording alone never establishes exclusion. Ambiguous applicability
+is provisionally included. Youth keywords/verified applicant-age overlap remain
+explanatory tags; `is_youth_service()` retains its legacy boolean tagging behavior.
 
-- 범위가 바뀌면 설계가 바뀐 것이므로 기획서 **8.3 기술 선택 기록**에도 적습니다 (예시는 `docs/ARCHITECTURE.md` §3.1 참고).
-- 테스트용 샘플(`tests/fixtures/`)에는 청년이 아닌 제도(기초연금 등)도 섞여 있습니다. 실제 적재 데이터에는 들어가지 않지만 B의 필터가 연령 조건을 걸러내는지 시험하는 **부정 사례**로 남겨 둡니다.
+Dataset inclusion is separate from eligibility. No child age becomes applicant age,
+no undocumented JA code is decoded, and A does not infer residence from agency names.
+B's index-time region fallback remains a retrieval heuristic. Unknown is not unrestricted.
+Excluded institutional records retain minimal audit; historical `youth_scope_exit`
+records need usable original sections before they can become searchable again.
+
+See [raw reprocessing and commands](docs/INGEST_A.md#historical-raw-reprocessing-원본-재처리).
+`pipeline --full` still collects APIs and requeues active chunks; it cannot recover
+discarded sections by itself. No evaluation labels are read by the classifier or changed.
 
 ## 2. 전체 구조 — 색인과 질의응답
 
@@ -77,7 +84,7 @@
 [client] serviceList 수집 완료: 10,213건 (perPage=500, 21페이지)
 [client] supportConditions 수집 완료: 10,198건
 [client] 원본 저장: data/raw/serviceList.json, supportConditions.json
-[store]  청년 대상 필터: 10,213건 → 1,850건 (나머지는 DB·색인에서 제외)
+[store]  dataset policy: include / provisional / explicit institution-only exclusion (illustrative)
 [store]  upsert: 신규 40 / 변경 12 / 변동 없음 1,798
 [store]  종료 처리: 3건 (색인에서 제거 대상)
 ```
@@ -132,7 +139,7 @@ DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니�
 }
 ```
 
-전체 규모는 청년 대상 서비스 수천 건 → 조각 수천~수만 개로 예상하며, 수집 후 실제 수치를 기록합니다.
+Dataset counts depend on the observed source population and versioned inclusion policy; sample counts do not establish full coverage.
 
 #### ③ 임베딩 — `embedder.embed_texts(texts)`
 
@@ -399,7 +406,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
 | Hybrid는 RRF(순위 합산)로 합치고 서비스당 조각 1개로 줄임, 결과가 없으면 지역→연령 순으로 완화 | 점수 단위가 다른 두 검색을 순위로 합치면 튜닝이 거의 필요 없다. 서비스 단위로 줄여야 Top-5가 서로 다른 제도 5개가 된다. 완화 순서는 덜 중요한 조건부터이며 신청기한은 풀지 않는다(종료된 제도를 보여주면 안 됨). |
 | 관심 분야는 필터가 아니라 가산점 (`FIELD_BOOST`) | 분야는 자격이 아니라 관심사이고, 질문에서 뽑은 분야 이름이 데이터의 서비스분야와 달라도(예: "주거" vs "주거·자립") 제도가 사라지지 않아야 한다. 화면 테스트에서 분야가 "주거" 하나로 뽑히자 구직 지원 제도가 통째로 걸러지는 문제가 발견되어 B·C 합의로 바꿨다. |
-| 벡터 저장소는 Chroma, 소프트 필터는 저장할 때 빈 값을 대체값으로 바꿔 처리 | 나중에 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓴다. Chroma는 "값이 없으면 통과"를 쿼리로 표현하기 어려워, 색인 시 빈 값을 통과하는 값으로 저장해 해결했다. |
+| 벡터 저장소는 Chroma, 소프트 필터는 저장할 때 빈 값을 대체값으로 바꿔 처리 | 일반 개인·가구 지원으로 범위가 확대되어 정식 벡터 DB를 쓴다. Chroma는 "값이 없으면 통과"를 쿼리로 표현하기 어려워, 색인 시 빈 값을 통과하는 값으로 저장해 해결했다. |
 | BM25는 `rank_bm25` + 글자 2-gram, 색인은 저장된 텍스트에서 자동 재생성 | 한국어 조사·두 글자 단어를 다루면서 추가 설치(형태소 분석기)가 필요 없다. Chroma에 BM25가 없어 따로 두되, 색인 버전 파일로 동기화한다. 부족하면 `kiwipiepy`로 교체하고 Baseline 실험에서 비교한다. |
 | `retrieve/baseline.py`(질문→키워드→`store.sql_keyword_search`→키워드 종류 수로 순위, 서비스명 가중, 필터 없음), `search(mode=...)` | Baseline → Vector → Hybrid → Hybrid+필터 비교 실험으로 하이브리드 효과를 검증한다. `mode` 기본값이 서비스 경로라 시그니처는 호환된다. |
 | `evidence.py`(근거 선별), `Answer`에 `no_evidence` | 질문당 제도를 3~5개로 제한하고, 근거 없음 응답을 UI·평가가 구분해 쓴다. |
@@ -467,7 +474,7 @@ python -m eval.label_helper review                 # Claude가 1차로 채운 �
 
 정답 기준 (자세한 이유와 예외는 LABELING.md §3):
 - **그 제도 하나만으로도 좋은 답이 되는** 제도만, 한 질문에 **5개 이내** (정답이 많으면 Recall이 구조적으로 낮아짐).
-- 질문에 나오지 않은 소득·가구 조건은 따지지 않고(답변 단계의 "확인 필요"), **신청기한이 지난 제도·청년이 아닌 제도는 제외**.
+- 질문에 나오지 않은 소득·가구 조건은 따지지 않고(답변 단계의 "확인 필요"), **expired programs are excluded; absence of youth wording alone is not an exclusion**.
 - **지역이 없는 질문의 정답은 전국 단위 제도**입니다. 실제 서비스는 지역을 추가 질문으로 받기 때문에, 지역 제도는 `followup`으로 만든 별도 문항("서울에 살아요. …")에서 채웁니다.
 - 복합 질문("월세 + 취업 준비")은 필요마다 따로 검색해 각각 2~3개.
 - **우리 검색 시스템의 결과를 정답으로 베끼지 않습니다** (검색이 맞춘 것만 정답이 되어 점수가 부풀려짐).
