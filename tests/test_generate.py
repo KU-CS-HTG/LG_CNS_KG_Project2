@@ -337,6 +337,31 @@ def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chun
     assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
 
 
+def test_application_period_comes_from_ingest_record(monkeypatch, sample_chunks, tmp_path):
+    # 조각에는 날짜로 해석된 deadline만 있어 대부분 '상시 또는 정보 없음'이었다 -> A 저장소의 신청기한 원문을 쓴다
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "meets_need": True}]})
+    db = tmp_path / "services.db"
+    db.write_text("")
+    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(generator.ingest_store, "get_record",
+                        lambda sid: {"payload": {"application_period": "(1차) 2026년 5월 22일~6월 22일"}})
+    rec = generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
+    assert rec.how_to_apply.endswith(" / 신청기한: (1차) 2026년 5월 22일~6월 22일")
+
+    def broken(sid):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(generator.ingest_store, "get_record", broken)          # 읽기 실패해도 답변은 나온다
+    rec = generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
+    assert "신청기한:" in rec.how_to_apply and "1차" not in rec.how_to_apply
+
+    called = []
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "none.db")              # DB가 없으면 부르지 않는다 (새로 만들지 않게)
+    monkeypatch.setattr(generator.ingest_store, "get_record", lambda sid: called.append(sid))
+    generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None)
+    assert not called and not (tmp_path / "none.db").exists()
+
+
 def _fake_two_calls(monkeypatch, answer_out: dict, checklist_out: dict):
     """답변 생성과 자격 체크리스트 추출이 같은 _chat_json을 쓰므로 시스템 프롬프트로 나눠 돌려준다."""
     monkeypatch.setattr("src.generate.condition_extractor._chat_json",

@@ -11,12 +11,14 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from src.common import config
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.generate import citation, condition_extractor
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
+from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
 from src.retrieve import hybrid
 
 # 테스트 규칙: B가 끝나기 전에도 시험할 수 있도록(tests/conftest.py의 fake_search, fake_conditions)
@@ -289,7 +291,8 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
 
     how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
     deadline = meta.get("deadline")
-    how += f" / 신청기한: {deadline}까지" if deadline else " / 신청기한: 상시 또는 정보 없음"
+    period = _application_period(chunks[0].service_id)
+    how += f" / 신청기한: {period or (f'{deadline}까지' if deadline else '상시 또는 정보 없음')}"
 
     return Recommendation(
         service_name=chunks[0].service_name,
@@ -300,6 +303,27 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
         needs_check=needs,
         citations=citation.build_citations(chunks),
     )
+
+
+MAX_PERIOD_CHARS = 120   # 카드에 보여 줄 신청기한 원문 최대 길이 (공고 안내 문단이 통째로 붙는 것 방지)
+
+
+def _application_period(service_id: str) -> str:
+    """제도의 신청기한 원문 (A 저장소의 application_period, 예: '2026년 5월 22일~6월 22일', '수시신청(예산소진시까지)').
+
+    검색 조각에는 날짜로 해석된 deadline만 있어(상시·'접수기관별 상이'·기간 표현은 None) 카드 대부분이
+    '상시 또는 정보 없음'이었다. 원문은 A의 DB에만 있어 A의 공개 조회 함수(store.get_record)로 읽는다.
+    DB가 없으면(샘플 미리보기·테스트) 부르지 않는다: get_record는 DB 파일이 없으면 새로 만든다.
+    읽기에 실패하면 빈 문자열 (예전처럼 deadline으로 표시)."""
+    if not Path(config.DB_PATH).exists():
+        return ""
+    try:
+        record = ingest_store.get_record(service_id)
+    except Exception as e:  # 잠금·손상 등: 답변은 계속 만든다
+        log.warning("신청기한 원문 조회 실패(%s): %s", service_id, e)
+        return ""
+    period = " ".join(_str(((record or {}).get("payload") or {}).get("application_period")).split())
+    return period if len(period) <= MAX_PERIOD_CHARS else period[:MAX_PERIOD_CHARS - 1] + "…"
 
 
 def _render(recs: list[Recommendation], situation: str, follow_up: str) -> str:

@@ -264,7 +264,7 @@ def _card_head(i: int, r: Recommendation, checked: int) -> str:
 <div class="grid">
   <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div></div>
   <div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e(how)}</div>
-    {f'<span class="deadline">📅 신청기한 · {_e(deadline)}</span>' if deadline else ''}</div>
+    {f'<span class="deadline">📅 신청 기간 · {_e(deadline)}</span>' if deadline else ''}</div>
 </div>"""
 
 
