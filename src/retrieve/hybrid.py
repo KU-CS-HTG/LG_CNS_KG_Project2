@@ -6,6 +6,7 @@
   2. Vector 검색과 BM25 검색을 각각 후보 HYBRID_CANDIDATES개씩 가져온다
   3. RRF(Reciprocal Rank Fusion)로 두 순위를 합친다: 점수 = Σ 가중치 / (RRF_K + 순위)
      - 두 검색의 점수 단위(코사인 vs BM25)가 달라 점수를 직접 더하지 않고 순위만 쓴다
+  3''. 질문에 지역이 없으면(hybrid_filter) 지자체 제도 점수에서 LOCAL_PENALTY를 뺀다 (전국 제도 우선, 0이면 끔)
   3'. 관심 분야가 제도의 분야와 맞으면(`filters.field_matches`) 점수에 FIELD_BOOST를 더한다 (가산점일 뿐 제도를 빼지 않는다.
      분야 이름이 데이터와 달라 하나도 안 맞아도 결과는 그대로 나온다. FIELD_BOOST=0이면 끔)
   4. 같은 서비스의 조각은 가장 높은 것 하나만 남기고(서비스당 1개) 상위 K개를 돌려준다
@@ -74,6 +75,16 @@ def boost_by_field(ranked: list[tuple[Chunk, float]], wanted_field: str | None,
     return sorted(boosted, key=lambda cs: -cs[1])
 
 
+def penalize_local(ranked: list[tuple[Chunk, float]], penalty: float) -> list[tuple[Chunk, float]]:
+    """지자체(지역) 제도의 점수에서 penalty를 빼고 다시 정렬한다 (안정 정렬). 거르지는 않는다.
+
+    질문에 지역이 없으면 어느 지역 제도인지 알 수 없으므로 전국 단위 제도를 먼저 보여 주려는 실험이다."""
+    if penalty <= 0:
+        return ranked
+    adjusted = [(c, s - penalty if filter_rules.is_local(c) else s) for c, s in ranked]
+    return sorted(adjusted, key=lambda cs: -cs[1])
+
+
 def _top_services(ranked: list[tuple[Chunk, float]], k: int) -> tuple[list[Chunk], list[float]]:
     seen: set[str] = set()
     chunks: list[Chunk] = []
@@ -89,7 +100,8 @@ def _top_services(ranked: list[tuple[Chunk, float]], k: int) -> tuple[list[Chunk
     return chunks, scores
 
 
-def _run(query: str, k: int, mode: Mode, where: dict | None, wanted_field: str | None = None) -> tuple[list[Chunk], list[float]]:
+def _run(query: str, k: int, mode: Mode, where: dict | None, wanted_field: str | None = None,
+         local_penalty: float = 0.0) -> tuple[list[Chunk], list[float]]:
     n = max(config.HYBRID_CANDIDATES, k * 5)
     if mode == "vector":
         return _top_services(vector_store.vector_search(query, n, where), k)
@@ -97,7 +109,8 @@ def _run(query: str, k: int, mode: Mode, where: dict | None, wanted_field: str |
         return _top_services(vector_store.bm25_search(query, n, where), k)
     vec = [c for c, _ in vector_store.vector_search(query, n, where)]
     kw = [c for c, _ in vector_store.bm25_search(query, n, where)]
-    return _top_services(boost_by_field(rrf([vec, kw], config.HYBRID_WEIGHTS), wanted_field), k)
+    fused = boost_by_field(rrf([vec, kw], config.HYBRID_WEIGHTS), wanted_field)
+    return _top_services(penalize_local(fused, local_penalty), k)
 
 
 def search_with_info(query: str, filters: Filters, k: int = config.DEFAULT_TOP_K, mode: Mode = "hybrid_filter") -> SearchResult:
@@ -111,7 +124,8 @@ def search_with_info(query: str, filters: Filters, k: int = config.DEFAULT_TOP_K
     current: Filters = dict(filters)                   # type: ignore[assignment]
     relaxed = False
     while True:
-        chunks, scores = _run(query, k, mode, vector_store.build_where(current), current.get("field"))
+        penalty = 0.0 if current.get("region") else config.LOCAL_PENALTY      # 지역을 모를 때만 지역 제도를 뒤로
+        chunks, scores = _run(query, k, mode, vector_store.build_where(current), current.get("field"), penalty)
         if chunks:
             return SearchResult(chunks, scores, current, relaxed)
         softer = filter_rules.relax(current)

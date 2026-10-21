@@ -31,8 +31,8 @@
 ## 모듈 간 인터페이스 (제안 — 팀 합의 후 확정, 바꿀 때는 이 파일부터 고친다)
 - A → B: 조각 단위 레코드 `{chunk_id, service_id, service_name, section, text, metadata, detail_url}`
 - C → B: `Filters`(나이·지역·분야·상황·기준일, 값이 없으면 키 생략). **거르는 것은 나이·지역·기준일**, 분야(`field`)는 필터가 아니라 맞는 제도에 가산점(`config.FIELD_BOOST`), 상황은 현재 검색에 쓰이지 않음
-- B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용). 서비스당 조각 1개·관련도 순, 결과가 없으면 필터를 풀어 재검색(지역→연령, 분야·상황은 필터가 아니라 풀지 않음), 그래도 없으면 `[]`. 완화 여부가 필요하면 `hybrid.search_with_info(...)`(점수·`filters_used`·`relaxed` 포함)
-- B → C (implemented and used by `evidence.select_evidence`): `vector_store.get_service_chunks(service_id) -> list[Chunk]` — 검색 결과에 없던 같은 서비스의 다른 항목 조각이 필요할 때. 필터는 `vector_store.build_where(filters)`로 저장소 조건이 된다.
+- B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용). 서비스당 조각 1개·관련도 순, **질문에 지역이 없으면 지자체 제도를 뒤로 보내 전국 제도를 먼저 준다**(`config.LOCAL_PENALTY`, 제외는 아님. 지역을 되묻는 것은 C의 응답 흐름), 결과가 없으면 필터를 풀어 재검색(지역→연령, 분야·상황은 필터가 아니라 풀지 않음), 그래도 없으면 `[]`. 완화 여부가 필요하면 `hybrid.search_with_info(...)`(점수·`filters_used`·`relaxed` 포함)
+- B → C (implemented and used by `evidence.select_evidence`): `vector_store.get_service_chunks(service_id) -> list[Chunk]` — 검색 결과에 없던 같은 서비스의 다른 항목 조각이 필요할 때. 필터는 `vector_store.build_where(filters)`로 저장소 조건이 된다. 저장소의 `region`은 A가 주면 그 값, 없으면 소관기관명으로 추정한 시·도(`filters.agency_region`)다.
 - C의 최종 출력: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
 - 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
 - A 구현 계약: `docs/INGEST_A.md`. `pipeline.run(full=False)`는 기존 `list[Chunk]`를 유지하고 이전 미확인 조각도 재전달한다. B는 `store.get_pending_changes()`의 서비스 전체 교체/제거를 두 색인에 적용한 후 service_id+version+event_id로 `acknowledge_changes()`한다. The A-owned `handoff` consumer applies stored event snapshots through existing B APIs, verifies both retrieval paths and acknowledges exact tokens. Real Chroma/fake-embedding integration is tested; actual-model and production-data integration remain unverified.
@@ -74,6 +74,7 @@ python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
 python -m eval.label_helper review                 # Claude 1차 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
+python -m eval.sweep                  # B: Hybrid 가중치·RRF_K·FIELD_BOOST·지역 감점(--local-penalty) 격자 탐색 (색인 필요, 검색 결과는 질문별 캐시)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요 (baseline은 A의 SQLite `data/services.db` 필요)
 ```
 Handoff settings: `--db-path`, `--index-dir`, `--model`; `--validation` requires explicit isolated paths and rejects live destinations/aliases before writes. Fixture/validation source runs require validation mode. One source DB ↔ one target/model is recorded in `<db>.handoff.json` and `<index>/handoff_manifest.json`; changing an association is not an automatic migration. Existing nonempty unbound indexes require `--adopt-existing`; verify the selected model is the original model, since an old collection slug alone cannot prove its identity. Model dimension/max sequence length/cosine settings must agree. Worker-only config changes and offline Hugging Face flags prevent caller cache/config leakage and model downloads. Raw data, DB/Chroma files, manifests and locks stay out of Git.
