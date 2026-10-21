@@ -338,7 +338,8 @@ def _title(thread: list[dict]) -> str:
 def _sidebar() -> None:
     with st.sidebar:
         st.markdown("### 🧭 청년 지원제도 길잡이")
-        st.caption("행정안전부 공공서비스(혜택) 정보(보조금24) 중 청년 대상 제도를 근거로 답합니다.")
+        st.caption("행정안전부 공공서비스(혜택) 정보(보조금24) 중 개인·가구 지원제도(일자리·주거·교육·생활·결혼·출산·육아 등)를 "
+                   "근거로 답합니다.")
         if st.button("＋ 새 질문", use_container_width=True, type="primary"):
             st.session_state.current, st.session_state.follow = None, False
             st.rerun()

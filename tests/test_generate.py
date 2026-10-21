@@ -112,7 +112,7 @@ def test_generate_answer_without_evidence():
     assert isinstance(answer, Answer)
     assert answer.no_evidence is True and answer.recommendations == []
     assert NO_EVIDENCE_MESSAGE in answer.text                    # 모른다고 답하고 담당 기관 안내
-    assert SCOPE_NOTICE in answer.text                           # 청년 대상 범위 안내 (README 1.1)
+    assert SCOPE_NOTICE in answer.text                           # 자료 범위 안내 (README 1.1)
 
 
 def test_answer_question_no_evidence_end_to_end(fake_search, fake_conditions):
