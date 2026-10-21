@@ -477,7 +477,7 @@ python -m eval.label_helper review                 # Claude가 1차로 채운 �
 
 ```
 python -m eval.run_eval --experiment hybrid_filter --k 5
-python -m eval.sweep                                   # Hybrid 가중치·RRF_K·FIELD_BOOST 탐색 (MRR 순 표)
+python -m eval.sweep                                   # Hybrid 가중치·RRF_K·FIELD_BOOST 탐색 (MRR 순 표). --local-penalty 0,0.002,1 로 지역 제도 감점 실험
 python -m eval.run_eval --experiment all --today 2026-10-19       # 전체 비교표 (재현하려면 --today 고정)
 ```
 

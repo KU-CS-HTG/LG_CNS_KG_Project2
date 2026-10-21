@@ -53,4 +53,10 @@ def test_retrieval_is_cached_across_combinations(indexed_sample, questions, monk
 def test_format_table():
     rows = [{"bm25_weight": 0.3, "rrf_k": 60, "field_boost": 0.002, "hit_rate": 0.6, "recall": 0.3, "mrr": 0.45}]
     out = sweep.format_table(rows, 5)
-    assert "| 0.3 | 60 | 0.002 | 0.600 | 0.300 | 0.450 |" in out and "Hit Rate@5" in out
+    assert "| 0.3 | 60 | 0.002 | 0 | 0.600 | 0.300 | 0.450 |" in out and "Hit Rate@5" in out
+
+
+def test_local_penalty_axis_and_restore(indexed_sample, questions):
+    rows = sweep.run_sweep(questions, 5, (0.2,), (60,), (0.0,), today="2026-10-19", local_penalties=(0.0, 0.004, 1.0))
+    assert sorted(r["local_penalty"] for r in rows) == [0.0, 0.004, 1.0]
+    assert config.LOCAL_PENALTY == 0.0                                  # 끝나면 원래 값

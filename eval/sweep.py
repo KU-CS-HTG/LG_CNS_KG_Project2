@@ -5,6 +5,7 @@
 
   python -m eval.sweep                                  # 기본 격자, K=5
   python -m eval.sweep --bm25 0,0.2,0.5,1 --rrf-k 20,60 --boost 0,0.002
+  python -m eval.sweep --bm25 0.2 --rrf-k 60 --local-penalty 0,0.001,0.002,0.004,0.008,1   # 지역 제도 감점 실험
 
 주의: 정답 지정 질문이 수십 개뿐이라 상위 조합 간 차이가 작으면 우연일 수 있다. 질문 세트(검수 후)가 커진 뒤
 '확실히 더 좋은' 조합만 config에 반영하고 8.3/9.4에 기록한다.
@@ -25,6 +26,7 @@ RESULTS_DIR = run_eval.RESULTS_DIR
 DEFAULT_BM25 = (0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0)
 DEFAULT_RRF_K = (10, 30, 60)
 DEFAULT_BOOST = (config.FIELD_BOOST,)
+DEFAULT_LOCAL = (0.0, 0.001, 0.002, 0.004, 0.008, 1.0)   # 1.0은 사실상 지역 제도를 맨 뒤로 보냄
 
 
 def _floats(text: str) -> tuple[float, ...]:
@@ -56,39 +58,41 @@ def cached_retrieval():
 
 
 @contextmanager
-def hybrid_params(vector_weight: float, bm25_weight: float, rrf_k: int, field_boost: float):
+def hybrid_params(vector_weight: float, bm25_weight: float, rrf_k: int, field_boost: float, local_penalty: float = 0.0):
     """hybrid 모듈이 읽는 설정을 잠시 바꾼다 (config 값과 rrf 기본 인자)."""
     from src.retrieve import hybrid
 
-    saved = (config.HYBRID_WEIGHTS, config.FIELD_BOOST, hybrid.rrf, hybrid.boost_by_field)
+    saved = (config.HYBRID_WEIGHTS, config.FIELD_BOOST, hybrid.rrf, hybrid.boost_by_field, config.LOCAL_PENALTY)
     orig_rrf, orig_boost = hybrid.rrf, hybrid.boost_by_field
     config.HYBRID_WEIGHTS = (vector_weight, bm25_weight)
     config.FIELD_BOOST = field_boost
+    config.LOCAL_PENALTY = local_penalty
     hybrid.rrf = lambda rankings, weights=None, rrf_k_=rrf_k, **kw: orig_rrf(rankings, weights, rrf_k=rrf_k_)
     hybrid.boost_by_field = lambda ranked, wanted, boost=field_boost: orig_boost(ranked, wanted, boost)
     try:
         yield
     finally:
-        config.HYBRID_WEIGHTS, config.FIELD_BOOST, hybrid.rrf, hybrid.boost_by_field = saved
+        config.HYBRID_WEIGHTS, config.FIELD_BOOST, hybrid.rrf, hybrid.boost_by_field, config.LOCAL_PENALTY = saved
 
 
 def run_sweep(questions: list[dict], k: int, bm25_weights, rrf_ks, boosts, today: str | None = None,
-              experiment: str = "hybrid_filter") -> list[dict]:
+              experiment: str = "hybrid_filter", local_penalties=(0.0,)) -> list[dict]:
     rows = []
     with cached_retrieval():
-        for bm25_w, rrf_k, boost in itertools.product(bm25_weights, rrf_ks, boosts):
-            with hybrid_params(1.0, bm25_w, rrf_k, boost):
+        for bm25_w, rrf_k, boost, penalty in itertools.product(bm25_weights, rrf_ks, boosts, local_penalties):
+            with hybrid_params(1.0, bm25_w, rrf_k, boost, penalty):
                 result = run_eval.run_experiment(experiment, questions, run_eval.make_search_fn(experiment, today), k, today)
             s = result["metrics"]
-            rows.append({"bm25_weight": bm25_w, "rrf_k": rrf_k, "field_boost": boost,
+            rows.append({"bm25_weight": bm25_w, "rrf_k": rrf_k, "field_boost": boost, "local_penalty": penalty,
                          "hit_rate": s[f"hit_rate@{k}"], "recall": s[f"recall@{k}"], "mrr": s["mrr"]})
     return sorted(rows, key=lambda r: (-r["mrr"], -r["hit_rate"], -r["recall"]))
 
 
 def format_table(rows: list[dict], k: int, top: int = 15) -> str:
-    lines = [f"| BM25 가중치 | RRF_K | FIELD_BOOST | Hit Rate@{k} | Recall@{k} | MRR |", "|---|---|---|---|---|---|"]
+    lines = [f"| BM25 가중치 | RRF_K | FIELD_BOOST | 지역 감점 | Hit Rate@{k} | Recall@{k} | MRR |", "|---|---|---|---|---|---|---|"]
     for r in rows[:top]:
-        lines.append(f"| {r['bm25_weight']:g} | {r['rrf_k']} | {r['field_boost']:g} | {r['hit_rate']:.3f} | {r['recall']:.3f} | {r['mrr']:.3f} |")
+        lines.append(f"| {r['bm25_weight']:g} | {r['rrf_k']} | {r['field_boost']:g} | {r.get('local_penalty', 0):g} | "
+                     f"{r['hit_rate']:.3f} | {r['recall']:.3f} | {r['mrr']:.3f} |")
     return "\n".join(lines)
 
 
@@ -97,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--bm25", type=_floats, default=DEFAULT_BM25, help="BM25 가중치 목록 (Vector는 1.0 고정, 쉼표 구분)")
     ap.add_argument("--rrf-k", type=lambda t: tuple(int(x) for x in t.split(",")), default=DEFAULT_RRF_K)
     ap.add_argument("--boost", type=_floats, default=DEFAULT_BOOST, help="FIELD_BOOST 목록")
+    ap.add_argument("--local-penalty", type=_floats, default=(config.LOCAL_PENALTY,), help="지역 없는 질문에서 지자체 제도 점수에서 뺄 값 목록 (예: 0,0.002,1)")
     ap.add_argument("--k", type=int, default=config.DEFAULT_TOP_K)
     ap.add_argument("--top", type=int, default=15, help="표에 보여 줄 상위 조합 수")
     ap.add_argument("--questions", default=str(run_eval.QUESTIONS_PATH))
@@ -109,8 +114,8 @@ def main(argv: list[str] | None = None) -> None:
     if vector_store.count() == 0:
         raise SystemExit("색인이 비어 있습니다. 먼저 python -m src.ingest.handoff --apply")
     questions = run_eval.load_questions(args.questions)
-    rows = run_sweep(questions, args.k, args.bm25, args.rrf_k, args.boost, args.today)
-    ref = next((r for r in rows if r["bm25_weight"] == 1.0 and r["rrf_k"] == config.RRF_K and r["field_boost"] == config.FIELD_BOOST), None)
+    rows = run_sweep(questions, args.k, args.bm25, args.rrf_k, args.boost, args.today, local_penalties=args.local_penalty)
+    ref = next((r for r in rows if r["bm25_weight"] == 1.0 and r["rrf_k"] == config.RRF_K and r["field_boost"] == config.FIELD_BOOST and r["local_penalty"] == config.LOCAL_PENALTY), None)
     print(f"조합 {len(rows)}개 (질문 {len(run_eval.split_questions(questions)[0])}개 평가, K={args.k}). MRR 순:\n")
     print(format_table(rows, args.k, args.top))
     if ref:

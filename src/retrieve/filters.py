@@ -59,6 +59,34 @@ def apply_filters(chunks: list[Chunk], filters: Filters) -> list[Chunk]:
     return [c for c in chunks if _passes(c, filters)]
 
 
+_SIDO_FULL = {
+    "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천", "광주광역시": "광주",
+    "대전광역시": "대전", "울산광역시": "울산", "세종특별자치시": "세종", "경기도": "경기", "강원도": "강원",
+    "강원특별자치도": "강원", "충청북도": "충북", "충청남도": "충남", "전라북도": "전북", "전북특별자치도": "전북",
+    "전라남도": "전남", "경상북도": "경북", "경상남도": "경남", "제주특별자치도": "제주", "제주도": "제주",
+}
+_SIDO_SHORT = sorted(set(_SIDO_FULL.values()), key=len, reverse=True)
+_SIDO_BY_LENGTH = sorted(_SIDO_FULL, key=len, reverse=True)
+_LOCAL_UNIT = re.compile(r"^[가-힣]{1,6}(시|군|구)(\s|$)")
+
+
+def is_local(chunk: Chunk) -> bool:
+    """지자체(지역) 제도인가. 저장된 metadata.region이 있으면 그것을, 없으면 소관기관명으로 추정한다.
+
+    A의 지역 어댑터가 아직 region을 채우지 않아서(INGEST_A.md) 기관명으로 추정한다: 시·도 이름으로 시작하거나
+    '○○시/군/구'로 시작하면 지역 제도, 그 밖(중앙부처·공공기관)은 전국 단위로 본다. 추정이므로 정확하지 않을 수 있다.
+    """
+    region = chunk.metadata.get("region")
+    if region:
+        return region != NATIONWIDE
+    agency = (chunk.metadata.get("agency") or "").strip()
+    if any(agency.startswith(full) for full in _SIDO_BY_LENGTH):
+        return True
+    if any(agency.startswith(short) and len(agency) > len(short) for short in _SIDO_SHORT):
+        return True
+    return bool(_LOCAL_UNIT.match(agency))
+
+
 def field_matches(chunk_field: str | None, wanted: str | None) -> bool:
     """제도의 분야가 사용자의 관심 분야와 맞는가 (가산점 판정용). 한쪽이 다른 쪽을 포함하면 맞는 것으로 본다.
     예: wanted "주거" / 제도 분야 "주거·자립" -> True. 어느 한쪽이 비어 있으면 False (가산점 없음, 거르지는 않음)."""

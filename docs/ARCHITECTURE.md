@@ -203,6 +203,7 @@ Interest field remains a score boost; age/region/deadline semantics and C full-s
 - `tests/fixtures/sample_eval_questions.jsonl` 추가(정답이 샘플 id인 평가 질문). `run_eval`이 정답 없음 오류 시 샘플 실행 방법을 안내. 테스트가 이 파일을 사용.
 - `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.
 - 관심 분야를 필터에서 가산점으로 변경(B·C 합의): `vector_store.build_where`와 `filters.apply_filters`에서 field 조건 제거, `filters.relax`는 지역→연령만 풀고 field·situation은 유지(`filters_used`에 그대로 남아 완화 안내에는 지역·연령만 나옴), `filters.field_matches`와 `hybrid.boost_by_field` 추가, `config.FIELD_BOOST`, `schema.Filters` 설명 갱신. 관련 테스트 수정·추가(분야가 달라도 제도가 남는 회귀 테스트 포함). C 코드는 변경 없음.
+- 지역 감점 실험: `config.LOCAL_PENALTY`(기본 0=끔), `hybrid.penalize_local`, `filters.is_local`(metadata.region이 있으면 그것, 없으면 소관기관명으로 지자체 추정). 질문에 지역이 없을 때(hybrid_filter)만 지자체 제도 점수에서 값을 빼 전국 제도를 앞세운다. 거르지는 않는다. `eval.sweep --local-penalty`로 효과를 측정하며, 효과가 확인되고 C와 합의되기 전까지 기본값은 끔. 이유: A의 지역 어댑터가 아직 region을 채우지 않아(INGEST_A.md) 기존 지역 필터가 실데이터에서 작동하지 않으므로 기관명으로 추정한다.
 - `eval/sweep.py` 추가: Hybrid의 BM25 가중치·RRF_K·FIELD_BOOST 조합을 run_eval과 같은 지표로 비교(Vector·BM25 후보는 질문별로 한 번만 계산해 캐시, 합산 단계만 반복). 기본 설정 조합이 run_eval 결과와 같은지 테스트로 확인. `tests/test_sweep.py` 추가.
 - `label_helper drop 질문id` 추가: 폐기할 질문을 안전하게 삭제(후속 문항이 있으면 중단, 백업 저장). 테스트 추가.
 - `run_eval`이 벡터 실험 전에 "정답 제도가 색인에 없는 질문"을 알려 줌(`missing_gold`). 청년 판정 제외·기한 종료 등으로 정답이 색인에 없으면 검색 개선으로는 못 맞히므로, 낮은 점수를 해석하기 전에 먼저 확인한다.

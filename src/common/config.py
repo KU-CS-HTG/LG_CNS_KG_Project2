@@ -27,6 +27,7 @@ DEFAULT_TOP_K = 5                # 평가에서 3 / 5 / 10 비교
 HYBRID_CANDIDATES = 50           # Vector·BM25 각각에서 가져올 후보 수 (서비스 중복 제거 후 Top-K를 채우기 위해 넉넉히)
 RRF_K = 60                       # Reciprocal Rank Fusion 상수 (순위 합산 시 상위 순위의 영향 정도)
 HYBRID_WEIGHTS = (1.0, 1.0)      # (Vector, BM25) 가중치. 실험으로 조정
+LOCAL_PENALTY = 0.0                # 질문에 지역이 없을 때, 지자체(지역) 제도의 RRF 점수에서 빼는 값 (0이면 끔). 지역을 모르면 전국 제도를 먼저 안내하려는 실험 (eval.sweep으로 조정)
 FIELD_BOOST = 0.002              # 관심 분야(Filters.field)가 제도의 분야와 맞으면 RRF 점수에 더하는 값. 필터가 아니라 가산점이다 (0이면 끔).
                                  # 1/(RRF_K+순위) 기준으로 한 검색에서 약 9순위 차이. 실험(eval)으로 조정
 MAX_RECOMMENDATIONS = 5          # 답변에 담는 제도 수 상한 (3~5개)

@@ -93,3 +93,21 @@ def test_field_matches():
     assert field_matches("주거", "주거·자립")
     assert not field_matches("일자리", "주거")
     assert not field_matches("", "주거") and not field_matches("주거", None) and not field_matches(None, None)
+
+
+def test_is_local_uses_region_then_agency():
+    from src.common.schema import Chunk
+    from src.retrieve import filters as f
+
+    def c(agency=None, region=None):
+        md = {}
+        if agency:
+            md["agency"] = agency
+        if region:
+            md["region"] = region
+        return Chunk("x#a", "x", "n", "지원대상", "t", md, "")
+
+    assert f.is_local(c("서울특별시 강서구")) and f.is_local(c("경기도")) and f.is_local(c("부산광역시"))
+    assert f.is_local(c("경기주택도시공사")) and f.is_local(c("안산시 단원구")) and f.is_local(c("강남구"))
+    assert not f.is_local(c("국토교통부")) and not f.is_local(c("한국장학재단")) and not f.is_local(c("고용노동부")) and not f.is_local(c())
+    assert f.is_local(c("국토교통부", region="서울")) and not f.is_local(c("서울특별시", region="전국"))   # metadata.region이 우선

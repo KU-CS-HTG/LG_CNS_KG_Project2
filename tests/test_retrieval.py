@@ -147,3 +147,16 @@ def test_python_filter_matches_store_filter(indexed_sample, flt):
     col = vector_store._collection()
     from_store = {m["service_id"] for m in col.get(where=vector_store.build_where(flt), include=["metadatas"])["metadatas"]}
     assert from_python == from_store
+
+
+def test_penalize_local_reorders_without_dropping():
+    from src.common.schema import Chunk
+    from src.retrieve import hybrid
+
+    def c(sid, agency):
+        return Chunk(f"{sid}#a", sid, sid, "지원대상", "t", {"agency": agency}, "")
+
+    ranked = [(c("L1", "서울특별시 강서구"), 0.0160), (c("N1", "국토교통부"), 0.0150), (c("L2", "경기도"), 0.0140), (c("N2", "고용노동부"), 0.0130)]
+    assert [x.service_id for x, _ in hybrid.penalize_local(ranked, 0.0)] == ["L1", "N1", "L2", "N2"]         # 끔
+    assert [x.service_id for x, _ in hybrid.penalize_local(ranked, 0.0015)] == ["N1", "L1", "N2", "L2"]     # 0.0145, 0.0150, 0.0125, 0.0130
+    assert [x.service_id for x, _ in hybrid.penalize_local(ranked, 1.0)] == ["N1", "N2", "L1", "L2"]         # 지역 제도는 뒤로, 사라지지 않음
