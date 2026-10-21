@@ -345,15 +345,15 @@ def test_application_period_comes_from_ingest_record(monkeypatch, sample_chunks,
     db.write_text("")
     monkeypatch.setattr(config, "DB_PATH", db)
     monkeypatch.setattr(generator.ingest_store, "get_record",
-                        lambda sid: {"payload": {"application_period": "(1차) 2026년 5월 22일~6월 22일"}})
+                        lambda sid: {"payload": {"application_period": "연중 상시 신청(예산 소진 시 조기 마감될 수 있음)"}})
     rec = generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
-    assert rec.how_to_apply.endswith(" / 신청기한: (1차) 2026년 5월 22일~6월 22일")
+    assert rec.how_to_apply.endswith(" / 신청기한: 연중 상시 신청(예산 소진 시 조기 마감될 수 있음)")
 
     def broken(sid):
         raise RuntimeError("database is locked")
     monkeypatch.setattr(generator.ingest_store, "get_record", broken)          # 읽기 실패해도 답변은 나온다
     rec = generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
-    assert "신청기한:" in rec.how_to_apply and "1차" not in rec.how_to_apply
+    assert "신청기한:" in rec.how_to_apply and "연중" not in rec.how_to_apply
 
     called = []
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "none.db")              # DB가 없으면 부르지 않는다 (새로 만들지 않게)
@@ -397,9 +397,15 @@ def test_expired_services_are_dropped_and_upcoming_marked(monkeypatch, sample_ch
     monkeypatch.setattr(config, "DB_PATH", db)
     monkeypatch.setattr(generator.ingest_store, "get_record",
                         lambda sid: {"payload": {"application_period": periods.get(sid, "")}})
+    periods["SAMPLE005"] = "(2020년 2학기) (1차) 2020년 5월 22일~6월 22일"           # 학기마다 반복 (국가장학금)
     kept = generator._drop_expired(sample_chunks, date(2026, 10, 21))
     assert not any(c.service_id == "SAMPLE001" for c in kept)                     # 마감 지남 -> 후보에서 제외
     assert any(c.service_id == "SAMPLE004" for c in kept)                         # 시행 예정 -> 남김
+    assert any(c.service_id == "SAMPLE005" for c in kept)                         # 이번 회차만 끝난 반복 제도 -> 남김
+    recurring = [c for c in sample_chunks if c.service_id == "SAMPLE005"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE005", "applicable": "확인 필요", "meets_need": True}]})
+    rec = generator._generate("구직 중이에요", {"SAMPLE005": recurring}, [], None).recommendations[0]
+    assert f" / 신청기한: {generator.CLOSED_RECURRING_MARK} · (2020년 2학기)" in rec.how_to_apply
     chunks = [c for c in sample_chunks if c.service_id == "SAMPLE004"]
     _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE004", "applicable": "확인 필요", "meets_need": True}]})
     rec = generator._generate("구직 중이에요", {"SAMPLE004": chunks}, [], None).recommendations[0]

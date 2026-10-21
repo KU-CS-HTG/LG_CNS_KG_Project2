@@ -296,7 +296,9 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     period = _application_period(chunks[0].service_id)
     start = _period_start(period)
     if start and start > date.today() and not _OPEN_PERIOD_RE.search(period):
-        period = f"{UPCOMING_MARK} · {period}"     # 아직 접수 전인 제도 (마감 지난 제도는 _drop_expired가 이미 뺐다)
+        period = f"{UPCOMING_MARK} · {period}"     # 아직 접수 전인 제도 (마감 지난 1회성 제도는 _drop_expired가 이미 뺐다)
+    elif _recurring_closed(period, date.today()):
+        period = f"{CLOSED_RECURRING_MARK} · {period}"   # 이번 신청은 끝났고 다시 모집하는 제도
     how += f" / 신청기한: {period or (f'{deadline}까지' if deadline else '상시 또는 정보 없음')}"
 
     return Recommendation(
@@ -312,6 +314,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
 
 MAX_PERIOD_CHARS = 120   # 카드에 보여 줄 신청기한 원문 최대 길이 (공고 안내 문단이 통째로 붙는 것 방지)
 UPCOMING_MARK = "신청 예정"   # 신청 시작일이 아직 오지 않은 제도의 신청기한 앞에 붙인다 (시행 예정 제도도 안내하되 구분)
+CLOSED_RECURRING_MARK = "이번 신청 마감 · 다음 공고 확인"   # 학기·해마다 반복되는 제도의 이번 회차가 끝났을 때
 
 
 def _application_period(service_id: str) -> str:
@@ -645,12 +648,14 @@ def _drop_expired(chunks: list[Chunk], today: date) -> list[Chunk]:
 
     B의 기한 필터는 A가 날짜로 해석한 deadline만 보는데, '2026년 상반기'·'(1차) 5월 22일~6월 22일 (2차) 8월 12일~9월 9일'·
     '2026. 9. 1.~9. 10.'은 deadline이 비어 지난 제도가 그대로 나왔다 (연도가 적힌 기간 134건 중 상당수).
+    학기·해마다 다시 모집하는 제도(_recurring_closed: 국가장학금 등)는 빼지 않고 카드에 '다음 공고 확인'으로 안내한다.
     원문을 읽을 수 없으면 거르지 않는다."""
     cache: dict[str, bool] = {}
     keep = []
     for c in chunks:
         if c.service_id not in cache:
-            cache[c.service_id] = _period_expired(_application_period(c.service_id), today)
+            period = _application_period(c.service_id)
+            cache[c.service_id] = _period_expired(period, today) and not _recurring_closed(period, today)
         if not cache[c.service_id]:
             keep.append(c)
     return keep
@@ -718,6 +723,15 @@ def _period_dates(text: str) -> list[tuple[date, date]]:
         elif g["mo"] or g["mo2"]:
             add(year, int(g["mo"] or g["mo2"]))
     return ends
+
+
+# 해마다·학기마다 다시 모집하는 제도의 표현 ('(2026년 2학기) (1차)…', '연 1회', '(매년 상이함)', '(연도별 상이)')
+_RECURRING_PERIOD_RE = re.compile(r"학기|매\s*년|연\s*\d\s*회|연도\s*별|분기|정기\s*모집|\(\s*\d\s*차\s*\)|상[.·/]\s*하반기")
+
+
+def _recurring_closed(text: str, today: date) -> bool:
+    """이번 신청은 끝났지만 다시 모집하는 제도인가 (국가장학금처럼 학기·해마다 반복). 빼지 않고 '다음 공고 확인'으로 안내한다."""
+    return _period_expired(text, today) and bool(_RECURRING_PERIOD_RE.search(" ".join((text or "").split())))
 
 
 def _period_expired(text: str, today: date) -> bool:

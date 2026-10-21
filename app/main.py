@@ -83,6 +83,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .box .v { font-size:.92rem; line-height:1.55; }
 .deadline { display:inline-block; margin-top:.35rem; font-size:.78rem; font-weight:600; opacity:.8; }
 .upcoming { color:var(--accent); background:var(--accent-soft); padding:.05rem .45rem; border-radius:999px; }
+.closed { color:var(--warn); background:var(--warn-soft); padding:.05rem .45rem; border-radius:999px; }
 
 /* 자격 체크리스트 (확인이 필요한 조건을 사용자가 스스로 체크) */
 [class*="st-key-checklist_"] { border-radius:12px; padding:.65rem .9rem .55rem; background:var(--warn-soft); gap:.35rem !important; }
@@ -270,13 +271,15 @@ def _card_head(i: int, r: Recommendation, checked: int) -> str:
 
 
 def _deadline_html(deadline: str) -> str:
-    """신청 기간 줄. 아직 접수 전인 제도('신청 예정 · ...')는 강조색으로 구분한다."""
+    """신청 기간 줄. 아직 접수 전인 제도('신청 예정 · ...')와 이번 회차가 끝난 반복 제도('이번 신청 마감 · ...')는
+    표시를 붙여 구분한다."""
     if not deadline:
         return ""
-    mark = f"{generator.UPCOMING_MARK} · "
-    if deadline.startswith(mark):
-        return (f'<span class="deadline"><span class="upcoming">⏳ {generator.UPCOMING_MARK}</span> '
-                f'{_e(deadline[len(mark):])}</span>')
+    for mark, css, icon in ((generator.UPCOMING_MARK, "upcoming", "⏳"),
+                            (generator.CLOSED_RECURRING_MARK, "closed", "⏸")):
+        if deadline.startswith(f"{mark} · "):
+            return (f'<span class="deadline"><span class="{css}">{icon} {_e(mark)}</span> '
+                    f'{_e(deadline[len(mark) + 3:])}</span>')
     return f'<span class="deadline">📅 신청 기간 · {_e(deadline)}</span>'
 
 
