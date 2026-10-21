@@ -337,6 +337,40 @@ def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chun
     assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
 
 
+def _fake_two_calls(monkeypatch, answer_out: dict, checklist_out: dict):
+    """답변 생성과 자격 체크리스트 추출이 같은 _chat_json을 쓰므로 시스템 프롬프트로 나눠 돌려준다."""
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json",
+                        lambda s, u: checklist_out if s == generator.CHECKLIST_PROMPT else answer_out)
+
+
+def test_checklist_comes_from_separate_extraction_and_is_grounded(monkeypatch, sample_chunks):
+    # 답변 생성의 needs_check는 소득 한두 줄뿐이라 무주택 같은 핵심 자격이 빠졌다 (청년월세·버팀목)
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]   # '서울에 거주하며 월세로 사는 만 19~34세 무주택 청년'
+    _fake_two_calls(monkeypatch,
+                    {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "meets_need": True,
+                                   "needs_check": [{"item": "소득", "criterion": ""}]}]},
+                    {"services": [{"id": "SAMPLE001", "conditions": [
+                        {"item": "주택", "criterion": "무주택"},
+                        {"item": "연령", "criterion": "만 19~34세"},
+                        {"item": "자녀", "criterion": "자녀 3명 이상"}]}]})     # 원문에 없는 조건 -> 버림
+    rec = generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
+    assert rec.needs_check[:2] == ["주택 — 무주택", "연령 — 만 19~34세"]      # 이름은 추출 결과 그대로
+    assert not any("자녀" in n for n in rec.needs_check)
+    # 27살이라고 말해 코드로 나이 충족이 확인되면 연령은 체크할 필요가 없다
+    rec = generator._generate("27살인데 월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
+    assert "주택 — 무주택" in rec.needs_check and not any(n.startswith("연령") for n in rec.needs_check)
+
+
+def test_checklist_falls_back_to_answer_needs_when_extraction_fails(monkeypatch, sample_chunks):
+    chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]
+    _fake_two_calls(monkeypatch,
+                    {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "meets_need": True,
+                                   "needs_check": [{"item": "주택", "criterion": "무주택"}]}]},
+                    {})                                                          # 추출 실패·형식 오류
+    rec = generator._generate("월세가 부담돼요", {"SAMPLE001": chunks}, [], None).recommendations[0]
+    assert "주택 조건 — 무주택" in rec.needs_check
+
+
 def test_named_program_question_drops_other_programs(monkeypatch, sample_chunks):
     # '청년희망적금' 질문에 이름이 비슷한 청년미래적금을 안내하던 문제 (평가 q30)
     from dataclasses import replace
@@ -597,7 +631,8 @@ def test_service_not_meeting_need_is_dropped(fake_search, fake_conditions, monke
     seen = {}
 
     def _chat(system, user):
-        seen["prompt"] = user
+        if system == generator.SYSTEM_PROMPT:        # 자격 체크리스트 추출 호출과 구분
+            seen["prompt"] = user
         return {"services": [{"service_id": c.service_id, "applicable": "확인 필요", "meets_need": False}
                              for c in case["results"]]}
     monkeypatch.setattr("src.generate.condition_extractor._chat_json", _chat)

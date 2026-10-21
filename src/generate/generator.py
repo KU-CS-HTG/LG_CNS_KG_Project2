@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from src.common import config
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
@@ -77,6 +78,48 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
 [근거]의 모든 제도를 services에 한 번씩 넣는다."""
 
 
+CHECKLIST_PROMPT = """너는 정부 지원제도의 신청 자격을 체크리스트로 정리한다. 각 [제도]의 지원대상·선정기준만 보고,
+신청자가 스스로 해당 여부를 확인할 수 있는 자격 조건을 뽑아 JSON 객체 하나를 출력한다.
+
+규칙:
+- 조건마다 item과 criterion을 적는다.
+  item: 조건의 짧은 이름 (연령, 거주지, 소득, 재산, 주택, 세대주, 혼인, 자녀, 재학, 취업 상태, 성적, 국적 등).
+  criterion: 그 조건이 적힌 [제도] 원문 구절을 글자 그대로 복사한 짧은 부분 (40자 이내, 바꿔 쓰지 않는다).
+- 한 문장에 여러 조건이 있으면 나눈다. 예: '만 19~34세 이하로 부모님과 별도 거주하는 무주택자'
+  -> 연령 '만 19~34세 이하', 거주 형태 '부모님과 별도 거주', 주택 '무주택자'.
+- 지원 내용, 신청 방법, 제출 서류, 사업 기간, 지원 규모, 선발 순위, 문의처는 자격 조건이 아니다.
+- 대상 유형이 여럿이면(청년 / 신혼부부) item에 유형을 붙인다. 예: '신혼부부 혼인 기간'.
+- 대상 자체를 정하는 조건부터 최대 6개. 원문에 자격 조건이 없으면 빈 배열이다.
+
+출력 형식: {"services": [{"id": [제도]의 id, "conditions": [{"item": 조건 이름, "criterion": 원문 구절}]}]}"""
+MAX_CHECKLIST_ITEMS = 6
+
+
+def _extract_checklists(evidence: dict[str, list[Chunk]]) -> dict[str, list[dict]]:
+    """제도별 자격 체크리스트 원본 (LLM, 근거 검증 전). 실패하면 빈 dict (답변 생성의 needs_check로 대신한다).
+
+    답변 생성 LLM이 덤으로 적는 needs_check는 소득 한두 줄만 나오고 무주택·세대주·자녀 수·재학 같은 핵심 자격이
+    빠졌다 (청년월세·버팀목·다자녀 국가장학금). 자격만 뽑는 호출을 따로 두고, 답변 생성과 동시에 돌려 시간이 늘지 않게 한다."""
+    blocks = []
+    for sid, chunks in evidence.items():
+        sections = _sections(chunks)
+        body = "\n".join(f"- {s}: {sections[s]}" for s in ("지원대상", "선정기준") if sections.get(s))
+        if body:
+            blocks.append(f"[제도 id={sid}] {chunks[0].service_name}\n{body}")
+    if not blocks:
+        return {}
+    try:
+        out = condition_extractor._chat_json(CHECKLIST_PROMPT, "\n\n".join(blocks))
+    except Exception as e:  # 네트워크·키·JSON 오류
+        log.warning("자격 체크리스트 추출 실패, 답변 생성의 확인 필요 조건으로 대체: %s", e)
+        return {}
+    result: dict[str, list[dict]] = {}
+    for s in out.get("services") or []:
+        if isinstance(s, dict) and isinstance(s.get("conditions"), list):
+            result[str(s.get("id")).strip()] = s["conditions"][:MAX_CHECKLIST_ITEMS]
+    return result
+
+
 def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
     return _generate(question, evidence, [])
 
@@ -101,11 +144,14 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
     if not evidence:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
-    try:
-        out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
-    except Exception as e:  # 네트워크·키·JSON 오류
-        log.warning("답변 생성 실패, 원문으로 대체: %s", e)
-        out = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:      # 답변 생성과 자격 체크리스트 추출을 동시에
+        answer_job = pool.submit(condition_extractor._chat_json, SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
+        checklists = pool.submit(_extract_checklists, evidence).result()
+        try:
+            out = answer_job.result()
+        except Exception as e:  # 네트워크·키·JSON 오류
+            log.warning("답변 생성 실패, 원문으로 대체: %s", e)
+            out = {}
     # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
     # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
     judged = isinstance(out.get("services"), list)
@@ -132,7 +178,7 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         if needs and gen.get("meets_need") is False:
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
         recs.append(_to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
-                                       if gen.get("meets_need") is True else None))
+                                       if gen.get("meets_need") is True else None, checklists.get(sid)))
 
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
@@ -202,15 +248,19 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[s
     return head + "\n\n".join(blocks)
 
 
-def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: list[str] | None = None) -> Recommendation:
+def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: list[str] | None = None,
+                       checklist: list[dict] | None = None) -> Recommendation:
     """LLM 출력이 없거나 빠진 항목은 조각 원문으로 채운다.
 
     asked: 이 제도가 도와준다고 판정된(meets_need) '찾는 것' 구절. 나이·거주지 짝이 없을 때 일반 문구 대신 쓴다
-    (실제 데이터: 나이·지역 없이 '면접 비용 지원'만 물으면 모든 카드의 이유가 같은 일반 문구였다)."""
+    (실제 데이터: 나이·지역 없이 '면접 비용 지원'만 물으면 모든 카드의 이유가 같은 일반 문구였다).
+    checklist: 자격 조건만 따로 뽑은 결과(_extract_checklists). 있으면 확인 필요 조건(needs_check)으로 쓰고,
+    없으면 답변 생성의 needs_check를 쓴다. 어느 쪽이든 기준 구절은 원문에 있는 것만 남긴다."""
     meta = _merged_meta(chunks)
     raw = _sections(chunks)
     llm_pairs = _grounded_matches(question, chunks, gen.get("matches"))
-    said, conds = _merge_pairs(_code_matches(question, chunks), llm_pairs)
+    code_pairs = _code_matches(question, chunks)
+    said, conds = _merge_pairs(code_pairs, llm_pairs)
     if said:
         reason = f"말씀하신 {', '.join(f'‘{s}’' for s in said)} 조건이 이 제도의 대상" \
                  + (f"({', '.join(f'‘{c}’' for c in conds)})" if conds else "") + "에 해당될 수 있어요."
@@ -219,7 +269,11 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     else:
         reason = GENERIC_REASON
 
-    needs = _needs_with_criteria(gen.get("needs_check"), chunks)
+    needs = _needs_with_criteria(checklist, chunks, sections=TARGET_SECTIONS, keep_names=True) if checklist else []
+    if needs:     # 사용자가 말해서 코드로 충족이 확인된 나이·거주지 조건은 체크할 필요가 없다
+        needs = _drop_satisfied(needs, code_pairs[1])
+    else:         # 체크리스트를 못 뽑았거나 원문에서 하나도 확인되지 않으면 답변 생성의 확인 필요 조건을 쓴다
+        needs = _needs_with_criteria(gen.get("needs_check"), chunks)
     # 질문에서 확인된 근거가 없으면 '가능'이라 하지 않는다. 코드가 만든 나이·지역 짝은 이유 문장에만 쓰고,
     # '가능'은 LLM 자신의 판단 근거(짝)가 검증될 때만 인정한다 (LLM이 사용자가 말하지 않은 '무주택'으로 '가능'이라 한 경우 차단)
     applicable = gen.get("applicable") if llm_pairs[0] else UNCLEAR
@@ -305,16 +359,37 @@ NO_CRITERION = "(기준은 원문 확인)"   # 기준 구절을 옮겨 오지 �
 MAX_REGION_PIECE_CHARS = 40   # 이유 문장에 넣는 거주지 근거 구절 최대 길이 (긴 전입 조건 문장이 그대로 들어가지 않게)
 
 
-def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
+TARGET_SECTIONS = ("지원대상", "선정기준")   # 자격 조건이 적힌 항목
+
+
+def _drop_satisfied(needs: list[str], verified: list[str]) -> list[str]:
+    """코드가 질문과 짝지어 충족을 확인한 나이·거주지 조건(_code_matches의 근거 구절)과 같은 체크 항목을 뺀다.
+    '연령 — 만 19~34세 이하'는 27살이라고 말했으면 이미 맞으므로 체크할 필요가 없다. 나이·거주지 항목만 뺀다
+    ('만 19~34세 무주택자'처럼 다른 조건이 섞인 구절을 통째로 빼지 않게)."""
+    squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%~]", "", s)  # noqa: E731
+    done = [squash(v) for v in verified if v]
+    def satisfied(n: str) -> bool:
+        label, sep, crit = n.partition(" — ")
+        return bool(sep) and label.split()[-1] in ("연령", "거주지") and any(     # '청년 연령'처럼 유형이 붙어도
+            squash(crit) in d or d in squash(crit) for d in done)
+    return [n for n in needs if not satisfied(n)]
+
+
+def _needs_with_criteria(items, chunks: list[Chunk], sections: tuple[str, ...] | None = None,
+                         keep_names: bool = False) -> list[str]:
     """확인 필요 조건에 근거 원문의 기준을 붙인다: '소득 — 기준 중위소득 150% 이하'.
 
     이름만 있으면('소득 기준') 사용자가 결국 원문을 열어 봐야 했다. 기준 구절은 근거 원문에 글자 그대로 있을 때만
     붙인다 (LLM이 금액·비율을 지어내거나 바꿔 쓰는 일 차단, 이유 문장의 matches와 같은 원리).
-    기준 구절이 없으면 그 조건 이름이 원문에 나올 때만 '(기준은 원문 확인)'을 붙여 남기고, 원문에 없는 조건은 뺀다."""
+    기준 구절이 없으면 그 조건 이름이 원문에 나올 때만 '(기준은 원문 확인)'을 붙여 남기고, 원문에 없는 조건은 뺀다.
+
+    keep_names: 조건 이름을 LLM이 준 그대로 쓴다 (자격 체크리스트 추출 결과). 답변 생성 LLM은 이름이 자주 어긋나
+    기준 구절 내용으로 이름을 다시 붙이지만(_criterion_label), 그 규칙은 '6세이하 자녀를 둔 한부모가족'을 연령으로,
+    '관내 대학 재학생'을 거주지로 바꿨다. 자격만 뽑는 호출은 이름을 조건별로 정확히 줘서 그대로 둔다."""
     # 글자·숫자·%만 남겨 비교한다: 원문의 각주 표시('원가구*의')·괄호·따옴표를 LLM이 빼고 옮겨도 같은 구절로 본다
     # (내용은 정확한데 '*' 하나 때문에 기준이 빠졌다). 금액·비율 숫자는 그대로 검증된다.
     squash = lambda s: re.sub(r"[^0-9A-Za-z가-힣%]", "", s)  # noqa: E731
-    body = squash(" ".join(citation._body_text(c) for c in chunks))
+    body = squash(" ".join(citation._body_text(c) for c in chunks if sections is None or c.section in sections))
     out: list[str] = []
     if isinstance(items, (str, dict)):
         items = [items]
@@ -328,7 +403,7 @@ def _needs_with_criteria(items, chunks: list[Chunk]) -> list[str]:
         if crit and (len(squash(crit)) > MAX_CRITERION_CHARS or squash(crit) not in body):
             crit = ""
         if crit:
-            text = f"{_criterion_label(crit, name)} — {crit}"
+            text = f"{name if keep_names else _criterion_label(crit, name)} — {crit}"
         elif any(len(w) >= 2 and squash(w) in body for w in name.split()):
             text = f"{name} {NO_CRITERION}"     # 원문에 그 조건이 언급은 되지만 기준 구절을 옮겨 오지 못함
         else:
