@@ -1,45 +1,40 @@
 # 개인 맞춤형 정부 지원제도 탐색 및 안내 서비스 (RAG)
 
-사용자가 생활 상황을 자연어로 질문하면(예: "서울에 사는 27살 취업준비생이 받을 수 있는 청년 지원 제도"), 공공데이터에서 해당 가능성이 있는 정부 지원제도를 찾아 **자격조건·신청 절차를 출처와 함께** 안내하는 RAG 서비스입니다. **The audience is young users; the dataset includes general personal/household benefits** (1.1).
+사용자가 생활 상황을 자연어로 질문하면(예: "서울에 사는 27살 취업준비생이 받을 수 있는 청년 지원 제도"), 공공데이터에서 해당 가능성이 있는 정부 지원제도를 찾아 **자격조건·신청 절차를 출처와 함께** 안내하는 RAG 서비스입니다. **청년 사용자를 대상으로 하며, 청년 전용 제도뿐 아니라 일반 개인·가구 지원제도도 안내합니다**([1.1](#11-데이터-범위--청년-사용자를-위한-개인가구-지원)).
 
 - 설계 근거: [`docs/사전기획서.docx`](docs/사전기획서.docx) (1~9장)
 - 상세 설계 이유·변경 이력: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - AI 작업 지침(규칙 원문): [`CLAUDE.md`](CLAUDE.md)
 
-> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B indexing/retrieval and C evidence/generation paths are implemented. The stored-event consumer is verified with real Chroma and fake embeddings; actual-model and production-data integration remain unverified. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
+> A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B의 색인·검색과 C의 근거 선별·답변 생성 경로도 구현되어 있습니다. 저장된 이벤트를 처리하는 인계 소비자는 실제 Chroma와 가짜 임베딩으로 검증했으며, 실제 모델과 운영 데이터의 통합 검증은 별도 확인이 필요합니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
 
 2차 수정에서 과거 상세/현재 목록 병합, fixture 저장소 격리, HTML 표 경계를 보완했습니다.
-격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. Full API traversal and production age/region adapters remain unverified. This handoff pass makes no new live API or actual-model verification claims.
+격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. 전체 API 순회와 운영용 연령·지역 변환 어댑터는 아직 검증되지 않았습니다. 해당 인계 구현 단계에서 라이브 API나 실제 모델을 새로 검증한 것은 아닙니다.
 
 ## 1. 데이터
 
-- 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (전체 약 1만 건 중 **general personal/household programs included**, counts depend on observed sources)
+- 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (전체 약 1만 건 중 **일반 개인·가구 지원제도도 포함**하며, 실제 건수는 관측된 원본에 따라 달라짐)
 - 서비스 1건 = 서비스명, 지원대상, 선정기준, 지원내용, 신청방법, 신청기한, 소관기관, 상세 링크 + 지원조건(정형)
 - 원본 응답은 `data/raw/`에 저장하고 **커밋하지 않습니다**. API 키는 `.env`에만 두고 **커밋하지 않습니다**.
 - 첨부 문서·이미지는 수집하지 않고 상세 링크로 대신합니다.
 
-### 1.1 Dataset scope — young users, personal/household benefits
+### 1.1 데이터 범위 — 청년 사용자를 위한 개인·가구 지원
 
-The audience is young users (청년 사용자). Indexed programs include general individual
-and household support: employment, housing, education, income/living, marriage,
-pregnancy, childbirth, parenting and care, including benefits through children or dependents.
+서비스의 주 사용자는 청년입니다. 색인에는 청년 전용 제도뿐 아니라 고용·주거·교육·소득 및 생활안정·결혼·임신·출산·양육·돌봄 등 일반 개인·가구 지원제도도 포함합니다. 자녀나 부양가족을 통해 가구가 받을 수 있는 지원도 대상입니다.
 
-`ingest.policy.inclusion_decision()` centralizes `personal-household-v1`: `include`
-with evidence, `provisional` when applicability is uncertain, or `exclude` for explicit
-institution-only recipient statements. Absence of youth keywords, older/dependent
-ages, or business wording alone never establishes exclusion. Ambiguous applicability
-is provisionally included. Youth keywords/verified applicant-age overlap remain
-explanatory tags; `is_youth_service()` retains its legacy boolean tagging behavior.
+데이터 포함 여부는 `ingest.policy.inclusion_decision()`에서 `personal-household-v1` 정책으로 판정합니다.
 
-Dataset inclusion is separate from eligibility. No child age becomes applicant age,
-no undocumented JA code is decoded, and A does not infer residence from agency names.
-B's index-time region fallback remains a retrieval heuristic. Unknown is not unrestricted.
-Excluded institutional records retain minimal audit; historical `youth_scope_exit`
-records need usable original sections before they can become searchable again.
+- `include`: 포함 근거가 있는 제도.
+- `provisional`: 적용 가능성이 불명확하여 잠정 포함하는 제도.
+- `exclude`: 지원대상이 기관으로만 명시된 제도.
 
-See [raw reprocessing and commands](docs/INGEST_A.md#historical-raw-reprocessing-원본-재처리).
-`pipeline --full` still collects APIs and requeues active chunks; it cannot recover
-discarded sections by itself. No evaluation labels are read by the classifier or changed.
+청년 키워드가 없거나, 고령자·부양가족의 연령 또는 사업 관련 표현이 있다는 이유만으로 제외하지 않습니다. 적용 가능성이 모호하면 잠정 포함합니다. 청년 키워드와 검증된 신청자 연령 구간의 겹침은 설명용 태그로 남기며, `is_youth_service()`는 기존의 청년 태그 판정용 참·거짓 반환 동작을 유지합니다.
+
+데이터 포함과 실제 신청 자격은 별개입니다. 자녀의 나이를 신청자의 나이로 채우거나, 확인되지 않은 JA 코드를 해석하지 않습니다. A는 기관명으로 거주지 자격을 추정하지 않으며, B가 색인 시 기관명에서 지역을 보충하는 것은 검색용 추정입니다. 값을 모른다고 해서 자격 제한이 없다는 뜻은 아닙니다.
+
+제외된 기관 전용 레코드는 최소한의 감사 정보만 보존합니다. 과거 `youth_scope_exit`로 제외됐던 제도를 다시 검색 가능하게 하려면 사용할 수 있는 원본 본문이 필요합니다.
+
+실행 방법은 [원본 재처리 안내](docs/INGEST_A.md#historical-raw-reprocessing-원본-재처리)를 참고하세요. `pipeline --full`은 API를 수집하고 활성 서비스의 조각을 다시 인계 대기열에 넣지만, 이전에 버린 본문까지 스스로 복구하지는 못합니다. 포함 판정기는 평가 정답을 읽거나 수정하지 않습니다.
 
 ## 2. 전체 구조 — 색인과 질의응답
 
@@ -84,7 +79,7 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 [client] serviceList 수집 완료: 10,213건 (perPage=500, 21페이지)
 [client] supportConditions 수집 완료: 10,198건
 [client] 원본 저장: data/raw/serviceList.json, supportConditions.json
-[store]  dataset policy: include / provisional / explicit institution-only exclusion (illustrative)
+[store]  데이터 포함 정책: 포함 / 잠정 포함 / 기관 전용으로 명시된 제도 제외 (설명용 예시)
 [store]  upsert: 신규 40 / 변경 12 / 변동 없음 1,798
 [store]  종료 처리: 3건 (색인에서 제거 대상)
 ```
@@ -139,7 +134,7 @@ DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니�
 }
 ```
 
-Dataset counts depend on the observed source population and versioned inclusion policy; sample counts do not establish full coverage.
+데이터 건수는 관측한 원본 범위와 포함 정책 버전에 따라 달라집니다. 표본의 건수만으로 전체 데이터가 빠짐없이 포함됐다고 판단하지 않습니다.
 
 #### ③ 임베딩 — `embedder.embed_texts(texts)`
 
@@ -278,7 +273,7 @@ python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울
 
 #### (1) A → B: 색인용 조각
 
-A stores complete service replacements/removals in `pending_changes` (미처리 변경 이벤트). `python -m src.ingest.handoff` inspects them; `--apply` uses B's existing `build_index()`/`remove_services()`, verifies persistent documents and both retrieval paths, then acknowledges the original service/version/event token. It never substitutes `pipeline.run()` output or current service records for the stored event. See the [handoff contract](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자).
+A는 서비스 전체 교체·제거 이벤트를 `pending_changes`에 저장합니다. `python -m src.ingest.handoff`로 미처리 이벤트를 확인하고, `--apply`를 지정하면 B의 기존 `build_index()`·`remove_services()`로 반영합니다. 영속 저장 문서와 Vector·BM25 양쪽 검색 경로를 검증한 뒤, 원래 이벤트의 `service_id + version + event_id` 토큰으로 확인 처리합니다. 저장된 이벤트를 `pipeline.run()`의 반환값이나 현재 서비스 레코드로 대체하지 않습니다. 자세한 내용은 [인계 계약](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자)을 참고하세요.
 
 ```python
 # A가 만들어서 넘긴다 — pipeline.run() 의 반환값 (일부)
@@ -336,21 +331,21 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
 
-### 2.3 Incremental index handoff (증분 색인 인계)
+### 2.3 증분 색인 인계
 
 ```powershell
-# Existing source DB → read-only inspection (no model/index initialization).
+# 기존 원본 DB의 미처리 이벤트 확인 (모델·색인 초기화 없음)
 .\.venv\Scripts\python.exe -m src.ingest.handoff --dry-run
-# Apply to the associated index with an already cached matching model.
+# 이미 캐시된 일치 모델로 연결된 색인에 반영·검증·확인 처리
 .\.venv\Scripts\python.exe -m src.ingest.handoff --apply
-# First binding of an existing nonempty B collection requires explicit adoption.
+# 데이터가 있는 기존 B 컬렉션을 처음 연결할 때는 명시적으로 채택
 .\.venv\Scripts\python.exe -m src.ingest.handoff --apply --adopt-existing
-# Retry the same --apply command after resolving a failure; pending is durable.
+# 실패 원인을 해결한 뒤 같은 --apply 명령으로 재시도 (미처리 이벤트는 보존됨)
 ```
 
-One source DB is associated with one index directory/model configuration. The worker owns OS locks in index→DB order; supported collection/upsert/apply-run paths share the DB lock. Competing processes fail immediately. Application stops on the first failure with exit code 1. Successfully verified earlier events remain acknowledged; failed/later events remain pending. BM25 is derived from Chroma documents and refreshed by B's `index_version`, without another persistent BM25 database.
+원본 DB 하나는 색인 디렉터리·모델 설정 하나에 연결됩니다. 작업 프로세스는 색인 → 원본 DB 순서로 운영체제 파일 잠금을 획득하며, 지원되는 수집·갱신·실행 반영 경로도 같은 DB 잠금을 사용합니다. 잠금을 다른 프로세스가 사용 중이면 즉시 실패합니다. 반영 중 첫 오류가 발생하면 종료 코드 1로 중단합니다. 앞서 검증·확인 처리한 이벤트는 완료 상태를 유지하고, 실패한 이벤트와 이후 이벤트는 대기열에 남습니다. BM25는 Chroma 문서에서 재생성하고 B의 `index_version`으로 갱신하므로, 별도의 영속 BM25 DB를 만들지 않습니다.
 
-Fixture sources require `--validation` and explicit isolated `--db-path`/`--index-dir`; protected live paths and aliases are rejected before writes. See [isolated commands and synchronization limits](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자). The legacy `src.index.vector_store` CLI bypasses this protocol: do not run direct index writers concurrently with ingestion/consumption. It does not acknowledge pending events.
+테스트용 샘플 원본을 적용할 때는 `--validation`과 격리된 `--db-path`·`--index-dir`를 명시해야 합니다. 보호된 운영 경로나 같은 위치를 가리키는 별칭은 쓰기 전에 거부합니다. 자세한 내용은 [격리 실행 명령과 동시 실행 제약](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자)을 참고하세요. 기존 `src.index.vector_store` 직접 실행 CLI는 이 잠금 절차를 우회하므로 수집·인계 소비자와 동시에 실행하지 마세요. 해당 CLI는 pending 이벤트를 확인 처리하지 않습니다.
 
 ## 3. 디렉터리 구조와 담당
 
@@ -400,7 +395,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 |---|---|
 | 디렉터리 = 담당자 단위 | 한 사람이 자기 폴더만 수정해 파일 충돌과 책임 논쟁을 없앤다. |
 | `schema.py`에 모듈 간 계약을 한 곳에 정의 | 구현 전에도 서로의 입출력을 가정하고 병렬 개발한다. |
-| A/B/C implementations retain their public contracts | Stored-event consumption, lock protocol and replay behavior are recorded in the [operating contract](docs/INGEST_A.md). |
+| A/B/C의 기존 공개 인터페이스 유지 | 저장된 이벤트 처리·잠금 절차·재시도 동작은 [A 운영 계약](docs/INGEST_A.md)에 기록합니다. |
 | 증분 수집(`store.upsert_services`가 변경분 반환), 종료 서비스는 색인에서 제거 | 기획서 7장: 정기 수집 후 변경분만 재색인. |
 | 구조 기반 분할 + 서비스명 접두 | 선정기준이 길어 한 덩어리로 임베딩하면 핵심 조건이 희석되고, 접두가 없으면 어느 제도의 조각인지 잃는다. |
 | 소프트 필터 + `relax()` | 값이 비어 있으면 제외하지 않고, 결과가 없으면 필터를 풀어 재검색한다. |
@@ -474,7 +469,7 @@ python -m eval.label_helper review                 # Claude가 1차로 채운 �
 
 정답 기준 (자세한 이유와 예외는 LABELING.md §3):
 - **그 제도 하나만으로도 좋은 답이 되는** 제도만, 한 질문에 **5개 이내** (정답이 많으면 Recall이 구조적으로 낮아짐).
-- 질문에 나오지 않은 소득·가구 조건은 따지지 않고(답변 단계의 "확인 필요"), **expired programs are excluded; absence of youth wording alone is not an exclusion**.
+- 질문에 나오지 않은 소득·가구 조건은 따지지 않고(답변 단계의 "확인 필요"), **신청기한이 지난 제도는 제외하되, 청년이라는 표현이 없다는 이유만으로 제외하지 않습니다**.
 - **지역이 없는 질문의 정답은 전국 단위 제도**입니다. 실제 서비스는 지역을 추가 질문으로 받기 때문에, 지역 제도는 `followup`으로 만든 별도 문항("서울에 살아요. …")에서 채웁니다.
 - 복합 질문("월세 + 취업 준비")은 필요마다 따로 검색해 각각 2~3개.
 - **우리 검색 시스템의 결과를 정답으로 베끼지 않습니다** (검색이 맞춘 것만 정답이 되어 점수가 부풀려짐).
@@ -535,8 +530,8 @@ python -m src.ingest.pipeline --full   # A: 활성 조각 재생성, DB·이력�
 python -m src.ingest.pipeline --offline-fixture tests/fixtures/a_synthetic_api.json  # 별도 저장소 강제
 python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승인된 격리 라이브 표본
 python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
-python -m src.ingest.handoff --dry-run # A→B: inspect stored pending; add --apply to apply/verify/ack
-python -m src.index.vector_store       # B: legacy direct index CLI; no pending acknowledgment/consumer locks
+python -m src.ingest.handoff --dry-run # A→B: 저장된 미처리 이벤트 확인 (--apply로 반영·검증·확인 처리)
+python -m src.index.vector_store       # B: 기존 직접 색인 CLI (pending 확인 처리·소비자 잠금 없음)
 python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
@@ -556,7 +551,7 @@ Windows PowerShell에서 환경변수를 직접 설정한다면 `export` 대신 
 | B (A 없이) | 가짜 조각 `Chunk` 48개 | `sample_chunks.json`, `sample_queries.json` |
 | C (B 없이) | 가짜 검색 결과 + 가짜 조건 추출 | `sample_search_results.json`, `fake_search`·`fake_conditions` 픽스처 |
 
-The historical shared hook converts `NotImplementedError` into skips; the A-specific hook treats it as failure. The consumer regressions must have no skips. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
+기존 공용 테스트 훅은 `NotImplementedError`를 skip(건너뜀)으로 바꾸지만, A 전용 훅은 실패로 처리합니다. 인계 소비자 회귀 테스트는 skip 없이 통과해야 합니다. A 전용 `tests/ingest/`는 미구현을 실패로 처리하며 HTTP·SQLite를 격리합니다. 전체는 `python -m pytest -rs`, A는 `python -m pytest tests/ingest -q -ra`로 실행합니다. A 합성 응답은 `tests/fixtures/a_synthetic_api.json`이고 기존 B/C fixtures는 보존합니다.
 
 #### B가 A의 구현 없이 테스트하기
 
@@ -564,7 +559,7 @@ A의 구현이 끝나기 전에도 B가 자기 코드를 검증할 수 있도록
 
 - 지역만 다른 중복 제도, 기한 지난 제도, 값이 빈 제도, 제도명 정확 일치 대상이 섞여 있습니다.
 - 시험 대상: `filters`(소프트 필터·기한 제외·완화), `metrics`(지표 계산), `vector_store`·`hybrid`(색인 후 검색 기대값). 테스트 파일은 `test_filters.py`, `test_metrics.py`, `test_retrieval.py`입니다.
-- Retrieval tests use isolated `tmp_vectorstore`; consumer tests add real Chroma/BM25, subprocess locks, replay and C evidence expansion with fake embeddings.
+- 검색 테스트는 격리된 `tmp_vectorstore`를 사용합니다. 인계 소비자 테스트는 가짜 임베딩과 실제 Chroma·BM25를 사용해 프로세스 간 잠금, 실패 후 재시도, C의 서비스 전체 근거 확장을 검증합니다.
 
 #### C가 B의 구현 없이 테스트하기
 
@@ -619,7 +614,7 @@ def test_예시(fake_search, fake_conditions):
 
 fixture는 `data/a_validation/offline-<id>/`, validation은 `validation-<id>/`의 DB/raw를 사용합니다.
 `--db-path`·`--raw-dir`를 지정해도 운영 목적지의 resolved 별칭·sidecar·lock·raw와 겹치면 쓰기 전에 거부합니다.
-전역 config를 변경하지 않으며 normal live 기본값은 유지합니다. 프로그램 방식은 `pipeline.run_fixture()`입니다.
+전역 config를 변경하지 않으며 일반 라이브 실행의 기본값은 유지합니다. 프로그램 방식은 `pipeline.run_fixture()`입니다.
 HTMLParser는 셀 간 공백·행 간 개행과 셀 내부 줄바꿈을 보존합니다. 이전 표 정제로 내용이 달라졌던
 레코드는 다음 성공 관측 때 해시·서비스 전체 조각이 한 번 갱신될 수 있습니다.
 
