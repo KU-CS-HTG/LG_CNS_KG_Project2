@@ -157,3 +157,21 @@ def test_searches_honor_where(indexed_sample):
         ids = _service_ids(fn("청년월세 지원", 50, where))
         assert "SAMPLE002" not in ids and "SAMPLE003" not in ids and "SAMPLE010" not in ids
     assert "SAMPLE002" in _service_ids(vs.bm25_search("청년월세 지원", 50, None))   # where=None이면 필터 없음
+
+
+def test_region_inferred_from_agency_when_missing(fake_embedder, tmp_vectorstore):
+    """A가 region을 못 채워도 기관명으로 추정해 저장하고, 지역 필터가 그 값으로 거른다. metadata.region이 있으면 그것이 우선."""
+    from src.common.schema import Chunk
+    from src.index import vector_store as vs
+
+    def c(sid, agency, region=None):
+        md = {"agency": agency}
+        if region:
+            md["region"] = region
+        return Chunk(f"{sid}#지원대상", sid, f"{sid} 월세 지원", "지원대상", f"{sid} 월세 지원\n청년 월세", md, "")
+
+    vs.build_index([c("A", "서울특별시 강서구"), c("B", "부산광역시"), c("C", "국토교통부"), c("D", "안산시 단원구"), c("E", "국토교통부", region="전국")])
+    stored = {x.service_id: x.metadata.get("region") for x in (vs.get_service_chunks(s)[0] for s in "ABCDE")}
+    assert stored == {"A": "서울", "B": "부산", "C": None, "D": None, "E": "전국"}
+    ids = {chunk.service_id for chunk, _ in vs.vector_search("월세", 10, vs.build_where({"region": "서울", "today": "2026-10-19"}))}
+    assert ids == {"A", "C", "D", "E"}                                  # 부산 제도만 빠지고, 전국·지역 미상은 통과 (소프트)

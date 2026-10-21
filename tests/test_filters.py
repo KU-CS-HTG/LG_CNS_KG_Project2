@@ -111,3 +111,11 @@ def test_is_local_uses_region_then_agency():
     assert f.is_local(c("경기주택도시공사")) and f.is_local(c("안산시 단원구")) and f.is_local(c("강남구"))
     assert not f.is_local(c("국토교통부")) and not f.is_local(c("한국장학재단")) and not f.is_local(c("고용노동부")) and not f.is_local(c())
     assert f.is_local(c("국토교통부", region="서울")) and not f.is_local(c("서울특별시", region="전국"))   # metadata.region이 우선
+
+
+def test_agency_region():
+    from src.retrieve.filters import agency_region as r
+
+    assert r("서울특별시 강서구") == "서울" and r("경기도") == "경기" and r("경기주택도시공사") == "경기"
+    assert r("전남광주통합특별시 고흥군") is None or r("전남광주통합특별시 고흥군") == "전남"   # 새 행정구역명은 접두 일치에 따름
+    assert r("안산시 단원구") is None and r("국토교통부") is None and r("") is None and r(None) is None

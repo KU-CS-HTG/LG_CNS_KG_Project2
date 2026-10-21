@@ -70,6 +70,21 @@ _SIDO_BY_LENGTH = sorted(_SIDO_FULL, key=len, reverse=True)
 _LOCAL_UNIT = re.compile(r"^[가-힣]{1,6}(시|군|구)(\s|$)")
 
 
+def agency_region(agency: str | None) -> str | None:
+    """소관기관명에서 시·도(짧은 이름: 서울·경기 …)를 추정한다. 시·도 이름이 없거나 전국 기관이면 None.
+
+    시·도 이름으로 시작하면 그 지역이다 ('서울특별시 강서구' -> 서울, '경기주택도시공사' -> 경기). 지역을 알 수 없는
+    시·군·구('안산시 단원구')나 중앙부처·공공기관은 None이다."""
+    agency = (agency or "").strip()
+    for full in _SIDO_BY_LENGTH:
+        if agency.startswith(full):
+            return _SIDO_FULL[full]
+    for short in _SIDO_SHORT:
+        if agency.startswith(short) and len(agency) > len(short):
+            return short
+    return None
+
+
 def is_local(chunk: Chunk) -> bool:
     """지자체(지역) 제도인가. 저장된 metadata.region이 있으면 그것을, 없으면 소관기관명으로 추정한다.
 
@@ -80,11 +95,7 @@ def is_local(chunk: Chunk) -> bool:
     if region:
         return region != NATIONWIDE
     agency = (chunk.metadata.get("agency") or "").strip()
-    if any(agency.startswith(full) for full in _SIDO_BY_LENGTH):
-        return True
-    if any(agency.startswith(short) and len(agency) > len(short) for short in _SIDO_SHORT):
-        return True
-    return bool(_LOCAL_UNIT.match(agency))
+    return agency_region(agency) is not None or bool(_LOCAL_UNIT.match(agency))
 
 
 def field_matches(chunk_field: str | None, wanted: str | None) -> bool:

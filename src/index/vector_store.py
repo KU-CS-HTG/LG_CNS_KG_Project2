@@ -28,6 +28,7 @@ import numpy as np
 from src.common import config
 from src.common.schema import SECTIONS, Chunk, Filters
 from src.index import embedder
+from src.retrieve import filters as filter_rules
 
 # 값이 없을 때 저장하는 대체값 (소프트 필터)
 NO_AGE_MIN = -1
@@ -106,7 +107,7 @@ def _to_store_metadata(chunk: Chunk) -> dict:
         "detail_url": chunk.detail_url,
         "agency": m.get("agency") or "",
         "field": m.get("field") or "",
-        "region": m.get("region") or "",
+        "region": m.get("region") or filter_rules.agency_region(m.get("agency")) or "",   # A가 지역을 못 채우면 기관명으로 추정
         "deadline": m.get("deadline") or "",
         "deadline_int": _date_int(m.get("deadline")),
         "age_min": m["age_min"] if m.get("age_min") is not None else NO_AGE_MIN,
