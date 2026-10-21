@@ -524,12 +524,46 @@ def _vague_criteria(sections: dict[str, str]) -> list[str]:
         if word not in text:
             continue
         pieces = [p.strip(" ,:;") for p in _CRITERION_SPLIT_RE.split(text)]
-        hits = [p for p in pieces if word in p and _AMOUNT_RE.search(p) and len("".join(p.split())) <= MAX_CRITERION_CHARS]
+        hits = [_criterion_core(p, word) for p in pieces
+                if word in p and _AMOUNT_RE.search(p) and len("".join(p.split())) <= MAX_CRITERION_CHARS]
+        hits = [h for h in hits if h]
         if hits:
             out.append(f"{word} — {', '.join(dict.fromkeys(hits[:2]))}")
         else:
             out.append(f"{word} 기준 (자료에 기준 금액 없음)")
     return out
+
+
+# 금액·비율 하나 ('1억 3천만원'처럼 단위가 이어지면 함께), 뒤에 붙은 글자까지
+_AMOUNT_SPAN_RE = re.compile(r"\d[\d,.]*\s*(?:천|만|억|원|%|퍼센트|구간|분위)(?:\s*\d[\d,.]*\s*(?:천|만|억|원)+)*[^\s,(]*"
+                             r"(?:\([^()]{1,15}\))?")       # '70%(맞벌이 90%)'처럼 짧은 괄호는 닫는 데까지
+_LIMIT_WORD_RE = re.compile(r"\s*(?:이하|이내|미만|초과|이상)(?:인|의)?(?:\s+(?:가구|자|세대)(?![가-힣]))?")
+# 소득 낱말 앞에서 함께 남길 수식어 ('본인 연소득', '부부합산 연소득', '기준 중위 소득')
+_INCOME_MODIFIER_RE = re.compile(r"^(?:본인|부부|부부합산|가구|가구당|월|연|월평균|기준|중위|도시근로자|원가구|독립가구)$")
+
+
+def _criterion_core(piece: str, word: str) -> str:
+    """소득·재산 구절에서 기준의 핵심만 남긴다: '…85㎡이하의 주택에서 임차하여 살고 있는 중위소득 180% 이내 가구'
+    -> '중위소득 180% 이내 가구'. 체크리스트 한 줄이 문장 두 개를 이어 붙인 것처럼 길어졌다.
+    '소득'이 든 낱말(앞의 '본인·부부합산·기준 중위' 같은 수식어 포함)부터 그 뒤 첫 금액·비율과 '이하·이내' 표현까지.
+    금액이 없으면 ''."""
+    i = piece.find(word)
+    if i < 0:
+        return ""
+    start = piece.rfind(" ", 0, i) + 1                       # '중위소득'·'연소득'처럼 낱말 처음부터
+    for _ in range(2):                                        # 앞 수식어는 두 낱말까지
+        before = piece[:start].rstrip().rsplit(" ", 1)[-1] if start else ""
+        if not (before and _INCOME_MODIFIER_RE.match(before)):
+            break
+        start = piece.rfind(before, 0, start)
+    amount = _AMOUNT_SPAN_RE.search(piece, i)
+    if not amount:
+        return ""
+    end = amount.end()
+    limit = _LIMIT_WORD_RE.match(piece, end)
+    if limit:
+        end = limit.end()
+    return piece[start:end].strip(" ,")
 
 
 _AGE_RANGE_RE = re.compile(r"(\d+)\s*세?\s*[~∼\-–]\s*(?:만\s*)?(\d+)\s*세")

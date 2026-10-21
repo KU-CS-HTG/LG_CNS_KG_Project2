@@ -90,6 +90,9 @@ header[data-testid="stHeader"] { background: transparent; }
 .ck-title { font-size:.84rem; font-weight:700; color:var(--warn); line-height:1.4; }
 .ck-sub { font-size:.78rem; opacity:.7; line-height:1.4; padding-bottom:.7rem; }   /* markdown 블록의 음수 아래 여백 상쇄 */
 [class*="st-key-checklist_"] label p { font-size:.9rem; line-height:1.5; }
+/* 체크 상자를 서비스 색으로 (Streamlit 기본 빨강 대신). 1.66: 체크되면 label[data-selected], 첫 div가 상자 */
+[class*="st-key-checklist_"] label[data-selected="true"] > div:first-of-type {
+  background-color:var(--accent) !important; border-color:var(--accent) !important; }
 
 details.src { border-top:1px dashed var(--line); padding-top:.55rem; }
 details.src summary { cursor:pointer; font-size:.85rem; font-weight:600; opacity:.75; list-style:none; }

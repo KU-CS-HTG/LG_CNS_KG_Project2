@@ -362,6 +362,20 @@ def test_application_period_comes_from_ingest_record(monkeypatch, sample_chunks,
     assert not called and not (tmp_path / "none.db").exists()
 
 
+@pytest.mark.parametrize("piece, core", [
+    # 체크리스트의 소득 줄이 문장 두 개를 이어 붙인 것처럼 길었다 -> 기준의 핵심만
+    ("혼인일 기준 7년 이내 85㎡이하의 주택에서 임차하여 살고 있는 중위소득 180% 이내 가구", "중위소득 180% 이내 가구"),
+    ("본인 연소득 6천만원 이하", "본인 연소득 6천만원 이하"),
+    ("부부합산 연 소득 5천만원 이하인 자", "부부합산 연 소득 5천만원 이하인 자"),
+    ("기준 중위 소득 180% 이하 무주택자인 신혼부부", "기준 중위 소득 180% 이하"),
+    ("도시근로자 소득 70%(맞벌이 90%) 이하인 자", "도시근로자 소득 70%(맞벌이 90%) 이하인 자"),
+    ("일반재산 1억 3천만원 이하", "일반재산 1억 3천만원 이하"),
+    ("소득 기준은 은행 심사로 결정", ""),
+])
+def test_criterion_core(piece, core):
+    assert generator._criterion_core(piece, "재산" if "재산" in piece else "소득") == core
+
+
 @pytest.mark.parametrize("text, expired", [
     # 마감이 확실히 지난 기간 (deadline이 비어 B의 기한 필터를 통과하던 실제 원문들)
     ("2026년 상반기", True),
