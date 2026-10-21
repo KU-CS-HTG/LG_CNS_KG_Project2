@@ -65,7 +65,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `tests/fixtures/sample_search_results.json` + `fake_search`·`fake_conditions` 픽스처 | B가 끝나기 전에 C가 자기 코드를 검증하도록 B→C 인계 데이터(Top-5 조각, 근거 없음 사례)를 미리 정해 두고 `hybrid.search`·`extract_conditions`를 가짜로 바꿔 끼운다. 이를 위해 C는 다른 모듈 함수를 모듈 속성으로 호출한다(`generator.py` 주석에 규칙 명시). |
 | `test_generate` | C 코드(조건→필터, 근거 선별, 인용, 근거 없음 응답, 전체 흐름). LLM이 필요한 실제 생성 테스트는 `OPENAI_API_KEY`가 있을 때만 실행. |
 | `embedder`: 모델 지연 로딩, L2 정규화, `kind`(passage/query)별 e5 접두 자동 처리, `embed_query`·`embedding_dim` 제공 | 모델 로딩은 수 초~수십 초 걸리므로 처음 쓸 때 한 번만 한다. 정규화하면 벡터 저장소가 내적/코사인 어느 쪽이든 같은 결과를 낸다. e5는 접두가 없으면 품질이 떨어지는데, 호출하는 쪽이 모델을 몰라도 되게 이 모듈이 처리한다(모델 교체 실험이 쉬움). 시그니처 `embed_texts(texts, kind="passage")`는 기존 호출과 호환된다. |
-| 벡터 저장소: Chroma(정식 벡터 DB), 소프트 필터는 저장 시 대체값(지역 `""`, 연령 -1/999, 기한 99999999)으로 처리, `build_where` | 청년 외 데이터로 확장할 예정이라 정식 벡터 DB를 쓰기로 했다(규모가 작아 numpy+SQLite도 가능하나 확장성 우선). Chroma 필터에는 "값이 없으면 통과"가 없어서, 빈 값을 통과하는 값으로 미리 바꿔 저장하는 방식으로 기획서 8.1의 소프트 필터를 구현했다. 읽을 때는 원래대로(키 생략) 되돌린다. |
+| 벡터 저장소: Chroma(정식 벡터 DB), 소프트 필터는 저장 시 대체값(지역 `""`, 연령 -1/999, 기한 99999999)으로 처리, `build_where` | 일반 개인·가구 지원으로 범위가 확대되어 정식 벡터 DB를 쓰기로 했다(규모가 작아 numpy+SQLite도 가능하나 확장성 우선). Chroma 필터에는 "값이 없으면 통과"가 없어서, 빈 값을 통과하는 값으로 미리 바꿔 저장하는 방식으로 기획서 8.1의 소프트 필터를 구현했다. 읽을 때는 원래대로(키 생략) 되돌린다. |
 | BM25: `rank_bm25` + 글자 2-gram, 색인은 Chroma 텍스트에서 파생·버전 파일로 갱신 | Chroma에 BM25가 없다. 한국어는 조사 때문에 단어 단위가 불리하고 trigram은 두 글자 단어를 못 찾으므로 2-gram. 저장소가 둘로 나뉘지만 BM25 색인은 파생물이라 `index_version` 파일이 바뀌면 다시 만들어 동기화 문제를 피한다. |
 | 임베딩 모델별 컬렉션(`chunks__<모델명>`) | 모델을 바꾸는 실험(bge-m3 ↔ e5)에서 차원 불일치로 저장소가 깨지는 것을 막는다. |
 | `build_index`: 서비스별 옛 조각 중 이번에 없는 것을 삭제, `remove_services`, `clear_index`, `get_service_chunks` | 증분 색인(기획서 7장)과 종료 서비스 반영. `get_service_chunks` is used by C evidence expansion to retrieve all sections of a selected service. |
@@ -94,22 +94,34 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 
 | 선택/변경 항목 | 발견한 문제 | 선택 이유 | 결과 |
 |---|---|---|---|
-| 벡터 저장소 = Chroma | 수천~수만 조각이라 어떤 방식도 가능하나 이후 청년 외 데이터로 확장 예정 | 확장성과 정식 벡터 DB 사용 | (수집 후 규모·검색 성능 기록) |
+| 벡터 저장소 = Chroma | 수천~수만 조각이라 어떤 방식도 가능하나 general personal/household support included | 확장성과 정식 벡터 DB 사용 | (수집 후 규모·검색 성능 기록) |
 | 소프트 필터를 저장 시 대체값으로 처리 | Chroma 필터는 값이 없는 항목을 통과시키는 조건을 표현하기 어려움 | 빈 값을 통과하는 값으로 저장해 where 조건만으로 처리 | 테스트에서 연령·지역·기한·분야 규칙 확인 |
 | BM25 = rank_bm25 + 글자 2-gram | Chroma에 BM25가 없고, 한국어는 조사·두 글자 단어 문제 | 추가 설치 없이 한국어 기본 대응, 필요 시 형태소 분석기로 교체 | Baseline 실험에서 비교 |
 
 기획서 8.3 기록용 (⑤ 검색): 선택/변경 항목 "Hybrid 결합 방식 = RRF(상수 60, 후보 50개), 서비스 단위 중복 제거", 발견한 문제 "코사인·BM25 점수 단위가 달라 직접 합치기 어렵고, 조각 단위 Top-K는 같은 제도로 채워짐", 선택 이유 "순위만 써서 튜닝 최소화, 서비스당 1개로 제한", 결과 "(실제 데이터에서 Vector 단독·BM25 단독과 Hit Rate/MRR 비교 기록)".
 
-### 3.1 데이터 범위: 청년층 우선
+### 3.1 Dataset scope — young users, personal/household benefits
 
-| 결정 | 이유·영향 |
-|---|---|
-| 보조금24 전체(약 1만 건) 중 **청년 대상만** DB·색인에 적재 | 프로젝트를 청년층 기준으로 진행하기로 했다. 범위를 줄이면 색인 규모·평가 질문·정답 지정 부담이 줄고, 비슷한 제도가 많은 문제(기획서 7.1)도 완화된다. |
-| 범위 판정을 `ingest.store.is_youth_service` 한 곳에 두고 기준값은 `config.YOUTH_AGE_RANGE`, `YOUTH_KEYWORDS`로 분리 | 대상을 넓히거나(신혼·양육·노인 등) 기준을 바꿀 때 한 곳만 고치면 된다. 청년 나이 정의(만 19~34세 vs 지자체별 최대 39세)와 판정 방법은 **팀 합의 필요**라 제안값이다. |
-| 범위 밖 질문은 별도 분기 없이 기존 '근거 없음' 경로로 처리 | 색인에 근거가 없으면 `no_evidence`로 모른다고 답하고 담당 기관을 안내하므로 새 규칙이 필요 없다. 안내 문구를 청년 전용으로 다듬을지는 C가 결정한다. |
-| 샘플 데이터에는 청년이 아닌 제도를 일부러 포함 | B의 연령 필터가 청년 아닌 제도를 걸러내는지 시험하는 부정 사례. |
+The audience is young users (청년 사용자). Indexed programs include general individual
+and household support: employment, housing, education, income/living, marriage,
+pregnancy, childbirth, parenting and care, including benefits through children or dependents.
 
-기획서 8.3 기술 선택 기록에 옮길 때의 예: 선택/변경 항목 "데이터 범위", 발견한 문제 "전체 약 1만 건은 유사 제도가 많고 평가 정답 지정 부담이 큼", 선택 이유 "청년 대상으로 한정(연령 겹침 또는 청년 키워드)", 결과 "(수집 후 건수·검색 성능 기록)".
+`ingest.policy.inclusion_decision()` centralizes `personal-household-v1`: `include`
+with evidence, `provisional` when applicability is uncertain, or `exclude` for explicit
+institution-only recipient statements. Absence of youth keywords, older/dependent
+ages, or business wording alone never establishes exclusion. Ambiguous applicability
+is provisionally included. Youth keywords/verified applicant-age overlap remain
+explanatory tags; `is_youth_service()` retains its legacy boolean tagging behavior.
+
+Dataset inclusion is separate from eligibility. No child age becomes applicant age,
+no undocumented JA code is decoded, and A does not infer residence from agency names.
+B's index-time region fallback remains a retrieval heuristic. Unknown is not unrestricted.
+Excluded institutional records retain minimal audit; historical `youth_scope_exit`
+records need usable original sections before they can become searchable again.
+
+See [raw reprocessing and commands](INGEST_A.md#historical-raw-reprocessing-원본-재처리).
+`pipeline --full` still collects APIs and requeues active chunks; it cannot recover
+discarded sections by itself. No evaluation labels are read by the classifier or changed.
 
 ## 4. 데이터 흐름
 
@@ -133,7 +145,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | 모듈 | 상태 |
 |---|---|
 | `ingest/client.py` | timeout·재시도·원본/완전성 구현. OAS·최초 3건씩의 필드/페이지 관측, 전체 종료·일관성은 미검증 |
-| `ingest/normalize.py`, `store.py`, `chunker.py`, `pipeline.py` | 결정적 정제·잠정 청년 정책·SQLite·트랜잭션 pending·구조 분할·CLI 구현. 상세 운영 계약은 [INGEST_A.md](INGEST_A.md) |
+| `ingest/normalize.py`, `store.py`, `chunker.py`, `pipeline.py` | 결정적 정제·개인/가구 포함 정책·SQLite·트랜잭션 pending·구조 분할·CLI 구현. 상세 운영 계약은 [INGEST_A.md](INGEST_A.md) |
 | `common/config.py`, `common/schema.py`, `eval/run_eval.load_questions` | 구현됨 |
 | `tests/ingest/` | A 전용 합성 HTTP·임시 DB·가짜 소비자·CLI 검증. A NotImplementedError는 실패 처리, 공용 훅/fixtures 보존 |
 | Existing B/C tests | Implemented offline regression coverage; the opt-in actual-model test is skipped by default. This is not search/answer quality evaluation. |
@@ -141,11 +153,11 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 
 ### 6.1 A 구현과 팀 결정 경계
 
-세 SQLite 테이블(services, ingestion_runs, pending_changes)로 상태와 인계를 보존한다. 서비스명·본문·기관·URL·기간·metadata·검증 자격을 해시하며 운영 시각을 제외한다. 활성 데이터는 청년으로 한정하고 만료/소실/청년 범위 이탈을 별개 사유로 기록한다. 성공 상세의 빈 값은 삭제, 실패/미관측은 이전 정상 관측 보존이다. `normalize.py`는 미확인 JA* 코드·본문의 자녀 나이·기관에서의 지역을 추정하지 않는다.
+세 SQLite 테이블(services, ingestion_runs, pending_changes)로 상태와 인계를 보존한다. 서비스명·본문·기관·URL·기간·metadata·검증 자격을 해시하며 운영 시각을 제외한다. Active data follows personal-household-v1; expiry, disappearance and policy_scope_exit remain separate. Legacy youth_scope_exit records remain recoverable from raw. 성공 상세의 빈 값은 삭제, 실패/미관측은 이전 정상 관측 보존이다. `normalize.py`는 미확인 JA* 코드·본문의 자녀 나이·기관에서의 지역을 추정하지 않는다.
 
 `--full`은 DB 초기화 없이 활성 전체 조각을 pending에 재생성한다. 기본 `run()`도 이전 미확인 조각을 반환할 수 있다. 읽기·반환은 확인 응답이 아니다. [A 운영 계약](INGEST_A.md)에 필드 매핑, 확인 수준, 조건 어댑터, 스케줄, 실패 복구 및 B API를 기록했다.
 
-B already removes stale chunk IDs for each nonempty service replacement. The consumer reuses that implementation and calls `remove_services()` explicitly for removals/empty replacements. Verification precedes exact service_id+version+event_id acknowledgment; no B/C source changes are required. Production age/region mapping, missing-provenance display policy and the provisional youth policy remain team decisions.
+B already removes stale chunk IDs for each nonempty service replacement. The consumer reuses that implementation and calls `remove_services()` explicitly for removals/empty replacements. Verification precedes exact service_id+version+event_id acknowledgment; no B/C source changes are required. Production age/region mapping and missing-provenance display remain separate decisions. The personal/household inclusion expansion is agreed; uncertain applicability is provisional.
 
 ### 6.2 A 2차 수정
 
@@ -211,3 +223,5 @@ Interest field remains a score boost; age/region/deadline semantics and C full-s
 - `retrieve/baseline.py` 구현: 질문에서 키워드를 뽑아(조사·불용어 제거) A의 `store.sql_keyword_search`(OR LIKE, ID순)로 후보를 가져온 뒤 일치한 키워드 종류 수(서비스명 3배 가중)로 순위를 매겨 서비스당 조각 1개 Top-k 반환. 정형 필터는 쓰지 않음(hybrid_filter와의 차이를 보기 위해). `active_count()` 추가, `run_eval`은 SQLite가 없으면 baseline을 건너뛰고(`baseline` 단독이면 안내 후 종료). `tests/test_baseline.py` 추가.
 - 평가 질문 정답을 Claude가 실제 서비스 목록(보조금24 전체 10,969건)을 읽고 1차로 채우고 사람이 검수하는 방식으로 변경(팀 합의). `eval/label_helper.py`에 출처 기록(`set`·`none`의 `--source/--note/--confidence`), 일괄 반영 `apply`, 검수 `review`, `status`의 검수 대기 수를 추가하고 테스트 3개 추가. `eval/questions.jsonl`에 정답과 `label_*`·`reviewed` 필드를 채우고 지역 후속 문항 q35(경기)·q36(서울)을 추가. LABELING.md §8.2.1에 검수 절차 기록.
 - 평가 질문 정답 채우기 도구 `eval/label_helper.py`와 `tests/test_label_helper.py`(45개)를 저장소에 추가하고, 사용 안내 `docs/LABELING.md`(준비·정답 기준·대화형 사용법·유형별 가이드·후속 질문·검증·팀 작업 방식)를 작성. README 7장의 정답 채우는 법을 요약+링크로 교체하고 필드(`relevant_service_names`, `follow_up_of`)를 추가.
+
+- 2026-10-21: `policy.py`, bounded `reprocess.py` and compact read-only `coverage.py` expand personal/household scope. Historical replay validates one acquisition run, defers older/unknown observations, preserves exact stored-event handoff and never closes missing IDs. B codec/region fallback/ranking and C contracts remain unchanged.

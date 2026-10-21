@@ -110,12 +110,12 @@ def test_distinct_reasons_and_reopening():
     store.acknowledge_changes(old)
     # Compare disappearance against ALL listing IDs, including non-youth records.
     summary = apply([service("expired", 신청기한="2020-01-01"),
-                     service("scope", 서비스명="고령 지원", 지원대상="노인"),
-                     service("outside", 서비스명="고령 지원", 지원대상="노인")],
+                     service("scope", 서비스명="기관 운영 지원", 지원대상="법인만"),
+                     service("outside", 서비스명="기관 운영 지원", 지원대상="법인만")],
                     listing(["expired", "scope", "outside"]))
-    assert summary["removals"] == {"expired": 1, "youth_scope_exit": 2, "api_disappeared": 1}
+    assert summary["removals"] == {"expired": 1, "policy_scope_exit": 2, "api_disappeared": 1}
     reasons = {e["service_id"]: e["reason"] for e in store.get_pending_changes()}
-    assert reasons == {"missing": "api_disappeared", "expired": "expired", "scope": "youth_scope_exit", "outside": "youth_scope_exit"}
+    assert reasons == {"missing": "api_disappeared", "expired": "expired", "scope": "policy_scope_exit", "outside": "policy_scope_exit"}
     assert store.load_services() == []
     assert "support_target" not in store.get_record("scope")["payload"]
     assert store.get_record("expired")["payload"]["application_period"] == "2020-01-01"
@@ -124,16 +124,16 @@ def test_distinct_reasons_and_reopening():
     assert all(e["action"] == "replace" for e in store.get_pending_changes() if e["service_id"] != "outside")
 
 
-def test_non_youth_minimal_audit_only():
-    assert store.upsert_services([service(서비스명="노인 지원", 지원대상="65세 이상")]) == []
+def test_explicit_institution_only_minimal_audit():
+    assert store.upsert_services([service(서비스명="기관 운영 지원", 지원대상="공공기관만")]) == []
     assert store.load_services() == [] and store.get_pending_changes() == []
-    assert store.get_record("A")["reason"] == "youth_scope_exit"
+    assert store.get_record("A")["reason"] == "policy_scope_exit"
     assert "support_target" not in store.get_record("A")["payload"]
 
 
 def test_missing_auxiliary_does_not_exclude_or_reopen():
     store.upsert_services([service()])
-    uncertain = service(서비스명="일반 지원", 지원대상="")
+    uncertain = service(서비스명="기관 운영 지원", 지원대상="법인만")
     uncertain["_inclusion_complete"] = False
     assert apply([uncertain], listing(["A"]))["deferred"] == 1
     assert len(store.load_services()) == 1

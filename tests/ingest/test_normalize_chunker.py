@@ -44,7 +44,7 @@ def test_disjoint_ranges_and_nationwide_unknown():
     unknown = store.clean_service(raw)
     assert "region" not in store.build_metadata(unknown)
     assert "age_min" not in store.build_metadata(unknown)
-    assert unknown["inclusion_reasons"] == [{"reason": "no_reliable_inclusion_evidence"}]
+    assert unknown["inclusion_policy"]["outcome"] == "provisional"
 
 
 @pytest.mark.parametrize("text", ["상시", "예산 소진 시", "별도 공고", "2026년 말", "12.31", "2026-12-31 또는 예산 소진 시",

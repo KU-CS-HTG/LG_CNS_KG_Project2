@@ -52,10 +52,10 @@ API 코드 01/05/23 등 일시 오류에 1/2초 backoff를 적용한다. Retry-A
 빈 스냅샷 및 권위 있는 전체 목록의 안전성을 입증할 수 없다. CLI에 검증 우회 옵션은 없다.
 `mark_closed()`는 인자 없는 기존 인터페이스에서 안전하게 `[]`를 반환한다. 파이프라인의 A 내부
 `apply_run()`만 **검증된·권위 있는·비표본·비어 있지 않은 완전 목록**을 받아 트랜잭션 안에서
-소실을 판정한다. 청년 필터 전 전체 목록 ID와 비교하며 상세/조건 누락으로 소실을 판단하지 않는다.
+소실을 판정한다. dataset inclusion 전 전체 목록 ID와 비교하며 상세/조건 누락으로 소실을 판단하지 않는다.
 최초 전체 0건의 권위성을 확인할 정책은 아직 없으므로 자동 전체 폐쇄를 지원하지 않는다.
 
-## 정제·관측·청년 포함 정책
+## Normalization, observations and dataset inclusion
 
 `merge.py`에서 키 존재 여부와 관측 상태로 필드를 결정하며 truthiness로 누락/빈 값을 합치지 않는다.
 
@@ -102,17 +102,69 @@ age_min/age_max로 평탄화하지 않는다. 명시적인 전국은 `region='�
 기관명에서 거주지를 추정하지 않는다. age/region은 검증된 어댑터 결과만 사용한다. 모든 미상 metadata 키는 생략한다.
 기관/링크가 없으면 data_quality와 실행별 품질 건수로 드러내며 거짓 출처를 만들지 않는다.
 
-`is_youth_service()`는 기존 bool 반환을 유지한다. 잠정 정책은 검증된 신청자 연령 구간 중 하나가
-`config.YOUTH_AGE_RANGE`와 겹치거나, 서비스명/지원대상/선정기준에 `config.YOUTH_KEYWORDS`가 있는 경우다.
-수집 나이를 개별 자격에 채우지 않는다. `youth_inclusion_reasons()`로 연령 겹침, 키워드·필드,
-근거 없음의 이유를 얻는다. 18~65세 일반 성인 프로그램이나 일반 구직 상담도 포함될 수 있다.
-요약의 broad_age_examples/broad_keyword_examples에 대표 사례를 남긴다. **정책 확정은 팀 합의 대기**다.
+`is_youth_service()` keeps its legacy boolean youth-tag interface. Dataset inclusion now
+uses `policy.inclusion_decision()` / `is_included_service()`, policy `personal-household-v1`.
+General personal/household and dependent benefits are included with supported reasons;
+uncertain applicability is `provisional`. Only explicit institution-only target assertions
+(법인만, 공공기관만, 지방자치단체만, 비영리단체만, and equivalent narrow forms)
+support exclusion, and contradictory personal recipient evidence prevents that exclusion.
+Business wording or age alone is insufficient. Inclusion reasons, uncertainty and policy ID
+are stored in existing payloads; run summaries count outcomes. This is not eligibility.
 
-누락 상세/조건으로 이전 청년 서비스가 갑자기 범위 밖으로 판단되면 갱신을 유보한다. 소실/범위 이탈로
-비활성화된 서비스의 재개도 보존된 옛 본문만으로 허가하지 않고 신선한 보조 관측을 기다린다.
-신규 청년 키워드가 명시된 서비스는 보조 관측 누락을 기록하며 포함할 수 있다.
-비청년 서비스는 검색에서 제외하고 ID·이름·기관·URL·해시·판정 이유 정도의 상태 감사 정보만 남긴다.
-원본은 별도 raw 진단에 보존된다. 만료/소실된 청년 레코드는 근거와 재개를 위해 본문도 보존한다.
+New exclusions use `policy_scope_exit`; old `youth_scope_exit` audit records are retained.
+Minimal excluded records lack sections and cannot be restored by requeue alone. Failed
+auxiliary collection remains distinct from source missingness; missing observations do
+not justify scope removal or unsupported reopening. Per-record `data_quality` remains.
+
+## Historical raw reprocessing (원본 재처리)
+
+`reprocess.reprocess(source_dir, storage=..., limit=100, today=...)` and its CLI replay ONE
+original A acquisition directory: `run-summary.json`, matching endpoint summaries and
+sequential `serviceList-00001.json` / `serviceDetail-...` / `supportConditions-...` pages.
+Decoded counts/pages/totals/status/conflicting IDs must agree; API-error pages are rejected.
+Joins use service IDs, never page positions. `label_helper`'s standalone `serviceList.json`
+is not this contract. Unmanifested endpoints or inconsistent layouts fail before DB mutation.
+Missing details defer the record; missing conditions defer restoration of a minimal excluded
+record. New records with details and missing conditions can retain unknown eligibility.
+
+The limit is selected listing records in source order (1–1000); decoding validates the
+entire selected acquisition run. No runs are mixed. Prior stored auxiliary fallback can be
+retained only after conservative record-level observation ordering passes. Original acquisition
+run/time and raw-file SHA-256 values are retained in payload/run audit. Replay field states
+are `historical_*`, source states are historical/retained/unavailable, never fresh.
+Run-ID acquisition time is not the provider's update time. Older/equal different-source or
+unknown-order observations defer the entire record. The same acquisition may be replayed
+idempotently; API-disappeared records require a new live observation to reopen. Missing
+source data is explicit deferral, not fabricated evidence. Deferred IDs/reasons are durable.
+
+Policy transitions compare status/reason as well as content hash: inactive legacy records
+can create a full replacement even when their hash is unchanged. Identical replay creates
+no new version/event. Replay holds the same source OS lock and commits records/events/run
+summary transactionally; it never resets DB/history/pending. Every replay is sampled and
+non-authoritative with disappearance disabled. Absence from the selected run proves nothing.
+
+`pipeline --full` still performs collection and requeues ALL current active chunks, preserving
+pending removals/history. It is neither an offline import nor a recovery mechanism for discarded
+sections. Raw reprocessing is separate and does not apply or acknowledge any index events.
+
+```powershell
+$scopePython = ".\.venv\Scripts\python.exe"
+$scopeRoot = "data/a_validation/scope-local"
+# Choose an existing original A acquisition run, not a label_helper list.
+& $scopePython -m src.ingest.reprocess --source-run data/a_validation/readiness-real-20261020/raw/20261020T061626Z-72e54f11711f --db-path "$scopeRoot/services.db" --raw-dir "$scopeRoot/replay-raw" --limit 50 --today 2026-10-21 --validation
+& $scopePython -m src.ingest.handoff --db-path "$scopeRoot/services.db" --index-dir "$scopeRoot/vectorstore" --validation --dry-run
+# Explicit application only when requested; cached compatible model, existing association rules.
+& $scopePython -m src.ingest.handoff --db-path "$scopeRoot/services.db" --index-dir "$scopeRoot/vectorstore" --validation --apply
+& $scopePython -m src.ingest.coverage --db-path "$scopeRoot/services.db" --index-dir "$scopeRoot/vectorstore" --source-run data/a_validation/readiness-real-20261020/raw/20261020T061626Z-72e54f11711f --only q15,q16,q23
+```
+
+Coverage reuses B's `missing_gold` ID inspection and reads SQLite/Chroma metadata in read-only
+transactions without initializing a collection/model, ingestion or acknowledgment. It shows
+effective paths, DB status, deferral, pending and exact persisted snapshot consistency. Unsupported
+Chroma schemas fail clearly. Source and index snapshots are separate; inspect after writers stop.
+Absence in a sample is not an invalid gold label. Index presence does not establish geographic
+applicability, applicant eligibility or retrieval quality. B's region fallback is checked through
+the current codec; A residence eligibility remains unknown. B ranking/Hybrid/field boost is unchanged.
 
 ## SQLite·분할·증분 상태
 
@@ -120,7 +172,7 @@ age_min/age_max로 평탄화하지 않는다. 명시적인 전국은 `region='�
 `storage.StoragePaths`를 명시적으로 전달해 전역 config 변경 없이 실행별 DB/raw를 선택한다.
 테이블은 services(정규 JSON·해시·상태·버전),
 ingestion_runs(완전성 포함 요약), pending_changes(서비스별 최신 미확인 이벤트) 세 개다.
-상태/원인: active 또는 inactive, `expired`/`api_disappeared`/`youth_scope_exit`를 구분한다.
+상태/원인: active 또는 inactive, `expired`/`api_disappeared`/`policy_scope_exit` (legacy `youth_scope_exit` retained)를 구분한다.
 본문·이름·기관·URL·기간 원문·검증 자격·metadata의 정렬 JSON SHA-256으로 변경을 감지한다.
 수집 시각·fresh/retained 같은 운영 정보는 해시에서 제외한다. metadata만 바뀌어도 갱신된다.
 
@@ -128,7 +180,7 @@ DB 갱신과 pending 기록, 완료 실행 요약은 한 트랜잭션이다. 중
 다음 실행 시작 시 interrupted로 기록한다. 프로세스 파일 잠금으로 수집/upsert 중첩을 막고
 프로세스 사망 시 OS가 잠금을 해제한다. DB 파일이나 이력을 초기화하지 않는다.
 
-`load_services(None)`는 활성 청년 서비스 전체, `load_services([])`는 빈 목록이다.
+`load_services(None)`는 all active included services, `load_services([])`는 빈 목록이다.
 `sql_keyword_search(keywords, k)`는 활성 레코드 이름·기관·네 본문 항목에 literal OR LIKE를 적용하며
 %, _, 역슬래시를 escape한다. SQLite의 기본 LIKE 대소문자 규칙(ASCII case insensitive)을 따른다.
 서비스 ID 순서와 최대 k를 사용하며 검색 순위·정형 필터 실험은 B 소유다.
@@ -257,7 +309,7 @@ Dry-run does not initialize a missing DB; run collection/fixture setup first.
 ### Preserved/deferred team decisions
 
 `Chunk`, B storage/retrieval, interest field score boosting, C evidence expansion,
-expiry/disappearance/youth-scope reasons and provisional inclusion rules are unchanged.
+expiry/disappearance remain separate; dataset scope now follows personal-household-v1, with legacy youth-scope audit preserved.
 Real Chroma/fake-embedding tests verify replay, replacement/removal, exact acknowledgment,
 cross-process exclusion, worker isolation and C full-service expansion without an LLM.
 They do not establish actual-model behavior, full API traversal or answer/search quality.
