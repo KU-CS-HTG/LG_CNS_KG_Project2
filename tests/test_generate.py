@@ -337,6 +337,25 @@ def test_reason_uses_asked_help_when_no_condition_pairs(monkeypatch, sample_chun
     assert rec.reason == generator.GENERIC_REASON                           # 도와준다는 판정이 없으면 일반 문구
 
 
+def test_named_program_question_drops_other_programs(monkeypatch, sample_chunks):
+    # '청년희망적금' 질문에 이름이 비슷한 청년미래적금을 안내하던 문제 (평가 q30)
+    from dataclasses import replace
+    other = [replace(c, service_name="청년미래적금") for c in sample_chunks if c.service_id == "SAMPLE001"]
+    _fake_llm(monkeypatch, {"services": [{"service_id": "SAMPLE001", "applicable": "확인 필요", "meets_need": True}]})
+    q = "청년희망적금에 지금 가입할 수 있나요?"
+    assert generator._generate(q, {"SAMPLE001": other}, ["청년희망적금"], ["청년희망적금"]).no_evidence
+    same = [replace(c, service_name="대구 청년희망적금") for c in other]
+    assert not generator._generate(q, {"SAMPLE001": same}, ["청년희망적금"], ["청년희망적금"]).no_evidence
+    assert generator._named_programs(["청년희망적금", "청년 적금", "청년적금", "장학금", "주거비"]) == ["청년희망적금"]
+
+
+def test_need_claim_is_rewritten_for_the_judge():
+    from eval import answer_eval
+    reason = "말씀하신 ‘보증금 대출’에 도움이 될 수 있는 제도예요. 자격은 아래 조건을 확인해 주세요."
+    assert answer_eval._need_claim(reason) == "찾는 도움: ‘보증금 대출’ — 이 제도의 지원내용이 이 도움을 직접 준다."
+    assert "찾는 도움:" in answer_eval.FAITHFULNESS_PROMPT
+
+
 def test_reason_names_only_the_needs_the_service_meets(monkeypatch, sample_chunks):
     # 처지(구직)만 맞은 제도에 질문 구절('월세가 부담되고')로 이유를 붙이면 틀린 이유가 된다 (평가 q01)
     from dataclasses import replace

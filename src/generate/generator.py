@@ -114,8 +114,11 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
 
     # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다
     by_id = {str(s.get("service_id")).strip(): s for s in out.get("services") or [] if isinstance(s, dict)}
+    named = _named_programs(asked)
     recs: list[Recommendation] = []
     for sid, chunks in evidence.items():
+        if named and not any(n in _squash_name(chunks[0].service_name) for n in named):
+            continue                      # 특정 제도를 물었는데 그 제도가 아니다 ('청년희망적금' 질문에 청년미래적금, 평가 q30)
         gen = by_id.get(sid)
         if gen is None:
             if judged:
@@ -135,6 +138,29 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
     return Answer(text=text, recommendations=recs)
+
+
+# 제도 이름처럼 끝나는 말 (상품·급여 이름). '지원금'·'대출'은 '청년지원금'·'청년전용대출'처럼 일반 표현에도 쓰여 넣지 않는다.
+_PROGRAM_SUFFIX_RE = re.compile(r"(?:적금|통장|계좌|공제|수당|장려금|바우처|장학금|패스)$")
+MIN_PROGRAM_NAME_CHARS = 5    # '청년적금'(4자)처럼 짧은 것은 일반 표현으로 본다
+
+
+def _squash_name(s: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", s or "")
+
+
+def _named_programs(asked: list[str] | None) -> list[str]:
+    """질문이 이름으로 콕 집어 물은 제도 ('청년희망적금', '국가장학금'). 띄어쓰기 없는 한 단어이고 제도 이름처럼 끝날 때만.
+
+    LLM은 '특정 제도를 묻는데 근거에 없으면 관련 없음' 규칙이 있어도 이름이 비슷한 다른 제도(청년미래적금)를
+    도움이 된다고 판정했다 (q30, 3회 모두). 그래서 이름을 물었으면 서비스명에 그 이름이 있는 제도만 남긴다 (코드 검증)."""
+    out = []
+    for a in asked or []:
+        name = _JOSA_RE.sub("", a.strip())
+        if (" " not in name and len(name) >= MIN_PROGRAM_NAME_CHARS and _PROGRAM_SUFFIX_RE.search(name)
+                and name not in condition_extractor._GENERIC_HELP):
+            out.append(_squash_name(name))
+    return out
 
 
 _JOSA_RE = re.compile(r"(?:이나|으로|에서|에게|까지|부터|을|를|이|가|은|는|도|나|의|에|와|과|로)$")
