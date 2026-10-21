@@ -57,6 +57,7 @@ def test_format_table():
 
 
 def test_local_penalty_axis_and_restore(indexed_sample, questions):
+    before = config.LOCAL_PENALTY
     rows = sweep.run_sweep(questions, 5, (0.2,), (60,), (0.0,), today="2026-10-19", local_penalties=(0.0, 0.004, 1.0))
     assert sorted(r["local_penalty"] for r in rows) == [0.0, 0.004, 1.0]
-    assert config.LOCAL_PENALTY == 0.0                                  # 끝나면 원래 값
+    assert config.LOCAL_PENALTY == before                               # 끝나면 원래 값
