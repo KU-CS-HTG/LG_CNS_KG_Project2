@@ -40,7 +40,7 @@ class BIndexAdapter:
         return dimension
 
     def _documents(self):
-        data = index._collection().get(include=["documents", "metadatas"])
+        data = index._get_all(["documents", "metadatas"])    # paged: one get() over ~30k+ chunks fails in SQLite
         return {cid: (text, metadata) for cid, text, metadata in
                 zip(data["ids"], data["documents"], data["metadatas"])}
 

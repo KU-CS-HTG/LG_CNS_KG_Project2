@@ -139,6 +139,28 @@ def _chunk_from_store(chunk_id: str, document: str, m: dict) -> Chunk:
     )
 
 
+GET_PAGE = 5000      # Chroma(SQLite)는 한 번에 가져오는 id가 약 3만 개를 넘으면 "too many SQL variables"로 실패한다
+
+
+def _get_all(include: list[str], where: dict | None = None, page: int = GET_PAGE) -> dict:
+    """col.get()을 page개씩 나눠 가져와 합친다 (조각이 많은 색인에서도 동작). 반환 형식은 col.get()과 같다."""
+    col = _collection()
+    out: dict = {"ids": [], **{key: [] for key in include}}
+    offset = 0
+    while True:
+        data = col.get(where=where, include=include, limit=page, offset=offset)
+        count = len(data["ids"])
+        if count == 0:
+            break
+        out["ids"].extend(data["ids"])
+        for key in include:
+            out[key].extend(data[key])
+        if count < page:
+            break
+        offset += page
+    return out
+
+
 def build_where(filters: Filters) -> dict | None:
     """Filters -> Chroma where. 값이 없는 제도는 통과(소프트), 신청기한이 지난 제도는 제외.
 
@@ -200,7 +222,7 @@ def backfill_region(dry_run: bool = False, batch_size: int = 500) -> dict:
     `region`이 비어 있고, 그러면 지역 필터가 다른 지역 제도를 걸러 내지 못한다. 여러 번 실행해도 결과는 같다.
     색인 적용(handoff)과 동시에 실행하지 않는다."""
     col = _collection()
-    data = col.get(include=["metadatas"])
+    data = _get_all(["metadatas"])
     updates = []
     for chunk_id, metadata in zip(data["ids"], data["metadatas"]):
         if not metadata.get("region"):
@@ -286,7 +308,7 @@ def _bm25_index():
         return cached[1], cached[2]
     from rank_bm25 import BM25Okapi
 
-    data = _collection().get(include=["documents"])
+    data = _get_all(["documents"])
     ids = list(data["ids"])
     bm25 = BM25Okapi([_tokenize(d) for d in data["documents"]]) if ids else None
     _bm25_cache[key] = (version, bm25, ids)
@@ -301,7 +323,7 @@ def bm25_search(query: str, k: int, where: dict | None = None) -> list[tuple[Chu
         return []
     scores = np.asarray(bm25.get_scores(tokens), dtype=float)
     if where is not None:
-        allowed = set(_collection().get(where=where, include=[])["ids"])
+        allowed = set(_get_all([], where=where)["ids"])
         scores = np.where([cid in allowed for cid in ids], scores, 0.0)
     top = [i for i in np.argsort(-scores)[:k] if scores[i] > 0]
     if not top:
