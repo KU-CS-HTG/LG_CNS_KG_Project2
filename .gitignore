@@ -13,3 +13,4 @@ data/vectorstore/
 data/a_validation/
 .pytest_cache/
 /pytest-cache-files-*/
+data/embed_shards/
