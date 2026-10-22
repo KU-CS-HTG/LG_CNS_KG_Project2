@@ -175,3 +175,32 @@ def test_region_inferred_from_agency_when_missing(fake_embedder, tmp_vectorstore
     assert stored == {"A": "서울", "B": "부산", "C": None, "D": None, "E": "전국"}
     ids = {chunk.service_id for chunk, _ in vs.vector_search("월세", 10, vs.build_where({"region": "서울", "today": "2026-10-19"}))}
     assert ids == {"A", "C", "D", "E"}                                  # 부산 제도만 빠지고, 전국·지역 미상은 통과 (소프트)
+
+
+def test_backfill_region_fills_old_chunks_without_touching_embeddings(fake_embedder, tmp_vectorstore):
+    from src.common.schema import Chunk
+    from src.index import vector_store as vs
+
+    def c(sid, agency, region=None):
+        md = {"agency": agency}
+        if region:
+            md["region"] = region
+        return Chunk(f"{sid}#지원대상", sid, f"{sid} 면접 정장", "지원대상", f"{sid} 면접 정장 대여", md, "")
+
+    vs.build_index([c("A", "충청남도 천안시"), c("B", "경기도"), c("C", "고용노동부"), c("D", "안산시 단원구")])
+    col = vs._collection()
+    col.update(ids=["A#지원대상", "B#지원대상"], metadatas=[{**col.get(ids=[i], include=["metadatas"])["metadatas"][0], "region": ""} for i in ("A#지원대상", "B#지원대상")])
+    before_vec = col.get(ids=["A#지원대상"], include=["embeddings"])["embeddings"]
+
+    dry = vs.backfill_region(dry_run=True)
+    assert dry["to_update"] == 2 and dry["by_region"] == {"경기": 1, "충남": 1}
+    assert not col.get(ids=["A#지원대상"], include=["metadatas"])["metadatas"][0]["region"]      # dry-run은 바꾸지 않음
+
+    done = vs.backfill_region()
+    assert done["updated"] == 2 and done["chunks"] == 4
+    assert col.get(ids=["A#지원대상"], include=["metadatas"])["metadatas"][0]["region"] == "충남"
+    assert col.get(ids=["C#지원대상"], include=["metadatas"])["metadatas"][0]["region"] == ""     # 중앙기관·시군구만 있는 기관은 그대로
+    assert (col.get(ids=["A#지원대상"], include=["embeddings"])["embeddings"] == before_vec).all()
+    assert vs.backfill_region()["updated"] == 0                                                  # 여러 번 실행해도 같다
+    ids = {x.service_id for x, _ in vs.vector_search("면접 정장", 10, vs.build_where({"region": "경기", "today": "2026-10-19"}))}
+    assert ids == {"B", "C", "D"}                                                                # 충남 제도는 걸러지고 전국·지역 미상은 통과

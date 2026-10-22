@@ -193,6 +193,31 @@ def build_index(chunks: list[Chunk], batch_size: int = config.INDEX_BATCH_SIZE) 
     _bump_version()
 
 
+def backfill_region(dry_run: bool = False, batch_size: int = 500) -> dict:
+    """저장된 조각 중 `region`이 비어 있는데 소관기관명으로 시·도를 알 수 있는 것에 값을 채운다 (임베딩은 건드리지 않는다).
+
+    기관명 기반 지역 보충(`_to_store_metadata`)이 들어가기 전에 색인된 조각은 변경이 없으면 다시 색인되지 않아
+    `region`이 비어 있고, 그러면 지역 필터가 다른 지역 제도를 걸러 내지 못한다. 여러 번 실행해도 결과는 같다.
+    색인 적용(handoff)과 동시에 실행하지 않는다."""
+    col = _collection()
+    data = col.get(include=["metadatas"])
+    updates = []
+    for chunk_id, metadata in zip(data["ids"], data["metadatas"]):
+        if not metadata.get("region"):
+            region = filter_rules.agency_region(metadata.get("agency"))
+            if region:
+                updates.append((chunk_id, {**metadata, "region": region}))
+    if not dry_run:
+        for i in range(0, len(updates), batch_size):
+            part = updates[i : i + batch_size]
+            col.update(ids=[cid for cid, _ in part], metadatas=[m for _, m in part])
+    by_region: dict[str, int] = {}
+    for _, metadata in updates:
+        by_region[metadata["region"]] = by_region.get(metadata["region"], 0) + 1
+    return {"chunks": len(data["ids"]), "missing_region": sum(1 for m in data["metadatas"] if not m.get("region")),
+            "to_update" if dry_run else "updated": len(updates), "by_region": dict(sorted(by_region.items()))}
+
+
 def remove_services(service_ids: list[str]) -> None:
     """종료·삭제된 서비스의 조각을 제거."""
     ids = list(service_ids)
@@ -308,9 +333,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--sample", action="store_true", help="A의 결과 대신 tests/fixtures 샘플 조각을 색인")
     ap.add_argument("--full", action="store_true", help="색인을 비우고 전체를 다시 만든다")
     ap.add_argument("--query", help="색인 후 이 질문으로 벡터·BM25 검색 결과를 출력")
+    ap.add_argument("--backfill-region", action="store_true", help="이미 색인된 조각의 비어 있는 region을 소관기관명으로 채우기 (색인·임베딩은 건드리지 않고 이것만 실행)")
+    ap.add_argument("--dry-run", action="store_true", help="--backfill-region과 함께: 바꾸지 않고 대상만 보여 줌")
     ap.add_argument("--k", type=int, default=config.DEFAULT_TOP_K)
     args = ap.parse_args(argv)
 
+    if args.backfill_region:
+        print(json.dumps(backfill_region(dry_run=args.dry_run), ensure_ascii=False, indent=2))
+        return
     if args.full:
         clear_index()
     if args.sample:
