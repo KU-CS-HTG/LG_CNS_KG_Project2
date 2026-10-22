@@ -25,12 +25,23 @@ from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E4
 from src.generate import generator  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
+# 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
+# (나이·지역 + 자격 체크리스트 / 지역을 말해도 전국 제도 함께 / 제도 이름으로 묻기 / 상황만 말하기)
 EXAMPLES = [
     "서울에 사는 27살 취업준비생인데 월세가 부담돼요",
-    "곧 결혼하는데 신혼부부가 받을 수 있는 주거 지원이 있나요?",
-    "대학생인데 학자금 대출 이자가 부담돼요",
+    "대전에 사는데 곧 아이가 태어나요",
+    "근로장려금은 어떤 조건이면 받을 수 있나요?",
     "회사를 그만두고 일자리를 찾고 있어요",
 ]
+DEADLINE_SOON_DAYS = 14   # 신청 마감까지 이 일수 이하로 남으면 카드에 'D-n'을 붙인다
+# 전국 제도로 표시할 소관기관: 중앙부처(○○부·청·처·위원회)와 '한국·국민·근로복지'로 시작하는 공공기관.
+# 지자체도 이것도 아니면('재단법인용산복지재단'처럼 이름만으로 지역을 알 수 없는 기관) 표시하지 않는다.
+NATIONAL_AGENCY_RE = re.compile(r"(?:부|처|청|위원회)$|^(?:한국|국민|근로복지)")
+STEP_LABELS = {
+    generator.STEP_CONDITIONS: "🧩 질문에서 나이·지역·상황을 파악하고 있어요",
+    generator.STEP_SEARCH: "🔎 공공데이터에서 맞는 제도를 찾고 있어요",
+    generator.STEP_GENERATE: "⚖️ 자격 조건을 비교하고 답변을 정리하고 있어요",
+}
 DEMO_FIELD_BOOST = 2   # 미리보기 검색에서 관심 분야가 맞는 제도에 더하는 점수 (B의 FIELD_BOOST와 같은 역할)
 OFFICIAL_SITES = [("정부24 보조금24", "https://www.gov.kr/portal/rcvfvrSvc/main"), ("복지로", "https://www.bokjiro.go.kr")]
 
@@ -84,6 +95,11 @@ header[data-testid="stHeader"] { background: transparent; }
 .deadline { display:inline-block; margin-top:.35rem; font-size:.78rem; font-weight:600; opacity:.8; }
 .upcoming { color:var(--accent); background:var(--accent-soft); padding:.05rem .45rem; border-radius:999px; }
 .closed { color:var(--warn); background:var(--warn-soft); padding:.05rem .45rem; border-radius:999px; }
+.soon { color:#dc2626; background:rgba(220,38,38,.10); padding:.05rem .45rem; border-radius:999px; font-weight:700; }
+.scope { display:inline-block; margin-left:.4rem; font-size:.72rem; font-weight:700; padding:.05rem .45rem;
+  border-radius:999px; vertical-align:.05rem; }
+.scope.nat { color:var(--accent); background:var(--accent-soft); }
+.scope.local { color:var(--ok); background:var(--ok-soft); }
 
 /* 자격 체크리스트 (확인이 필요한 조건을 사용자가 스스로 체크) */
 [class*="st-key-checklist_"] { border-radius:12px; padding:.65rem .9rem .55rem; background:var(--warn-soft); gap:.35rem !important; }
@@ -206,16 +222,23 @@ def _demo_search_with_info(query: str, filters: Filters, k: int = 5, mode: str =
         current, relaxed = softer, True
 
 
-def _ask(question: str) -> Answer:
-    if _search_ready():
-        _warm_up().wait()
-        return generator.answer_question(question)
-    original = hybrid.search, hybrid.search_with_info
-    hybrid.search, hybrid.search_with_info = _demo_search, _demo_search_with_info
+def _ask(question: str, on_step=None) -> Answer:
+    """on_step: 진행 단계 이름(generator.STEP_*)을 받는 함수. 기다리는 동안 화면에 단계를 보여 주는 데 쓴다."""
+    token = generator.PROGRESS.set(on_step)
     try:
-        return generator.answer_question(question)
+        if _search_ready():
+            if not _warm_up().is_set() and on_step:
+                on_step("warmup")
+            _warm_up().wait()
+            return generator.answer_question(question)
+        original = hybrid.search, hybrid.search_with_info
+        hybrid.search, hybrid.search_with_info = _demo_search, _demo_search_with_info
+        try:
+            return generator.answer_question(question)
+        finally:
+            hybrid.search, hybrid.search_with_info = original
     finally:
-        hybrid.search, hybrid.search_with_info = original
+        generator.PROGRESS.reset(token)
 
 
 # --- 렌더링 ----------------------------------------------------------------------------
@@ -262,7 +285,7 @@ def _card_head(i: int, r: Recommendation, checked: int) -> str:
     return f"""
 <div class="card-head">
   <div class="num">{i}</div>
-  <div><div class="title">{_e(r.service_name)}</div><div class="agency">🏛 {_e(r.agency)}</div></div>
+  <div><div class="title">{_e(r.service_name)}</div><div class="agency">🏛 {_e(r.agency)}{_scope_html(r.agency)}</div></div>
   {_badge(len(r.needs_check), checked)}
 </div>
 <div class="reason">{_e(r.reason)}</div>
@@ -273,9 +296,37 @@ def _card_head(i: int, r: Recommendation, checked: int) -> str:
 </div>"""
 
 
-def _deadline_html(deadline: str) -> str:
+def _scope_html(agency: str) -> str:
+    """소관기관 옆 표시: 지자체 제도는 '📍 서울 지역'(구 단위면 '📍 서울 동대문구'), 중앙부처·전국 공공기관 제도는 '전국'.
+    지역을 말한 질문에 전국 제도가 함께 나오므로(generator._mix_national) 어느 쪽인지 한눈에 보이게 한다.
+    어느 쪽인지 이름만으로 알 수 없으면 표시하지 않는다 (틀린 '전국' 표시를 막으려고)."""
+    agency = (agency or "").strip()
+    region = generator._agency_region(agency)
+    if region:
+        district = " ".join(sorted(generator._agency_districts(agency)))   # 구 단위 제도는 구까지 ('📍 서울 동대문구')
+        return f'<span class="scope local">📍 {_e(region)} {_e(district) if district else "지역"}</span>'
+    if NATIONAL_AGENCY_RE.search(agency):
+        return '<span class="scope nat">전국</span>'
+    return ""
+
+
+def _days_left(period: str, today: date | None = None) -> int | None:
+    """신청 마감까지 남은 날 (마감일이 DEADLINE_SOON_DAYS 안이고 이미 접수 중일 때만). 아니면 None.
+    '상시·수시·예산 소진 시까지'처럼 끝이 열린 기간과 연도 없는 기간은 마감일을 알 수 없어 None."""
+    today = today or date.today()
+    text = " ".join((period or "").split())
+    if not text or generator._OPEN_PERIOD_RE.search(text):
+        return None
+    end, start = generator._period_end(text), generator._period_start(text)
+    if end is None or (start is not None and start > today):
+        return None
+    left = (end - today).days
+    return left if 0 <= left <= DEADLINE_SOON_DAYS else None
+
+
+def _deadline_html(deadline: str, today: date | None = None) -> str:
     """신청 기간 줄. 아직 접수 전인 제도('신청 예정 · ...')와 이번 회차가 끝난 반복 제도('이번 신청 마감 · ...')는
-    표시를 붙여 구분한다."""
+    표시를 붙여 구분하고, 마감이 가까우면 'D-n'을 붙인다."""
     if not deadline:
         return ""
     for mark, css, icon in ((generator.UPCOMING_MARK, "upcoming", "⏳"),
@@ -283,7 +334,10 @@ def _deadline_html(deadline: str) -> str:
         if deadline.startswith(f"{mark} · "):
             return (f'<span class="deadline"><span class="{css}">{icon} {_e(mark)}</span> '
                     f'{_e(deadline[len(mark) + 3:])}</span>')
-    return f'<span class="deadline">📅 신청 기간 · {_e(deadline)}</span>'
+    left = _days_left(deadline, today)
+    soon = (f'<span class="soon">⏰ 마감 {"D-day" if left == 0 else f"D-{left}"}</span> '
+            if left is not None else "")
+    return f'<span class="deadline">{soon}📅 신청 기간 · {_e(deadline)}</span>'
 
 
 def _card_sources(r: Recommendation) -> str:
@@ -502,8 +556,10 @@ def _answer_pending() -> None:
     box = st.container(key="fu_pending") if thread and thread[-1].get("follow") else st.container()
     with box, st.chat_message("assistant", avatar="🧭"):
         try:
-            with st.spinner("상황에 맞는 지원제도를 찾고 있어요…"):
-                answer = _ask(asked)
+            # 기다리는 동안 지금 단계를 한 줄씩 보여 준다 (질문 하나에 10~20초)
+            with st.status("상황에 맞는 지원제도를 찾고 있어요…", expanded=True) as status:
+                answer = _ask(asked, lambda step: status.write(STEP_LABELS.get(step, "⏳ 검색 엔진을 준비하고 있어요")))
+                status.update(label="답변을 정리했어요", state="complete")
         except Exception as e:  # 사용자에게는 짧게, 원인은 펼쳐서
             st.error("답변을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.")
             with st.expander("오류 내용"):
