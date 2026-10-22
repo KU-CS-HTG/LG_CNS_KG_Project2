@@ -239,6 +239,24 @@ earlier verified events remain acknowledged, failed/later events remain pending.
 The JSON report includes effective mode/paths/model, applied/acknowledged counts,
 successful event tokens, failing stage/code/token, and remaining count. Failure exits 1.
 
+### Batched verification (`--verify-every N`, B·A 합의로 추가)
+
+The default (`N=1`) is unchanged: apply, verify and acknowledge one event at a time. With `--verify-every N`
+(1–1000; recommended 100 for large queues) the worker applies N events, verifies them together against one
+index snapshot and acknowledges exactly those N tokens. Why: per-event verification re-reads and re-tokenizes the
+whole corpus, so total time grows with events × corpus size. Per batch the worker now: revalidates the pending
+queue once (`read_pending` parses every pending event), takes ONE before/after snapshot, compares untouched
+services once, and checks BM25 corpus membership/token frequencies once. Per event it still checks the exact
+persistent chunk snapshot, Vector visibility of every chunk, and one bounded BM25 visibility query (the service-name
+line; whole-chunk queries cost O(query tokens × corpus) each and dominated time).
+
+Failure semantics are the same at-least-once model: the first failing stage stops the run; verified-and-
+acknowledged batches stay done; the failing batch's events are NOT acknowledged (a superseded event keeps its
+newer token pending while verified events with matching tokens are acknowledged) and replay by rerunning the same
+command. A kill or Ctrl+C therefore redoes at most N events. The failure report adds `batch: {size, first_service_id}`.
+`Settings.verify_every` is part of the worker settings; it does not affect the association manifests. Per-event
+`BIndexAdapter.verify/capture` remain for N=1.
+
 ### Synchronization and association
 
 The application worker takes OS locks in fixed order:

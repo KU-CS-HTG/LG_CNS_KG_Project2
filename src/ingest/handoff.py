@@ -24,6 +24,9 @@ from src.ingest.locking import file_lock
 from src.ingest.storage import StoragePaths
 
 
+MAX_VERIFY_EVERY = 1000     # 한 묶음이 실패·중단되면 그 안의 이벤트를 다시 적용하므로 상한을 둔다
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: str
@@ -33,10 +36,13 @@ class Settings:
     device: str | None = None
     validation: bool = False
     adopt_existing: bool = False
+    verify_every: int = 1
 
     @classmethod
     def resolve(cls, *, db_path=None, index_dir=None, model=None, validation=False,
-                adopt_existing=False):
+                adopt_existing=False, verify_every=1):
+        if type(verify_every) is not int or not 1 <= verify_every <= MAX_VERIFY_EVERY:
+            raise ValueError("invalid_verify_every")
         if validation and (db_path is None or index_dir is None):
             raise ValueError("validation_requires_explicit_db_and_index")
         db = Path(db_path or config.DB_PATH).resolve()
@@ -71,11 +77,12 @@ class Settings:
                         raise ValueError("validation_destination_overlaps_live_storage")
         return cls(str(db), str(index), model or config.EMBEDDING_MODEL,
                    config.EMBEDDING_MAX_SEQ_LENGTH, config.EMBEDDING_DEVICE,
-                   validation, adopt_existing)
+                   validation, adopt_existing, verify_every)
 
     def checked(self):
         resolved = self.resolve(db_path=self.db_path, index_dir=self.index_dir, model=self.model,
-                                validation=self.validation, adopt_existing=self.adopt_existing)
+                                validation=self.validation, adopt_existing=self.adopt_existing,
+                                verify_every=self.verify_every)
         if (not isinstance(self.model, str) or not self.model.strip()
                 or type(self.max_seq_length) is not int or self.max_seq_length < 1):
             raise ValueError("invalid_model_settings")
@@ -217,29 +224,59 @@ def apply_pending(settings: Settings, adapter) -> dict:
                 stage = "compatibility"
                 dimension = adapter.prepare(settings, bound=any(p.exists() for p in _bindings(settings)))
                 _bind(settings, dimension)
-                for event, chunks in snapshots:
-                    stage = "revalidate"
-                    current = {row["service_id"]: row for row in read_pending(settings)}.get(event["service_id"])
-                    if current != event:
-                        raise RuntimeError("event_superseded_or_modified")
-                    stage = "apply"
-                    before = adapter.capture(event)
-                    adapter.apply(event, chunks)
-                    report["applied"] += 1
-                    stage = "verify"
-                    adapter.verify(event, chunks, before)
-                    stage = "acknowledge"
-                    if store.acknowledge_changes([event], storage=settings.storage()) != 1:
-                        raise RuntimeError("exact_event_not_acknowledged")
-                    report["acknowledged"] += 1
-                    report["events"].append({key: event[key] for key in ("service_id", "version", "event_id", "action")})
+                if settings.verify_every == 1:
+                    for event, chunks in snapshots:
+                        stage = "revalidate"
+                        current = {row["service_id"]: row for row in read_pending(settings)}.get(event["service_id"])
+                        if current != event:
+                            raise RuntimeError("event_superseded_or_modified")
+                        stage = "apply"
+                        before = adapter.capture(event)
+                        adapter.apply(event, chunks)
+                        report["applied"] += 1
+                        stage = "verify"
+                        adapter.verify(event, chunks, before)
+                        stage = "acknowledge"
+                        if store.acknowledge_changes([event], storage=settings.storage()) != 1:
+                            raise RuntimeError("exact_event_not_acknowledged")
+                        report["acknowledged"] += 1
+                        report["events"].append({key: event[key] for key in ("service_id", "version", "event_id", "action")})
+                else:
+                    # Batched: apply N events, verify ONCE (corpus-wide checks are O(corpus)), acknowledge exactly
+                    # those N tokens. A failure or kill leaves the whole batch pending and replayable (apply is
+                    # idempotent), so at most N events of work are redone.
+                    size = settings.verify_every
+                    for start in range(0, len(snapshots), size):
+                        group = snapshots[start:start + size]
+                        event = group[0][0]
+                        report["batch"] = {"size": len(group), "first_service_id": event["service_id"]}
+                        stage = "revalidate"
+                        pending_now = {row["service_id"]: row for row in read_pending(settings)}
+                        if any(pending_now.get(e["service_id"]) != e for e, _ in group):
+                            raise RuntimeError("event_superseded_or_modified")
+                        stage = "apply"
+                        before = adapter.capture_batch([e for e, _ in group])
+                        for e, chunks in group:
+                            adapter.apply(e, chunks)
+                            report["applied"] += 1
+                        stage = "verify"
+                        adapter.verify_batch(group, before)
+                        stage = "acknowledge"
+                        acknowledged = store.acknowledge_changes([e for e, _ in group], storage=settings.storage())
+                        report["acknowledged"] += acknowledged      # exact tokens only: a superseded event stays pending
+                        if acknowledged != len(group):
+                            raise RuntimeError("exact_event_not_acknowledged")
+                        report["events"].extend({key: e[key] for key in ("service_id", "version", "event_id", "action")}
+                                                for e, _ in group)
+                        report.pop("batch", None)
                 report["remaining"] = len(read_pending(settings))
     except Exception as exc:
         # Do not expose exception URLs/source text. Event tokens contain no credentials.
         report["failed"].append({"stage": stage, "error": type(exc).__name__,
                                  "code": _error_code(exc),
                                  "token": {key: event.get(key) for key in ("service_id", "version", "event_id")}
-                                 if isinstance(event, dict) else None})
+                                 if isinstance(event, dict) else None,
+                                 **({"batch": report["batch"]} if "batch" in report else {})})
         try:
             report["remaining"] = len(read_pending(settings))
         except Exception:
@@ -282,10 +319,14 @@ def main(argv=None) -> int:
     mode.add_argument("--apply", action="store_true")
     parser.add_argument("--validation", action="store_true", help="Reject live DB/index/raw destinations")
     parser.add_argument("--adopt-existing", action="store_true", help="Explicit first binding of an existing nonempty B collection")
+    parser.add_argument("--verify-every", type=int, default=1, metavar="N",
+                        help=f"Apply N events, then verify and acknowledge them together (1 = per event, max {MAX_VERIFY_EVERY}). "
+                             "Recommended 100 for large queues")
     args = parser.parse_args(argv)
     try:
         settings = Settings.resolve(db_path=args.db_path, index_dir=args.index_dir, model=args.model,
-                                    validation=args.validation, adopt_existing=args.adopt_existing)
+                                    validation=args.validation, adopt_existing=args.adopt_existing,
+                                    verify_every=args.verify_every)
         report = consume(settings, apply=args.apply)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1 if report.get("failed") else 0
