@@ -153,11 +153,11 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 
 ### 6.1 A 구현과 팀 결정 경계
 
-세 SQLite 테이블(services, ingestion_runs, pending_changes)로 상태와 인계를 보존한다. 서비스명·본문·기관·URL·기간·metadata·검증 자격을 해시하며 운영 시각을 제외한다. Active data follows personal-household-v1; expiry, disappearance and policy_scope_exit remain separate. Legacy youth_scope_exit records remain recoverable from raw. 성공 상세의 빈 값은 삭제, 실패/미관측은 이전 정상 관측 보존이다. `normalize.py`는 미확인 JA* 코드·본문의 자녀 나이·기관에서의 지역을 추정하지 않는다.
+SQLite tables (services, ingestion_runs, pending_changes, small ingest_state cursor/identity table)로 상태와 인계를 보존한다. 서비스명·본문·기관·URL·기간·metadata·검증 자격을 해시하며 운영 시각을 제외한다. Active data follows personal-household-v1; expiry, disappearance and policy_scope_exit remain separate. Legacy youth_scope_exit records remain recoverable from raw. 성공 상세의 빈 값은 삭제, 실패/미관측은 이전 정상 관측 보존이다. `normalize.py`는 미확인 JA* 코드·본문의 자녀 나이·기관에서의 지역을 추정하지 않는다.
 
 `--full`은 DB 초기화 없이 활성 전체 조각을 pending에 재생성한다. 기본 `run()`도 이전 미확인 조각을 반환할 수 있다. 읽기·반환은 확인 응답이 아니다. [A 운영 계약](INGEST_A.md)에 필드 매핑, 확인 수준, 조건 어댑터, 스케줄, 실패 복구 및 B API를 기록했다.
 
-B already removes stale chunk IDs for each nonempty service replacement. The consumer reuses that implementation and calls `remove_services()` explicitly for removals/empty replacements. Verification precedes exact service_id+version+event_id acknowledgment; no B/C source changes are required. Production age/region mapping and missing-provenance display remain separate decisions. The personal/household inclusion expansion is agreed; uncertain applicability is provisional.
+B already removes stale chunk IDs for each nonempty service replacement. The consumer reuses that implementation and calls `remove_services()` explicitly for removals/empty replacements. Verification precedes exact service_id+version+event_id acknowledgment. Optional region codec/filter/reader wiring is documented in §6.4. Actual age-code mapping and complete residence-code semantics remain deferred; narrowly scoped residence-text evidence is implemented. Missing agency/URL display remains a separate decision. The personal/household inclusion expansion is agreed; uncertain applicability is provisional.
 
 ### 6.2 A 2차 수정
 
@@ -189,6 +189,27 @@ Verification compares exact service chunk IDs/text/B storage metadata and unchan
 Chroma source documents persist; BM25 remains a derived cache invalidated by `index_version`. There is no SQLite/Chroma distributed transaction. A crash/verification/ack failure leaves replayable work; idempotent replacement/removal converges on retry. The first failure stops application with nonzero status; earlier verified/acknowledged events stay complete. Dry-run is read-only and performs no worker/model/collection initialization. Exact PowerShell commands, validation isolation and recovery are in [INGEST_A.md](INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자).
 
 Interest field remains a score boost; age/region/deadline semantics and C full-service evidence expansion are unchanged. Only fake embeddings are injected in integration tests. Actual-model, full API traversal and retrieval/answer quality evaluation are not established by this pass.
+
+### 6.4 Metadata tracing and resumable raw replay
+
+Region aliases now share a canonical vocabulary; optional `region_provenance` distinguishes
+explicit residence evidence, agency inference, legacy values and unknown. Only narrowly scoped
+지원대상/선정기준 residence statements are extracted. District/multiple-region evidence is kept
+without claiming full eligibility; the existing unknown-region soft filter remains.
+Korean full dates (`2026년9월9일`) and strict full-date ranges support expiry; ambiguous periods remain unknown.
+
+Use `python -m src.ingest.metadata_tools trace ...` for read-only source→index diagnosis,
+`correct ... --dry-run` before explicit selected-service `--apply`, and
+`python -m src.ingest.reprocess ... --offset N --limit K --checkpoint NAME` / `--resume NAME`.
+Exact tested PowerShell commands, checkpoint bindings, deployed-index findings and safe correction
+limits are in [INGEST_A.md](INGEST_A.md#integrated-metadata-and-resumable-replay-2026-10-22).
+Code changes do not repair old documents automatically. No production backfill or embedding reuse is implicit.
+
+`Metadata.region_provenance` is optional and uses string storage, preserving old constructors.
+`common/regions.py`, `ingest/regions.py`, `metadata_tools.py` own canonicalization, scoped extraction
+and diagnostics/correction. Shared B codec/filters and minimal C provenance readers are updated
+additively. Ingest-state UUID/cursor writes share the existing service/event/run transaction;
+auxiliary-output failure cannot advance or rewind authoritative DB progress.
 
 ## 7. 변경 이력
 
@@ -227,3 +248,5 @@ Interest field remains a score boost; age/region/deadline semantics and C full-s
 - 평가 질문 정답 채우기 도구 `eval/label_helper.py`와 `tests/test_label_helper.py`(45개)를 저장소에 추가하고, 사용 안내 `docs/LABELING.md`(준비·정답 기준·대화형 사용법·유형별 가이드·후속 질문·검증·팀 작업 방식)를 작성. README 7장의 정답 채우는 법을 요약+링크로 교체하고 필드(`relevant_service_names`, `follow_up_of`)를 추가.
 
 - 2026-10-21: `policy.py`, bounded `reprocess.py` and compact read-only `coverage.py` expand personal/household scope. Historical replay validates one acquisition run, defers older/unknown observations, preserves exact stored-event handoff and never closes missing IDs. B codec/region fallback/ranking and C contracts remain unchanged.
+
+- 2026-10-22: Canonical region/provenance, selected metadata reconciliation, Korean full-date grammar and transaction-bound segmented raw replay/resume. Preserve batch verification, expanded scope, ranking and evidence contracts; inspect local index read-only without claiming a historical build revision.

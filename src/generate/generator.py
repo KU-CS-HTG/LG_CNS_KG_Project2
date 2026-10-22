@@ -16,6 +16,7 @@ from datetime import date
 from pathlib import Path
 
 from src.common import config
+from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.generate import citation, condition_extractor
 from src.generate import evidence as evidence_mod
@@ -241,6 +242,7 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[s
         lines = [f"[근거 id={sid}] {c0.service_name}",
                  f"- 소관기관: {meta.get('agency') or '정보 없음'}",
                  f"- 지역: {meta.get('region') or '정보 없음'}",
+                 f"- 지역 출처: {meta.get('region_provenance') or 'legacy_unknown'} (검색용 지역 단서; 기관 추정·출처 미상 값은 검증된 거주 자격이 아니며 지원대상·선정기준 원문 확인)",
                  f"- 연령: {_age_text(meta)}",
                  f"- 신청기한: {meta.get('deadline') or '상시 또는 정보 없음'}"]
         for s in SECTIONS:
@@ -788,7 +790,12 @@ def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[C
     다 빠지면 원래 후보를 그대로 쓰고 지역 조건을 풀었다고 알린다 (소프트 필터, CLAUDE.md)."""
     if not region:
         return chunks, False
-    keep = [c for c in chunks if _agency_region(c.metadata.get("agency") or "") in (None, region)]
+    region = normalize_region(region) or region
+    def supported_region(chunk):
+        if chunk.metadata.get("region_provenance") == "explicit_eligibility":
+            return normalize_region(chunk.metadata.get("region"))
+        return _agency_region(chunk.metadata.get("agency") or "")
+    keep = [c for c in chunks if supported_region(c) in (None, "전국", region)]
     return (keep, False) if keep else (chunks, True)
 
 

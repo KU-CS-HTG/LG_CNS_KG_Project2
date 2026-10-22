@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS pending_changes (
     service_id TEXT PRIMARY KEY, version INTEGER NOT NULL, event_id TEXT NOT NULL,
     action TEXT NOT NULL, reason TEXT, chunks TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ingest_state (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 """
 
 
@@ -231,12 +234,13 @@ def apply_run(run_id: str, services: list[dict], listing, *, full: bool, today: 
 
 
 def _apply_run_locked(run_id: str, services: list[dict], listing, *, full: bool, today: str,
-                      summary: dict, storage: StoragePaths | None = None) -> dict:
+                      summary: dict, storage: StoragePaths | None = None, checkpoint: dict | None = None) -> dict:
     """DB records, events and completed run summary commit in a single transaction."""
     from src.ingest.chunker import chunk_service
     with connection(storage=storage) as con:
         _, counts = _apply(con, services, run_id, today)
-        counts["deferred"] += summary.get("diagnostics", {}).get("invalid_records", 0)
+        if summary.get("operation") != "raw_reprocess":
+            counts["deferred"] += summary.get("diagnostics", {}).get("invalid_records", 0)
         counts["deferred"] += len(summary.get("replay_deferred", []))
         removed = _close_missing(con, listing, run_id)
         if removed:
@@ -261,11 +265,90 @@ def _apply_run_locked(run_id: str, services: list[dict], listing, *, full: bool,
                   "pending_changes": len(pending),
                   "pending_removals": sum(r["action"] == "remove" for r in pending),
                   "chunks": sum(len(json.loads(r["chunks"])) for r in pending)}
+        if checkpoint is not None:
+            identity = con.execute("SELECT value FROM ingest_state WHERE key='database_id'").fetchone()
+            expected_id = checkpoint["binding"]["target_db_id"]
+            if identity and json.loads(identity[0]) != expected_id:
+                raise ValueError("checkpoint_target_database_mismatch")
+            key = "replay:" + checkpoint["name"]
+            previous = con.execute("SELECT value FROM ingest_state WHERE key=?", (key,)).fetchone()
+            generation = json.loads(previous[0])["generation"] if previous else 0
+            if generation != checkpoint["previous_generation"]:
+                raise ValueError("checkpoint_changed_before_commit")
+            state = {k: v for k, v in checkpoint.items() if k != "previous_generation"}
+            state.update(generation=generation + 1, last_run=run_id)
+            con.execute("INSERT OR IGNORE INTO ingest_state VALUES ('database_id',?)", (_json(expected_id),))
+            con.execute("INSERT INTO ingest_state VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, _json(state)))
+            result["replay_checkpoint"] = state
+        if summary.get("operation") == "raw_reprocess":
+            result["processed"] = sum(counts[k] for k in ("new", "changed", "unchanged"))
         con.execute(
             "UPDATE ingestion_runs SET status=?, finished_at=?, summary=? WHERE run_id=?",
             (result["status"], _now(), _json(result), run_id),
         )
         return result
+
+
+def read_state(key: str, *, storage: StoragePaths):
+    """Read-only state lookup, including legacy DBs without ingest_state."""
+    path = storage.validated().db_path
+    if not path.is_file():
+        return None
+    con = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_state'").fetchone():
+            return None
+        row = con.execute("SELECT value FROM ingest_state WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+    finally:
+        con.close()
+
+
+def reconcile_services(service_ids: list[str], *, storage: StoragePaths, today: str) -> dict:
+    """Bounded producer: current authoritative records → new complete events, even codec-only changes.
+
+    Inactive services are never resurrected. Existing equivalent pending work is reused.
+    The consumer still reads the event snapshot under its normal index→DB locks.
+    """
+    from src.ingest.normalize import refresh_service
+    from src.ingest.chunker import chunk_service
+    if not service_ids or len(service_ids) > 50 or len(set(service_ids)) != len(service_ids):
+        raise ValueError("reconcile_requires_1_to_50_unique_ids")
+    from datetime import date
+    date.fromisoformat(today)
+    result = {"queued": [], "skipped": []}
+    with ingestion_lock(storage=storage):
+        with connection(storage=storage) as con:
+            services = []
+            prior_runs = {}
+            for sid in service_ids:
+                row = con.execute("SELECT * FROM services WHERE service_id=?", (sid,)).fetchone()
+                if row is None or row["status"] != "active":
+                    result["skipped"].append({"service_id": sid, "reason": row["reason"] if row else "source_record_missing"})
+                    continue
+                refreshed = refresh_service(json.loads(row["payload"]))
+                if refreshed.get("_inclusion_complete") is False and not is_included_service(refreshed):
+                    result["skipped"].append({"service_id": sid, "reason": "incomplete_source_scope_change_deferred"})
+                    continue
+                services.append(refreshed)
+                prior_runs[sid] = row["last_run"]
+            changed, _ = _apply(con, services, None, today)
+            for service in services:
+                sid = service["service_id"]
+                con.execute("UPDATE services SET last_run=? WHERE service_id=?", (prior_runs[sid], sid))
+                row = con.execute("SELECT * FROM services WHERE service_id=?", (sid,)).fetchone()
+                if row["status"] != "active":
+                    result["skipped"].append({"service_id": sid, "reason": row["reason"]})
+                    continue
+                chunks = chunk_service(service)
+                pending = con.execute("SELECT * FROM pending_changes WHERE service_id=?", (sid,)).fetchone()
+                if not (pending and pending["version"] == row["version"] and pending["action"] == "replace"
+                        and json.loads(pending["chunks"]) == [c.to_dict() for c in chunks]):
+                    version = row["version"] + (sid not in changed)
+                    con.execute("UPDATE services SET version=? WHERE service_id=?", (version, sid))
+                    _enqueue(con, sid, version, "replace", "metadata_reconciliation", chunks)
+                result["queued"].append(sid)
+    return result
 
 
 def load_services(service_ids: list[str] | None = None, *, storage: StoragePaths | None = None) -> list[dict]:

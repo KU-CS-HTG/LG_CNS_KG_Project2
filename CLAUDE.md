@@ -32,7 +32,7 @@
 - A → B: 조각 단위 레코드 `{chunk_id, service_id, service_name, section, text, metadata, detail_url}`
 - C → B: `Filters`(나이·지역·분야·상황·기준일, 값이 없으면 키 생략). **거르는 것은 나이·지역·기준일**, 분야(`field`)는 필터가 아니라 맞는 제도에 가산점(`config.FIELD_BOOST`), 상황은 현재 검색에 쓰이지 않음
 - B → C: `search(query: str, filters: Filters, k: int = 5, mode: str = "hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용). 서비스당 조각 1개·관련도 순, **질문에 지역이 없으면 지자체 제도를 뒤로 보내 전국 제도를 먼저 준다**(`config.LOCAL_PENALTY`, 제외는 아님. 지역을 되묻는 것은 C의 응답 흐름), 결과가 없으면 필터를 풀어 재검색(지역→연령, 분야·상황은 필터가 아니라 풀지 않음), 그래도 없으면 `[]`. 완화 여부가 필요하면 `hybrid.search_with_info(...)`(점수·`filters_used`·`relaxed` 포함)
-- B → C (implemented and used by `evidence.select_evidence`): `vector_store.get_service_chunks(service_id) -> list[Chunk]` — 검색 결과에 없던 같은 서비스의 다른 항목 조각이 필요할 때. 필터는 `vector_store.build_where(filters)`로 저장소 조건이 된다. 저장소의 `region`은 A가 주면 그 값, 없으면 소관기관명으로 추정한 시·도(`filters.agency_region`)다.
+- B → C (implemented and used by `evidence.select_evidence`): `vector_store.get_service_chunks(service_id) -> list[Chunk]` — 검색 결과에 없던 같은 서비스의 다른 항목 조각이 필요할 때. 필터는 `vector_store.build_where(filters)`로 저장소 조건이 된다. Stored region is canonical A evidence first, then agency inference; optional region_provenance survives retrieval and C readers. Neither agency nor legacy values prove eligibility.
 - C의 최종 출력: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
 - 위 타입은 모두 `src/common/schema.py`에 있다. 코드 구조와 설계 이유는 `docs/ARCHITECTURE.md`, 구조도는 `docs/images/rag-structure.png`.
 - A 구현 계약: `docs/INGEST_A.md`. `pipeline.run(full=False)`는 기존 `list[Chunk]`를 유지하고 이전 미확인 조각도 재전달한다. B는 `store.get_pending_changes()`의 서비스 전체 교체/제거를 두 색인에 적용한 후 service_id+version+event_id로 `acknowledge_changes()`한다. The A-owned `handoff` consumer applies stored event snapshots through existing B APIs, verifies both retrieval paths and acknowledges exact tokens. Real Chroma/fake-embedding integration is tested; actual-model and production-data integration remain unverified.
@@ -53,6 +53,19 @@ Historical observations never become fresh or authorize disappearance. Older/unk
 observations defer; an API-disappeared record needs a new observation. Run source/index
 inspection with `python -m src.ingest.coverage`; exact commands and limits: `docs/INGEST_A.md`.
 No abandoned readiness/packaging/telemetry subsystem is part of this scope change.
+
+## Metadata/replay corrections (2026-10-22)
+
+Shared additions are optional `Metadata.region_provenance` and `common.regions`; no required
+Chunk constructor changes. B codec/filters preserve provenance and aliases while keeping
+weights, penalties, field boosting and relaxation. C only labels provenance and prioritizes
+explicit residence evidence over agency inference; full-service evidence expansion is unchanged.
+`metadata_tools` traces without initializing collections/models; correction requires explicit
+selected IDs and applies stored snapshots through the existing verified consumer. `--service-ids`
+limits handoff; `--verify-every` guarantees remain. Normal replacement uses B's passage-embedding path, including its existing optional cache.
+Replay uses `--offset/--limit` plus named DB checkpoints bound to source/DB/policy/parser/date;
+`ingest_state` progress commits with services/pending/run summary. Exact commands and known local
+path/region discrepancies are in `docs/INGEST_A.md`. Never infer index build revision from today's HEAD.
 
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.
@@ -92,4 +105,4 @@ python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (base
 ```
 Handoff settings: `--db-path`, `--index-dir`, `--model`; `--validation` requires explicit isolated paths and rejects live destinations/aliases before writes. Fixture/validation source runs require validation mode. One source DB ↔ one target/model is recorded in `<db>.handoff.json` and `<index>/handoff_manifest.json`; changing an association is not an automatic migration. Existing nonempty unbound indexes require `--adopt-existing`; verify the selected model is the original model, since an old collection slug alone cannot prove its identity. Model dimension/max sequence length/cosine settings must agree. Worker-only config changes and offline Hugging Face flags prevent caller cache/config leakage and model downloads. Raw data, DB/Chroma files, manifests and locks stay out of Git.
 
-Current verification boundary: A/B/C are implemented; stored-event integration is tested using real Chroma and fake embeddings. Full API compatibility, production age/region adapters, actual-model verification and search/answer quality evaluation remain separate work. The previous live smoke record is historical, not a live run in this handoff task.
+Current verification boundary: A/B/C are implemented; narrow residence-text extraction, Korean deadlines and durable segmented replay are tested offline; stored-event integration is tested using real Chroma and fake embeddings. Full API compatibility, production age/region adapters, actual-model verification and search/answer quality evaluation remain separate work. The previous live smoke record is historical, not a live run in this handoff task.

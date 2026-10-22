@@ -1,12 +1,29 @@
 """Bounded historical raw replay (원본 재처리); never fetches API or closes missing IDs."""
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
+import re
+import uuid
 from pathlib import Path
 
 from src.ingest import client, pipeline, store
 from src.ingest.storage import StoragePaths, resolve_storage
+from src.ingest import policy, normalize
+
+SOURCE_ORDER = "validated_page_row_first_occurrence-v1"
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def implementation_fingerprint():
+    from src.common import config
+    files = ("src/ingest/normalize.py", "src/ingest/regions.py", "src/common/regions.py",
+             "src/ingest/policy.py", "src/ingest/merge.py", "src/ingest/chunker.py", "src/ingest/reprocess.py",
+             "src/ingest/store.py", "src/ingest/pipeline.py")
+    return _digest({name: hashlib.sha256((config.ROOT / name).read_text(encoding="utf-8").encode()).hexdigest() for name in files})
 
 
 def _stamp(value):
@@ -114,10 +131,17 @@ def _ordering(old, source_id, acquired, paths):
     return None
 
 
-def reprocess(source_dir, *, storage, limit=100, today=None):
-    """Replay ONE A acquisition run; limit counts listing records selected in source order."""
+def reprocess(source_dir, *, storage, limit=100, today=None, offset=0, checkpoint=None, resume=False):
+    """Replay [offset, offset+limit) in ONE acquisition; optional durable DB checkpoint."""
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise ValueError("replay_limit_must_be_1_to_1000")
+    if type(offset) is not int or offset < 0 or (resume and offset != 0):
+        raise ValueError("invalid_replay_offset")
+    if checkpoint is not None and (not isinstance(checkpoint, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", checkpoint)):
+        raise ValueError("invalid_checkpoint_name")
+    if resume and not checkpoint:
+        raise ValueError("resume_requires_checkpoint")
+    reference = date.fromisoformat(today or pipeline.seoul_today()).isoformat()
     paths = storage.validated()
     source_root = Path(source_dir).resolve()
     if (source_root.is_relative_to(paths.raw_dir) or paths.raw_dir.is_relative_to(source_root)
@@ -132,7 +156,36 @@ def reprocess(source_dir, *, storage, limit=100, today=None):
                        for name in ("serviceDetail", "supportConditions")}
         source_id = original["run_id"]
         acquired = acquisition_time(source_id, original)
-        selected = collections["serviceList"].rows[:limit]
+        total = len(collections["serviceList"].rows)
+        source_conflicts = list(collections["serviceList"].conflicts)
+        progress = None
+        if checkpoint:
+            previous = store.read_state("replay:" + checkpoint, storage=paths)
+            identity = store.read_state("database_id", storage=paths)
+            from src.common import config
+            binding = {"source_run": source_id, "source_fingerprint": _digest(checksums), "order": SOURCE_ORDER,
+                       "target_db_id": identity or uuid.uuid4().hex, "target_db_path": str(paths.db_path),
+                       "policy": policy.POLICY_ID, "normalization": normalize.NORMALIZATION_VERSION,
+                       "implementation": implementation_fingerprint(), "reference_date": reference,
+                       "settings": {"max_chunk_chars": config.MAX_CHUNK_CHARS, "youth_age_range": list(config.YOUTH_AGE_RANGE),
+                                    "youth_keywords": list(config.YOUTH_KEYWORDS)},
+                       "reference_semantics": "Asia/Seoul; deadline day inclusive"}
+            if resume:
+                if not previous:
+                    raise ValueError("checkpoint_missing_restart_initial_segment")
+                if previous["binding"] != binding:
+                    raise ValueError("checkpoint_binding_changed_use_new_checkpoint")
+                offset = previous["next_position"]
+            elif previous:
+                raise ValueError("checkpoint_exists_use_resume_or_new_name")
+            progress = {"name": checkpoint, "binding": binding, "previous_generation": previous["generation"] if previous else 0,
+                        "deferred_remaining": dict(previous["deferred_remaining"]) if previous else {}}
+            for sid in source_conflicts:
+                progress["deferred_remaining"][sid] = {"service_id": sid, "position": None, "reason": "conflicting_source_listing_id"}
+        if offset > total:
+            raise ValueError("offset_beyond_source_end")
+        selected = collections["serviceList"].rows[offset:offset + limit]
+        print(f"원본 {source_id} / 전체 {total} / 선택 [{offset}, {offset + len(selected)}) / 쓰기 전 검증 완료")
         deferred, eligible = [], []
         details = {r["서비스ID"] for r in collections["serviceDetail"].rows}
         for row in selected:
@@ -150,6 +203,9 @@ def reprocess(source_dir, *, storage, limit=100, today=None):
         for endpoint in ("serviceDetail", "supportConditions"):
             collections[endpoint].rows = [r for r in collections[endpoint].rows if r["서비스ID"] in eligible_ids]
         services, diagnostics = pipeline._join(collections, storage=paths)
+        normalized_ids = {s["service_id"] for s in services}
+        deferred.extend({"service_id": row["서비스ID"], "reason": "normalization_failed"}
+                        for row in eligible if row["서비스ID"] not in normalized_ids)
         source = {"run_id": source_id, "acquired_at": acquired.isoformat() if acquired else None,
                   "kind": "historical_raw", "checksums": checksums}
         def historical(value):
@@ -171,23 +227,40 @@ def reprocess(source_dir, *, storage, limit=100, today=None):
                 if state == "fresh":
                     service["_observations"][name] = "historical"
             for value in service["_field_provenance"].values():
-                value["source_acquisition"] = source_id
+                if value["observation"].startswith("fresh_"):
+                    value["source_acquisition"] = source_id
             historical(service["_field_provenance"])
             historical(service["_merge_conflicts"])
+            # Extraction evidence also carries observation provenance; historical replay is never fresh.
+            from src.ingest.regions import apply_region_evidence
+            apply_region_evidence(service)
+            historical(service["eligibility"])
             service["_acquisition"] = source
             # A failed conditions collection cannot establish that a minimal excluded record can reopen.
-            if old and old["reason"] in ("youth_scope_exit", "policy_scope_exit") and not service["_inclusion_complete"]:
+            if old and not service["_inclusion_complete"] and (old["reason"] in ("youth_scope_exit", "policy_scope_exit")
+                                                              or not policy.is_included_service(service)):
                 deferred.append({"service_id": sid, "reason": "historical_conditions_unavailable_deferred"})
         blocked = {r["service_id"] for r in deferred}
         services = [s for s in services if s["service_id"] not in blocked]
         diagnostics.pop("field_conflicts", None)
+        next_position = offset + len(selected)
+        if progress:
+            for row in selected:
+                progress["deferred_remaining"].pop(row["서비스ID"], None)
+            positions = {row["서비스ID"]: offset + n for n, row in enumerate(selected)}
+            progress["deferred_remaining"].update({d["service_id"]: {**d, "position": positions[d["service_id"]]} for d in deferred})
+            progress.update(next_position=next_position, total_source_records=total, end_of_source=next_position == total)
         store.start_run(run_id, storage=paths)
         try:
             result = store._apply_run_locked(run_id, services, collections["serviceList"], full=False,
-                today=today or pipeline.seoul_today(), storage=paths,
+                today=reference, storage=paths, checkpoint=progress,
                 summary={"run_id": run_id, "status": "sample", **paths.summary(), "operation": "raw_reprocess",
                     "source_acquisition": source, "source_run_status": original["status"],
                     "selected": len(selected), "limit": limit, "replay_deferred": deferred,
+                    "offset": offset, "attempted": len(selected), "total_source_records": total,
+                    "next_position": next_position, "end_of_source": next_position == total,
+                    "source_order": SOURCE_ORDER, "reference_date": reference,
+                    "source_conflicting_ids": source_conflicts,
                     "processed_ids": [s["service_id"] for s in services],
                     "source_join": source_join,
                     "diagnostics": diagnostics, "endpoints": endpoint_summaries,
@@ -201,6 +274,8 @@ def reprocess(source_dir, *, storage, limit=100, today=None):
             raise
     pipeline._print_summary(result)
     print(f"원본 재처리: 선택 {len(selected)} / 명시 유보 {len(deferred)} / 원본 실행 {source_id}")
+    print(f"처리 {result['processed']} / 동일 {result['unchanged']} / 다음 위치 {next_position} / 원본 끝={result['end_of_source']}"
+          f" / 남은 유보 {len(progress['deferred_remaining']) if progress else len(deferred)}")
     return result
 
 
@@ -210,6 +285,10 @@ def main(argv=None):
     parser.add_argument("--db-path", type=Path, required=True)
     parser.add_argument("--raw-dir", type=Path, required=True, help="Separate replay output directory")
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--offset", type=int, default=0, help="Zero-based validated page/row order")
+    cursor = parser.add_mutually_exclusive_group()
+    cursor.add_argument("--checkpoint", help="Start a named DB checkpoint; never overwrite an existing name")
+    cursor.add_argument("--resume", help="Resume a named DB checkpoint with identical bindings")
     parser.add_argument("--today", help="Fixed ISO reference date; default Asia/Seoul today")
     parser.add_argument("--validation", action="store_true")
     args = parser.parse_args(argv)
@@ -218,7 +297,8 @@ def main(argv=None):
             from datetime import date
             date.fromisoformat(args.today)
         paths = resolve_storage("validation" if args.validation else "live", db_path=args.db_path, raw_dir=args.raw_dir)
-        reprocess(args.source_run, storage=paths, limit=args.limit, today=args.today)
+        reprocess(args.source_run, storage=paths, limit=args.limit, today=args.today, offset=args.offset,
+                  checkpoint=args.checkpoint or args.resume, resume=bool(args.resume))
         return 0
     except Exception as exc:
         from src.ingest.handoff import _error_code
