@@ -426,6 +426,47 @@ def test_expired_services_are_dropped_and_upcoming_marked(monkeypatch, sample_ch
     assert rec.how_to_apply.endswith(f" / 신청기한: {generator.UPCOMING_MARK} · 2099.11.01~2099.11.30")
 
 
+def test_duplicate_judgement_uses_first_and_missing_judgement_is_retried(monkeypatch, sample_chunks):
+    # LLM이 같은 제도를 여러 번 적고(나중 것이 '관련 없음') 다른 제도를 빠뜨린 실제 출력 (대전 출산·서울 취업준비 질문)
+    ev = evidence.select_evidence([c for c in sample_chunks if c.service_id in ("SAMPLE001", "SAMPLE004")])
+    a, b = list(ev)
+    broken = {"services": [{"service_id": a, "applicable": "확인 필요", "meets_need": True},
+                           {"service_id": a, "applicable": "관련 없음", "meets_need": False}]}
+    only_b = {"services": [{"service_id": b, "applicable": "확인 필요", "meets_need": True}]}
+    prompts = []
+
+    def chat(system, user):
+        if system != generator.SYSTEM_PROMPT:
+            return {}
+        prompts.append(user)
+        return broken if len(prompts) == 1 else only_b
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", chat)
+    names = [r.service_name for r in generator._generate("지원 있나요?", ev, [], None).recommendations]
+    assert len(prompts) == 2 and len(names) == 2                   # 빠진 판정이 있어 한 번 더 물었다
+    assert f"id={b}" in prompts[1] and f"id={a}" not in prompts[1]   # 빠진 제도만 넣어서
+    calls = []
+
+    calls.clear()
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json",
+                        lambda s, u: (calls.append(1) or broken) if s == generator.SYSTEM_PROMPT else {})
+    names = [r.service_name for r in generator._generate("지원 있나요?", ev, [], None).recommendations]
+    assert names == [ev[a][0].service_name]                        # 중복 판정은 첫 판정('확인 필요')을 쓴다
+
+
+def test_region_question_keeps_slots_for_national_programs(monkeypatch, sample_chunks):
+    # 지역을 말하면 그 지역 제도가 상위 5개를 다 채워 전국 제도(출산급여 등)가 빠졌다 -> 지역 최대 3, 전국 최소 2
+    from dataclasses import replace
+    local = [replace(c, service_id=f"L{i}", metadata={**c.metadata, "agency": "대전광역시"})
+             for i, c in enumerate(sample_chunks[:5])]
+    national = [replace(c, service_id=f"N{i}", metadata={**c.metadata, "agency": "보건복지부"})
+                for i, c in enumerate(sample_chunks[:3])]
+    mixed = generator._mix_national(local, national)
+    first5 = list(dict.fromkeys(c.service_id for c in mixed))[:5]
+    assert first5 == ["L0", "L1", "L2", "N0", "N1"]
+    only_local = list(dict.fromkeys(c.service_id for c in generator._mix_national(local, [])))[:5]
+    assert only_local == ["L0", "L1", "L2", "L3", "L4"]          # 전국 후보가 없으면 지역 제도로 채운다
+
+
 def test_expired_slots_are_refilled_without_changing_top_order(fake_conditions, monkeypatch, sample_chunks):
     # 처음부터 후보 수를 키우면 B의 순위가 바뀌어(q03) 기한 지난 제도가 빠졌을 때만 더 큰 검색으로 채운다
     from src.retrieve import hybrid

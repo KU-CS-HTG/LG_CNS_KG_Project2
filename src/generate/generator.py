@@ -162,8 +162,23 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
     # 원하는 도움을 주는 제도인지는 구조화된 값(meets_need)으로 받아 코드로 적용한다
     # (applicable의 '관련 없음' 규칙만으로는 지역·나이만 맞는 제도가 섞였음: 공연 관람비 질문에 청년월세)
 
-    # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다
-    by_id = {str(s.get("service_id")).strip(): s for s in out.get("services") or [] if isinstance(s, dict)}
+    missing = _missing_judgements(out, evidence) if judged else set()
+    if missing:
+        # 판정이 빠진 제도만 따로 한 번 더 묻는다. 출력이 꼬여 같은 제도를 여러 번 적고 다른 제도를 빠뜨렸다
+        # (대전 출산 질문: '대전 소상공인 …'만 반복, 산모·신생아 건강관리 누락 -> 관련 없음으로 빠짐).
+        # 전체를 다시 물으면 같은 이유로 또 빠져서, 빠진 제도만 넣은 짧은 입력으로 묻는다.
+        try:
+            retry = condition_extractor._chat_json(
+                SYSTEM_PROMPT, _build_prompt(question, {sid: evidence[sid] for sid in evidence if sid in missing}, needs))
+            out = {**out, "services": list(out["services"]) + [s for s in retry.get("services") or [] if isinstance(s, dict)]}
+        except Exception as e:  # 다시 묻기 실패: 첫 결과로 답한다
+            log.warning("빠진 판정 다시 묻기 실패: %s", e)
+    # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다.
+    # 같은 제도를 여러 번 적으면 첫 판정을 쓴다 (나중 것이 덮어써 '확인 필요'였던 국민취업지원제도가 '관련 없음'으로 빠졌다)
+    by_id: dict[str, dict] = {}
+    for s in out.get("services") or []:
+        if isinstance(s, dict):
+            by_id.setdefault(str(s.get("service_id")).strip(), s)
     named = _named_programs(asked)
     recs: list[Recommendation] = []
     for sid, chunks in evidence.items():
@@ -232,6 +247,12 @@ def _named_programs(asked: list[str] | None) -> list[str]:
 
 
 _JOSA_RE = re.compile(r"(?:이나|으로|에서|에게|까지|부터|을|를|이|가|은|는|도|나|의|에|와|과|로)$")
+
+
+def _missing_judgements(out: dict, evidence: dict[str, list[Chunk]]) -> set[str]:
+    """LLM 출력에서 판정이 빠진 근거 제도 id."""
+    seen = {str(s.get("service_id")).strip() for s in out.get("services") or [] if isinstance(s, dict)}
+    return set(evidence) - seen
 
 
 def _met_asked(chunks: list[Chunk], needs: list[str], asked: list[str] | None) -> list[str] | None:
@@ -681,6 +702,8 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
     chunks, region_relaxed = _drop_other_regions(chunks, region)
+    if region and not region_relaxed:
+        chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
     selected = evidence_mod.select_evidence(chunks)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
     used = dict(result.filters_used)
@@ -693,6 +716,52 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
 
 
 REGION_CANDIDATE_FACTOR = 3   # 검색 후보 배수 (지역을 말했거나 기한 지난 제도가 빠졌을 때 5 -> 15개에서 5개를 고른다)
+MAX_LOCAL_SERVICES = 3        # 지역을 말했을 때 답변 5자리 중 그 지역 지자체 제도의 최대 수
+MIN_NATIONAL_SERVICES = 2     # 지역을 말했을 때 전국 제도(중앙부처·공공기관)에 남겨 두는 최소 자리
+
+
+def _national_candidates(question: str, region: str, filters: dict, today: date) -> list[Chunk]:
+    """지역 낱말을 뺀 질문으로 다시 검색해 얻은 전국 제도 후보.
+
+    질문에 '대전'이 있으면 검색이 대전 제도를 위로 올려, 범위 확대 색인(제도 10,603개)에서 '대전 사는데 곧 아이가 태어나요'의
+    상위 15개 중 전국 제도는 11위 아래 3개뿐이었다 (출산급여·행복출산 같은 핵심 제도가 안내되지 못함).
+    '대전'을 빼고 검색하면 상위가 전국 출산 제도였다.
+    지역 필터도 뺀다: B는 지역이 없을 때만 지자체 제도를 뒤로 보내(config.LOCAL_PENALTY) 전국 제도가 먼저 오는데,
+    지역 필터를 두면 그게 꺼져 지역 값이 빈 다른 지역 제도들이 후보를 채웠다 (경기 면접 질문). 결과에서 전국 제도만 쓰므로
+    지역 필터는 필요 없다. 나이·기한 필터는 그대로 둔다."""
+    stripped = " ".join(w for w in question.split() if condition_extractor._find_region(w) != region).strip()
+    if not stripped or stripped == question.strip():
+        return []
+    nationwide = {k: v for k, v in filters.items() if k != "region"}
+    try:
+        result = hybrid.search_with_info(stripped, nationwide, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
+    except Exception as e:  # 전국 후보를 못 구해도 지역 질문 결과로 답한다
+        log.warning("전국 제도 후보 검색 실패: %s", e)
+        return []
+    return [c for c in _drop_expired(result.chunks, today) if _agency_region(c.metadata.get("agency") or "") is None]
+
+
+def _mix_national(chunks: list[Chunk], national: list[Chunk]) -> list[Chunk]:
+    """지역 질문의 후보(그 지역 제도 + 전국 제도)에 전국 후보를 섞어, 답변 5자리 중 지역 제도는 MAX_LOCAL_SERVICES개까지,
+    전국 제도는 MIN_NATIONAL_SERVICES개 이상이 되게 순서를 정한다. 한쪽이 모자라면 다른 쪽으로 채운다.
+    지역 제도는 지역 질문의 검색 순위를, 전국 제도는 지역 낱말을 뺀 검색 순위를 먼저 따른다 (지역 질문 순위에서는 질문과
+    더 맞는 전국 제도가 뒤에 있었다: 대전 출산 질문에서 행복출산·산모 건강관리보다 의료급여가 먼저)."""
+    order: list[str] = []
+    by_service: dict[str, list[Chunk]] = {}
+    for c in chunks + national:
+        if c.service_id not in by_service:
+            order.append(c.service_id)
+        by_service.setdefault(c.service_id, []).append(c)
+    is_local = {sid: _agency_region(by_service[sid][0].metadata.get("agency") or "") is not None for sid in order}
+    local = [s for s in order if is_local[s]]
+    nat = list(dict.fromkeys([c.service_id for c in national] + [s for s in order if not is_local[s]]))
+    slots = config.MAX_RECOMMENDATIONS
+    n_local = min(len(local), MAX_LOCAL_SERVICES, max(slots - min(len(nat), MIN_NATIONAL_SERVICES), 0))
+    n_nat = min(len(nat), slots - n_local)
+    n_local = min(len(local), slots - n_nat)           # 전국 제도가 모자라면 지역 제도로 채운다
+    picked = set(local[:n_local] + nat[:n_nat])
+    first = [s for s in order if s in picked]           # 고른 제도는 원래 순서대로, 나머지는 뒤에 (근거 선별이 앞 5개를 쓴다)
+    return [c for s in first + [s for s in order if s not in picked] for c in by_service[s]]
 
 
 def _drop_expired(chunks: list[Chunk], today: date) -> list[Chunk]:
