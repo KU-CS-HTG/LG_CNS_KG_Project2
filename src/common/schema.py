@@ -16,7 +16,8 @@ SECTIONS = ("지원대상", "선정기준", "지원내용", "신청방법")
 
 class Metadata(TypedDict, total=False):
     """조각 메타데이터 (8.1 메타데이터). 값이 비어 있으면 키를 생략하거나 None. 필터는 비어 있으면 통과."""
-    region: str | None        # 지역 (전국이면 None 또는 "전국")
+    region: str | None        # canonical region; explicit nationwide="전국", unknown omitted
+    region_provenance: str    # optional: explicit_eligibility / agency_inference / legacy_unknown / unknown
     agency: str               # 소관기관
     field: str                # 서비스분야 / 지원유형
     deadline: str | None      # 신청기한 (ISO 날짜. 상시·미정이면 None)

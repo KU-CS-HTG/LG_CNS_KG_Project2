@@ -37,10 +37,17 @@ class Settings:
     validation: bool = False
     adopt_existing: bool = False
     verify_every: int = 1
+    service_ids: tuple[str, ...] | None = None
 
     @classmethod
     def resolve(cls, *, db_path=None, index_dir=None, model=None, validation=False,
-                adopt_existing=False, verify_every=1):
+                adopt_existing=False, verify_every=1, service_ids=None):
+        if service_ids is not None:
+            if (not isinstance(service_ids, (tuple, list)) or not 1 <= len(service_ids) <= 50
+                    or len(set(service_ids)) != len(service_ids)
+                    or any(not isinstance(sid, str) or not sid.strip() for sid in service_ids)):
+                raise ValueError("service_selection_requires_1_to_50_unique_ids")
+            service_ids = tuple(service_ids)
         if type(verify_every) is not int or not 1 <= verify_every <= MAX_VERIFY_EVERY:
             raise ValueError("invalid_verify_every")
         if validation and (db_path is None or index_dir is None):
@@ -77,12 +84,12 @@ class Settings:
                         raise ValueError("validation_destination_overlaps_live_storage")
         return cls(str(db), str(index), model or config.EMBEDDING_MODEL,
                    config.EMBEDDING_MAX_SEQ_LENGTH, config.EMBEDDING_DEVICE,
-                   validation, adopt_existing, verify_every)
+                   validation, adopt_existing, verify_every, service_ids)
 
     def checked(self):
         resolved = self.resolve(db_path=self.db_path, index_dir=self.index_dir, model=self.model,
                                 validation=self.validation, adopt_existing=self.adopt_existing,
-                                verify_every=self.verify_every)
+                                verify_every=self.verify_every, service_ids=self.service_ids)
         if (not isinstance(self.model, str) or not self.model.strip()
                 or type(self.max_seq_length) is not int or self.max_seq_length < 1):
             raise ValueError("invalid_model_settings")
@@ -147,7 +154,10 @@ def validate_event(event: dict) -> list[Chunk]:
                 or set(chunk.metadata) - set(Metadata.__annotations__)):
             raise ValueError("invalid_chunk_contract")
         for key, value in chunk.metadata.items():
-            if key in ("age_min", "age_max"):
+            if key == "region_provenance":
+                from src.common.regions import REGION_PROVENANCE
+                valid = value in REGION_PROVENANCE if isinstance(value, str) else False
+            elif key in ("age_min", "age_max"):
                 valid = value is None or type(value) is int
             elif key == "target_tags":
                 valid = value is None or (isinstance(value, list) and all(isinstance(v, str) for v in value))
@@ -158,6 +168,10 @@ def validate_event(event: dict) -> list[Chunk]:
         ids.add(chunk.chunk_id)
         chunks.append(chunk)
     return chunks
+
+
+def _selected(events, settings):
+    return [e for e in events if settings.service_ids is None or e["service_id"] in settings.service_ids]
 
 
 def _association(settings: Settings, dimension: int) -> dict:
@@ -212,14 +226,15 @@ def apply_pending(settings: Settings, adapter) -> dict:
                 stage = "source"
                 _check_source_mode(settings)
                 stage = "read"
-                events = read_pending(settings)
+                events = _selected(read_pending(settings), settings)
                 # Validate the complete selected queue before touching an index.
                 stage = "validate"
                 snapshots = [(event, validate_event(event)) for event in events]
                 stage = "association"
                 _check_binding(settings)
                 if not snapshots:
-                    report["remaining"] = 0
+                    report["remaining"] = len(read_pending(settings))
+                    report["selected_remaining"] = 0
                     return report
                 stage = "compatibility"
                 dimension = adapter.prepare(settings, bound=any(p.exists() for p in _bindings(settings)))
@@ -269,7 +284,9 @@ def apply_pending(settings: Settings, adapter) -> dict:
                         report["events"].extend({key: e[key] for key in ("service_id", "version", "event_id", "action")}
                                                 for e, _ in group)
                         report.pop("batch", None)
-                report["remaining"] = len(read_pending(settings))
+                remaining = read_pending(settings)
+                report["remaining"] = len(remaining)
+                report["selected_remaining"] = len(_selected(remaining, settings))
     except Exception as exc:
         # Do not expose exception URLs/source text. Event tokens contain no credentials.
         report["failed"].append({"stage": stage, "error": type(exc).__name__,
@@ -287,12 +304,13 @@ def apply_pending(settings: Settings, adapter) -> dict:
 def consume(settings: Settings, *, apply=False) -> dict:
     """Public API: application runs in a child that owns config AND all locks."""
     settings = settings.checked()
-    events = read_pending(settings)
+    all_events = read_pending(settings)
+    events = _selected(all_events, settings)
     for event in events:
         validate_event(event)
     _check_binding(settings)
     if not apply:
-        return {"mode": "dry-run", "settings": asdict(settings), "remaining": len(events),
+        return {"mode": "dry-run", "settings": asdict(settings), "remaining": len(all_events), "selected_remaining": len(events),
                 "events": [{**{k: e[k] for k in ("service_id", "version", "event_id", "action")},
                             "chunks": len(e["chunks"])} for e in events]}
     _check_source_mode(settings)
@@ -314,6 +332,7 @@ def main(argv=None) -> int:
     parser.add_argument("--db-path", type=Path)
     parser.add_argument("--index-dir", type=Path)
     parser.add_argument("--model", help="Must match the target association; cached models only (no downloads)")
+    parser.add_argument("--service-ids", nargs="+", help="Apply/inspect only these IDs (1–50); unrelated pending stays queued")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Default; no model/index initialization")
     mode.add_argument("--apply", action="store_true")
@@ -326,7 +345,7 @@ def main(argv=None) -> int:
     try:
         settings = Settings.resolve(db_path=args.db_path, index_dir=args.index_dir, model=args.model,
                                     validation=args.validation, adopt_existing=args.adopt_existing,
-                                    verify_every=args.verify_every)
+                                    verify_every=args.verify_every, service_ids=args.service_ids)
         report = consume(settings, apply=args.apply)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1 if report.get("failed") else 0

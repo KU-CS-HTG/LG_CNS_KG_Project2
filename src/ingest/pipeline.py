@@ -52,6 +52,10 @@ def _join(collections: dict[str, client.Collection], *, storage: StoragePaths | 
             continue
         service["_sources"] = sources
         service["_field_provenance"] = provenance
+        from src.ingest.regions import apply_region_evidence
+        from src.ingest.normalize import content_hash
+        apply_region_evidence(service)
+        service["content_hash"] = content_hash(service)
         service["_merge_conflicts"] = conflicts
         service["_inclusion_complete"] = sid in detail and sid in conditions
         service["_observations"] = {
@@ -126,6 +130,11 @@ def _execute(full: bool = False, *, max_pages: int | None = None, per_page: int 
             acquisition = {"run_id": run_id, "acquired_at": store.get_run(run_id, storage=paths)["started_at"]}
             for service in services:
                 service["_acquisition"] = acquisition
+                for value in service.get("_field_provenance", {}).values():
+                    if value["observation"].startswith("fresh_"):
+                        value["source_acquisition"] = run_id
+                from src.ingest.regions import apply_region_evidence
+                apply_region_evidence(service)
             conflicts = diagnostics.pop("field_conflicts")
             client.write_json(paths.raw_dir / run_id / "merge-conflicts.json", conflicts)
             diagnostics["field_conflict_count"] = len(conflicts)
