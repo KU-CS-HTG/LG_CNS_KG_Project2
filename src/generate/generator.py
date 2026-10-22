@@ -11,7 +11,9 @@ from __future__ import annotations
 import calendar
 import logging
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from src.generate import citation, condition_extractor
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
+from src.retrieve import filters as retrieve_filters   # B: 관심 분야 비교 (구 제도 거르기)
 from src.retrieve import hybrid
 
 # 테스트 규칙: B가 끝나기 전에도 시험할 수 있도록(tests/conftest.py의 fake_search, fake_conditions)
@@ -214,9 +217,29 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
             continue
         if needs and gen.get("meets_need") is False:
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
+        if _tenure_mismatch(asked, chunks):
+            continue                      # 전세·월세를 묻는데 집을 사는 제도 (또는 그 반대)
         recs.append(_to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
                                        if gen.get("meets_need") is True else None, checklists.get(sid)))
     return recs
+
+
+# 집에 사는 방식: 세 들어 살기(보증금·전세·월세·임대) / 사기(구입·구매·매매). '매입임대'는 공공이 사서 빌려주는 임대다.
+_RENT_RE = re.compile(r"보증금|전세|월세|전월세|임차|임대")
+_BUY_RE = re.compile(r"구입|구매|매매|내\s*집\s*마련|분양")
+
+
+def _tenure_mismatch(asked: list[str] | None, chunks: list[Chunk]) -> bool:
+    """찾는 도움과 제도의 주거 방식이 반대인가 (코드 검증). 한쪽만 물었고 제도 원문에는 반대쪽 말만 있을 때 True.
+    '보증금 대출' 질문에 '구매용도만 가능'한 내집마련 디딤돌 대출이 meets_need=true로 안내됐다 (평가 q06, 2회 모두
+    근거 충실도에서 걸림). 원문에 두 쪽 말이 다 있거나 어느 쪽도 없으면 판단하지 않는다."""
+    said = " ".join(asked or [])
+    wants_rent, wants_buy = bool(_RENT_RE.search(said)), bool(_BUY_RE.search(said))
+    if wants_rent == wants_buy:
+        return False
+    body = " ".join(c.text for c in chunks)
+    has_rent, has_buy = bool(_RENT_RE.search(body)), bool(_BUY_RE.search(body))
+    return (has_buy and not has_rent) if wants_rent else (has_rent and not has_buy)
 
 
 def _named_candidates(evidence: dict[str, list[Chunk]], asked: list[str] | None) -> dict[str, list[Chunk]]:
@@ -353,7 +376,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     if applicable != LIKELY and not needs:
         needs.append("자격 요건 충족 여부")   # 확인할 조건을 하나도 못 찾았을 때만 (다른 조건과 함께 나오면 군더더기)
 
-    how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
+    how = _llm_or_raw(gen.get("how_to_apply"), raw.get("신청방법"))
     deadline = meta.get("deadline")
     period = _application_period(chunks[0].service_id)
     start = _period_start(period)
@@ -367,11 +390,24 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
         service_name=chunks[0].service_name,
         agency=meta.get("agency") or citation.UNKNOWN_AGENCY,
         reason=reason,
-        benefit=_str(gen.get("benefit")) or raw.get("지원내용") or NOT_IN_EVIDENCE,
+        benefit=_llm_or_raw(gen.get("benefit"), raw.get("지원내용")),
         how_to_apply=how,
         needs_check=needs,
         citations=citation.build_citations(chunks),
     )
+
+
+_SAYS_MISSING_RE = re.compile(r"(?:자료|정보|내용)(?:에|이|가|은|는|에는)?\s*없")
+
+
+def _llm_or_raw(llm_text, raw_text: str | None) -> str:
+    """LLM 요약을 쓰되, 요약이 없거나 '자료에 없음'이라고 했는데 원문 항목이 있으면 원문을 쓴다 (코드 검증).
+    근거에 신청방법('방문, 인터넷')이 짧게 있으면 LLM이 '신청방법은 자료에 없음'이라고 써서 근거 충실도에서
+    빠졌다 (평가 q13, 2회 모두)."""
+    text = _str(llm_text)
+    if raw_text and (not text or _SAYS_MISSING_RE.search(text)):
+        return raw_text
+    return text or raw_text or NOT_IN_EVIDENCE
 
 
 MAX_PERIOD_CHARS = 120   # 카드에 보여 줄 신청기한 원문 최대 길이 (공고 안내 문단이 통째로 붙는 것 방지)
@@ -699,6 +735,22 @@ def _str(v) -> str:
     return v.strip() if isinstance(v, str) else ""
 
 
+# 진행 단계 알림: UI가 답변을 기다리는 동안 지금 단계를 보여 준다 (질문 하나에 10~20초).
+# answer_question의 인자를 늘리지 않도록(B·문서의 인터페이스 유지) 문맥 변수로 콜백을 받는다. 설정하지 않으면 아무 일도 없다.
+PROGRESS: ContextVar[Callable[[str], None] | None] = ContextVar("answer_progress", default=None)
+STEP_CONDITIONS, STEP_SEARCH, STEP_GENERATE = "conditions", "search", "generate"
+
+
+def _progress(step: str) -> None:
+    callback = PROGRESS.get()
+    if callback is None:
+        return
+    try:
+        callback(step)
+    except Exception as e:  # 화면 표시 실패로 답변을 멈추지 않는다
+        log.warning("진행 단계 알림 실패: %s", e)
+
+
 def answer_question(question: str) -> Answer:
     """온라인 전체 흐름: 조건 추출 -> 검색(필터 완화 재시도) -> 근거 선별 -> 생성. app은 이 함수만 호출한다.
 
@@ -709,12 +761,17 @@ def answer_question(question: str) -> Answer:
 
 def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]]:
     """answer_question의 본체. 생성에 넘긴 근거도 함께 돌려준다 (답변 평가가 같은 흐름으로 채점하도록)."""
+    _progress(STEP_CONDITIONS)
     conditions = condition_extractor.extract_conditions(question)
     filters = condition_extractor.to_filters(conditions)
     region = conditions.get("region")
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
     # 지역을 말했으면 후보를 넉넉히 받아 다른 지역 지자체 제도를 뺀 뒤 상위 5개를 고른다 (_drop_other_regions)
     k = config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR if region else config.DEFAULT_TOP_K
+    # 시·군·구는 검색어에 그대로 둔다. 빼고 검색했더니 그 구의 맞는 제도(동대문구 미취업청년 자격취득 활동비,
+    # 대전 서구 출산지원금)를 못 찾았다. 다른 구 제도는 검색 뒤 _drop_other_districts로 뺀다.
+    districts = _find_districts(question, region)
+    _progress(STEP_SEARCH)
     result = hybrid.search_with_info(question, filters, k=k)
     today = date.fromisoformat(filters.get("today") or date.today().isoformat())
     chunks = _drop_expired(result.chunks, today)
@@ -725,9 +782,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
     chunks, region_relaxed = _drop_other_regions(chunks, region)
+    chunks = _drop_other_districts(chunks, districts, filters.get("field"))
     if region and not region_relaxed:
         chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
     selected = evidence_mod.select_evidence(chunks)
+    _progress(STEP_GENERATE)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
     used = dict(result.filters_used)
     if region_relaxed:
@@ -752,7 +811,8 @@ def _national_candidates(question: str, region: str, filters: dict, today: date)
     지역 필터도 뺀다: B는 지역이 없을 때만 지자체 제도를 뒤로 보내(config.LOCAL_PENALTY) 전국 제도가 먼저 오는데,
     지역 필터를 두면 그게 꺼져 지역 값이 빈 다른 지역 제도들이 후보를 채웠다 (경기 면접 질문). 결과에서 전국 제도만 쓰므로
     지역 필터는 필요 없다. 나이·기한 필터는 그대로 둔다."""
-    stripped = " ".join(w for w in question.split() if condition_extractor._find_region(w) != region).strip()
+    stripped = " ".join(w for w in question.split()                       # 시·도와 시·군·구 낱말을 뺀다
+                        if condition_extractor._find_region(w) != region and not _find_districts(w)).strip()
     if not stripped or stripped == question.strip():
         return []
     nationwide = {k: v for k, v in filters.items() if k != "region"}
@@ -900,6 +960,261 @@ def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[C
         return chunks, False
     keep = [c for c in chunks if _agency_region(c.metadata.get("agency") or "") in (None, region)]
     return (keep, False) if keep else (chunks, True)
+
+
+# 시·군·구 이름 -> 속한 시·도 짧은 이름 (구 단위 지역 매칭). 보조금24 수집 데이터(services.db, 2026-10-22)의
+# 소관기관 이름('서울특별시 강남구')에서 만들었다. 제주시·서귀포시는 소관기관에 없어(제주특별자치도로만 나옴) 직접 넣었다.
+# '서구'처럼 여러 시·도에 있는 이름은 시·도가 여럿이다.
+DISTRICTS: dict[str, tuple[str, ...]] = {
+    '가평군': ('경기',),
+    '강남구': ('서울',),
+    '강동구': ('서울',),
+    '강릉시': ('강원',),
+    '강북구': ('서울',),
+    '강서구': ('부산', '서울'),
+    '강진군': ('전남',),
+    '강화군': ('인천',),
+    '거제시': ('경남',),
+    '거창군': ('경남',),
+    '검단구': ('인천',),
+    '경산시': ('경북',),
+    '경주시': ('경북',),
+    '계룡시': ('충남',),
+    '계양구': ('인천',),
+    '고령군': ('경북',),
+    '고성군': ('강원', '경남'),
+    '고양시': ('경기',),
+    '고창군': ('전북',),
+    '고흥군': ('전남',),
+    '곡성군': ('전남',),
+    '공주시': ('충남',),
+    '과천시': ('경기',),
+    '관악구': ('서울',),
+    '광명시': ('경기',),
+    '광산구': ('전남',),
+    '광양시': ('전남',),
+    '광주시': ('경기',),
+    '광진구': ('서울',),
+    '괴산군': ('충북',),
+    '구례군': ('전남',),
+    '구로구': ('서울',),
+    '구리시': ('경기',),
+    '구미시': ('경북',),
+    '군산시': ('전북',),
+    '군위군': ('대구',),
+    '군포시': ('경기',),
+    '금산군': ('충남',),
+    '금정구': ('부산',),
+    '금천구': ('서울',),
+    '기장군': ('부산',),
+    '김제시': ('전북',),
+    '김천시': ('경북',),
+    '김포시': ('경기',),
+    '김해시': ('경남',),
+    '나주시': ('전남',),
+    '남구': ('대구', '부산', '울산', '전남'),
+    '남동구': ('인천',),
+    '남양주시': ('경기',),
+    '남원시': ('전북',),
+    '남해군': ('경남',),
+    '노원구': ('서울',),
+    '논산시': ('충남',),
+    '단양군': ('충북',),
+    '달서구': ('대구',),
+    '달성군': ('대구',),
+    '담양군': ('전남',),
+    '당진시': ('충남',),
+    '대덕구': ('대전',),
+    '도봉구': ('서울',),
+    '동구': ('대구', '대전', '부산', '울산', '전남'),
+    '동대문구': ('서울',),
+    '동두천시': ('경기',),
+    '동래구': ('부산',),
+    '동작구': ('서울',),
+    '동해시': ('강원',),
+    '마포구': ('서울',),
+    '목포시': ('전남',),
+    '무안군': ('전남',),
+    '무주군': ('전북',),
+    '문경시': ('경북',),
+    '미추홀구': ('인천',),
+    '밀양시': ('경남',),
+    '보령시': ('충남',),
+    '보성군': ('전남',),
+    '보은군': ('충북',),
+    '봉화군': ('경북',),
+    '부산진구': ('부산',),
+    '부안군': ('전북',),
+    '부여군': ('충남',),
+    '부천시': ('경기',),
+    '부평구': ('인천',),
+    '북구': ('대구', '부산', '울산', '전남'),
+    '사상구': ('부산',),
+    '사천시': ('경남',),
+    '사하구': ('부산',),
+    '산청군': ('경남',),
+    '삼척시': ('강원',),
+    '상주시': ('경북',),
+    '서구': ('대구', '대전', '부산', '전남'),
+    '서귀포시': ('제주',),
+    '서대문구': ('서울',),
+    '서산시': ('충남',),
+    '서천군': ('충남',),
+    '서초구': ('서울',),
+    '서해구': ('인천',),
+    '성남시': ('경기',),
+    '성동구': ('서울',),
+    '성북구': ('서울',),
+    '성주군': ('경북',),
+    '속초시': ('강원',),
+    '송파구': ('서울',),
+    '수성구': ('대구',),
+    '수영구': ('부산',),
+    '수원시': ('경기',),
+    '순창군': ('전북',),
+    '순천시': ('전남',),
+    '시흥시': ('경기',),
+    '신안군': ('전남',),
+    '아산시': ('충남',),
+    '안동시': ('경북',),
+    '안산시': ('경기',),
+    '안성시': ('경기',),
+    '안양시': ('경기',),
+    '양구군': ('강원',),
+    '양산시': ('경남',),
+    '양양군': ('강원',),
+    '양주시': ('경기',),
+    '양천구': ('서울',),
+    '양평군': ('경기',),
+    '여수시': ('전남',),
+    '여주시': ('경기',),
+    '연수구': ('인천',),
+    '연제구': ('부산',),
+    '연천군': ('경기',),
+    '영광군': ('전남',),
+    '영덕군': ('경북',),
+    '영도구': ('부산',),
+    '영동군': ('충북',),
+    '영등포구': ('서울',),
+    '영암군': ('전남',),
+    '영양군': ('경북',),
+    '영월군': ('강원',),
+    '영종구': ('인천',),
+    '영주시': ('경북',),
+    '영천시': ('경북',),
+    '예산군': ('충남',),
+    '예천군': ('경북',),
+    '오산시': ('경기',),
+    '옥천군': ('충북',),
+    '옹진군': ('인천',),
+    '완도군': ('전남',),
+    '완주군': ('전북',),
+    '용산구': ('서울',),
+    '용인시': ('경기',),
+    '울릉군': ('경북',),
+    '울주군': ('울산',),
+    '울진군': ('경북',),
+    '원주시': ('강원',),
+    '유성구': ('대전',),
+    '은평구': ('서울',),
+    '음성군': ('충북',),
+    '의령군': ('경남',),
+    '의성군': ('경북',),
+    '의왕시': ('경기',),
+    '의정부시': ('경기',),
+    '이천시': ('경기',),
+    '익산시': ('전북',),
+    '인제군': ('강원',),
+    '임실군': ('전북',),
+    '장성군': ('전남',),
+    '장수군': ('전북',),
+    '장흥군': ('전남',),
+    '전주시': ('전북',),
+    '정선군': ('강원',),
+    '정읍시': ('전북',),
+    '제물포구': ('인천',),
+    '제주시': ('제주',),
+    '제천시': ('충북',),
+    '종로구': ('서울',),
+    '중구': ('대구', '대전', '부산', '서울', '울산'),
+    '중랑구': ('서울',),
+    '증평군': ('충북',),
+    '진도군': ('전남',),
+    '진안군': ('전북',),
+    '진주시': ('경남',),
+    '진천군': ('충북',),
+    '창녕군': ('경남',),
+    '창원시': ('경남',),
+    '천안시': ('충남',),
+    '철원군': ('강원',),
+    '청도군': ('경북',),
+    '청송군': ('경북',),
+    '청양군': ('충남',),
+    '청주시': ('충북',),
+    '춘천시': ('강원',),
+    '충주시': ('충북',),
+    '칠곡군': ('경북',),
+    '태백시': ('강원',),
+    '태안군': ('충남',),
+    '통영시': ('경남',),
+    '파주시': ('경기',),
+    '평창군': ('강원',),
+    '평택시': ('경기',),
+    '포천시': ('경기',),
+    '포항시': ('경북',),
+    '하남시': ('경기',),
+    '하동군': ('경남',),
+    '함안군': ('경남',),
+    '함양군': ('경남',),
+    '함평군': ('전남',),
+    '합천군': ('경남',),
+    '해남군': ('전남',),
+    '해운대구': ('부산',),
+    '홍성군': ('충남',),
+    '홍천군': ('강원',),
+    '화성시': ('경기',),
+    '화순군': ('전남',),
+    '화천군': ('강원',),
+    '횡성군': ('강원',),
+}
+
+
+def _find_districts(question: str, region: str | None = None) -> set[str]:
+    """질문에서 말한 시·군·구 ('강남구에 사는' -> {'강남구'}). 실제 소관기관에 나오는 이름(DISTRICTS)만 인정한다
+    ('가구'·'친구'·'수시'처럼 구·시로 끝나는 일반 낱말 차단). 시·도를 말했으면 그 시·도에 있는 이름만
+    ('광주시'는 경기도의 시라서 '광주에 사는 … 광주시'처럼 광주광역시를 뜻하면 쓰지 않는다)."""
+    found = set()
+    for word in re.findall(r"[가-힣]+", question or ""):
+        for name in (word, _JOSA_RE.sub("", word)):
+            if name in DISTRICTS and (not region or region in DISTRICTS[name]):
+                found.add(name)
+    return found
+
+
+def _agency_districts(agency: str) -> set[str]:
+    """소관기관의 시·군·구 ('서울특별시 동대문구' -> {'동대문구'}). 시·도 기관('서울특별시')·전국 기관은 빈 집합."""
+    return {p for p in (agency or "").split()[1:] if p in DISTRICTS}
+
+
+def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str | None = None) -> list[Chunk]:
+    """사용자가 말한 시·군·구와 다른 시·군·구의 제도를 뺀다. 시·도 전체 제도와 전국 제도는 남긴다.
+
+    시·도까지만 비교하면 '서울 강남구에 사는' 질문에 동대문구 주민 대상 제도가 나왔다 (구 단위 제도 208곳).
+    그 구의 제도도 관심 분야(field)가 있으면 분야가 맞는 것만 남긴다: 검색어의 '강남구'가 주제와 상관없이 강남구
+    제도를 끌어올려 취업준비생 질문에 출산양육지원금·영유아 발달검사가 후보가 됐다 (넓은 질문은 '원하는 도움'으로
+    거르지 않아 그대로 안내되기도 함). 시·도 전체·전국 제도는 원래 관련도로 뽑혀서 분야로 거르지 않는다.
+    다 빠지면 원래 후보를 그대로 쓴다 (소프트 필터)."""
+    if not districts:
+        return chunks
+    keep = []
+    for c in chunks:
+        own = _agency_districts(c.metadata.get("agency") or "")
+        if own and not own & districts:
+            continue                       # 다른 구의 제도
+        if own and field and not retrieve_filters.field_matches(c.metadata.get("field"), field):
+            continue                       # 그 구의 제도지만 관심 분야가 다름
+        keep.append(c)
+    return keep or chunks
 
 
 def _agency_region(agency: str) -> str | None:

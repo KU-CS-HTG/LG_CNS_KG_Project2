@@ -453,6 +453,63 @@ def test_duplicate_judgement_uses_first_and_missing_judgement_is_retried(monkeyp
     assert names == [ev[a][0].service_name]                        # 중복 판정은 첫 판정('확인 필요')을 쓴다
 
 
+def test_district_question_drops_other_districts_in_same_city(sample_chunks):
+    # 시·도까지만 비교하면 '서울 강남구' 질문에 동대문구 주민 대상 제도가 나왔다
+    from dataclasses import replace
+    def at(sid, agency):
+        return replace(sample_chunks[0], service_id=sid, metadata={**sample_chunks[0].metadata, "agency": agency})
+    chunks = [at("G", "서울특별시 강남구"), at("D", "서울특별시 동대문구"), at("S", "서울특별시"), at("N", "보건복지부")]
+    assert generator._find_districts("서울 강남구에 사는 30살이에요", "서울") == {"강남구"}
+    assert generator._find_districts("3인 가구인데 친구랑 수시로 상담해요") == set()      # 구·시로 끝나는 일반 낱말
+    assert generator._find_districts("광주에 사는데 광주시청 근처예요", "광주") == set()    # 경기 광주시는 광주광역시가 아님
+    assert generator._find_districts("대전 서구에 살아요", "대전") == {"서구"}
+    kept = [c.service_id for c in generator._drop_other_districts(chunks, {"강남구"})]
+    assert kept == ["G", "S", "N"]                                   # 다른 구만 빠지고 시 전체·전국 제도는 남는다
+    assert generator._drop_other_districts(chunks, set()) == chunks  # 구를 말하지 않으면 그대로
+    only_other = [at("D", "서울특별시 동대문구")]
+    assert generator._drop_other_districts(only_other, {"강남구"}) == only_other   # 다 빠지면 원래 후보 (소프트 필터)
+
+
+def test_district_programs_must_match_interest_field(sample_chunks):
+    # 검색어의 '강남구'가 주제와 상관없는 강남구 제도를 끌어올렸다 (취업준비생 질문에 출산양육지원금)
+    from dataclasses import replace
+    def at(sid, agency, field):
+        return replace(sample_chunks[0], service_id=sid,
+                       metadata={**sample_chunks[0].metadata, "agency": agency, "field": field})
+    chunks = [at("birth", "서울특별시 강남구", "임신·출산"), at("job", "서울특별시 강남구", "고용·창업"),
+              at("city", "서울특별시", "생활안정"), at("nat", "고용노동부", "고용·창업")]
+    kept = [c.service_id for c in generator._drop_other_districts(chunks, {"강남구"}, "고용·창업")]
+    assert kept == ["job", "city", "nat"]          # 구 제도만 분야로 거르고, 시 전체·전국 제도는 그대로
+    assert [c.service_id for c in generator._drop_other_districts(chunks, {"강남구"})] == [
+        "birth", "job", "city", "nat"]             # 관심 분야가 없으면 거르지 않는다 ('곧 아이가 태어나요')
+
+
+def test_llm_says_missing_but_raw_section_exists_uses_raw():
+    # 근거에 신청방법 '방문, 인터넷'이 있는데 LLM이 '신청방법은 자료에 없음'이라고 썼다 (평가 q13)
+    assert generator._llm_or_raw("신청방법은 자료에 없음.", "방문, 인터넷") == "방문, 인터넷"
+    assert generator._llm_or_raw("관련 정보가 없습니다", "온라인 신청") == "온라인 신청"
+    assert generator._llm_or_raw("복지로 온라인 신청", "방문, 인터넷") == "복지로 온라인 신청"   # 요약이 있으면 요약
+    assert generator._llm_or_raw("", "방문") == "방문"
+    assert generator._llm_or_raw("자료에 없음", None) == "자료에 없음"                         # 원문도 없으면 그대로
+    assert generator._llm_or_raw(None, None) == generator.NOT_IN_EVIDENCE
+
+
+def test_rent_question_drops_purchase_only_program():
+    # '보증금 대출' 질문에 '구매용도만 가능'한 내집마련 디딤돌 대출이 안내됐다 (평가 q06)
+    from src.common.schema import Chunk
+    def ch(text):
+        return [Chunk("X#지원내용", "X", "가상 제도", "지원내용", text, {})]
+    buy = ch("주택을 구입하는 경우 대출 (구매용도만 가능)")
+    rent = ch("전세 보증금 대출 이자 지원")
+    public_rent = ch("공공사업자가 다가구주택 등을 매입하여 임대 (분양전환 가능)")
+    assert generator._tenure_mismatch(["보증금 대출", "이자 지원"], buy)
+    assert not generator._tenure_mismatch(["보증금 대출"], rent)
+    assert generator._tenure_mismatch(["내 집 마련 대출"], rent)                   # 반대 방향
+    assert not generator._tenure_mismatch(["보증금 대출"], public_rent)            # 임대·분양 둘 다 있으면 판단하지 않음
+    assert not generator._tenure_mismatch(["신혼집 지원"], buy)                     # 어느 쪽인지 말하지 않음
+    assert not generator._tenure_mismatch(None, buy)
+
+
 def test_all_dropped_judgement_is_asked_once_more(monkeypatch, sample_chunks):
     # 같은 후보로도 판정이 흔들려 모두 '관련 없음'이 나오기도 했다 (q07: 6번 중 2번 근거 없음) -> 한 번 더 받는다
     ev = evidence.select_evidence([c for c in sample_chunks if c.service_id == "SAMPLE001"])
