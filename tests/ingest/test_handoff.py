@@ -452,3 +452,155 @@ def test_corrupt_stored_payload_fails_before_prepare(setup_handoff, monkeypatch)
     assert handoff.apply_pending(settings, adapter)["failed"][0]["stage"] == "validate"
     prepare.assert_not_called()
     assert not Path(settings.index_dir).exists()
+
+
+# --- batched verification (--verify-every N) ---------------------------------------------------------------------
+SIDS = ["A", "B", "C", "D", "E", "F", "G"]
+
+
+def put_many(paths, sids=SIDS):
+    for sid in sids:
+        put(paths, sid, 지원내용=f"{sid} 월세 보증 지원 내용")
+
+
+def batched(settings, n):
+    return replace(settings, verify_every=n)
+
+
+def test_batched_apply_verifies_once_per_batch_and_acknowledges_all(setup_handoff, monkeypatch):
+    settings, adapter, paths = setup_handoff
+    put_many(paths)
+    wrapped = Mock(wraps=adapter.verify_batch)
+    monkeypatch.setattr(adapter, "verify_batch", wrapped)
+    monkeypatch.setattr(adapter, "verify", Mock(side_effect=AssertionError("per-event verify used")))
+    report = handoff.apply_pending(batched(settings, 3), adapter)
+    assert report["failed"] == [] and report["applied"] == 7 and report["acknowledged"] == 7 and report["remaining"] == 0
+    assert wrapped.call_count == 3                                       # 3 + 3 + 1
+    assert [len(call.args[0]) for call in wrapped.call_args_list] == [3, 3, 1]
+    assert handoff.read_pending(settings) == []
+    assert all(ids(sid) for sid in SIDS)
+    assert {cid for sid in SIDS for cid in ids(sid)} <= set(index._bm25_index()[1])      # corpus membership (Okapi scores can be <= 0 on common terms)
+
+
+def test_batched_equals_per_event_result(setup_handoff, tmp_path):
+    """Both modes leave the same persistent documents (verification mode must not change what is indexed)."""
+    settings, adapter, paths = setup_handoff
+    put_many(paths)
+    apply_pending = handoff.apply_pending(batched(settings, 4), adapter)
+    assert apply_pending["acknowledged"] == 7
+    snapshot = {cid: row for cid, row in adapter._documents().items()}
+    assert {row[1]["service_id"] for row in snapshot.values()} == set(SIDS)
+    assert len(snapshot) == sum(len(ids(sid)) for sid in SIDS)
+
+
+@pytest.mark.parametrize("stage", ["apply", "verify_batch", "acknowledge"])
+def test_batched_failure_leaves_whole_batch_pending_and_replays(setup_handoff, monkeypatch, stage):
+    settings, adapter, paths = setup_handoff
+    put_many(paths, SIDS[:4])
+    events = handoff.read_pending(settings)
+    with monkeypatch.context() as patch:
+        if stage == "acknowledge":
+            patch.setattr(store, "acknowledge_changes", lambda *a, **kw: 0)
+        elif stage == "apply":
+            patch.setattr(adapter, "apply", Mock(side_effect=RuntimeError("injected_failure")))
+        else:
+            patch.setattr(adapter, stage, Mock(side_effect=RuntimeError("injected_failure")))
+        report = handoff.apply_pending(batched(settings, 4), adapter)
+    assert report["failed"][0]["stage"] == ("verify" if stage == "verify_batch" else stage)
+    assert report["failed"][0]["batch"]["size"] == 4 and report["acknowledged"] == 0
+    assert handoff.read_pending(settings) == events                      # nothing acknowledged from the failed batch
+    replay = handoff.apply_pending(batched(settings, 4), BIndexAdapter())
+    assert replay["acknowledged"] == 4 and handoff.read_pending(settings) == []
+
+
+def test_batched_verification_detects_corruption_in_middle_event(setup_handoff, monkeypatch):
+    settings, adapter, paths = setup_handoff
+    put_many(paths, SIDS[:5])
+    original = adapter.apply
+
+    def broken(event, chunks):
+        original(event, chunks)
+        if event["service_id"] == "C":
+            embedding = index._collection().get(ids=[chunks[0].chunk_id], include=["embeddings"])["embeddings"]
+            index._collection().update(ids=[chunks[0].chunk_id], documents=["wrong text"], embeddings=embedding)
+
+    monkeypatch.setattr(adapter, "apply", broken)
+    report = handoff.apply_pending(batched(settings, 5), adapter)
+    assert report["failed"][0]["stage"] == "verify" and report["failed"][0]["code"] == "persistent_snapshot_mismatch"
+    assert report["acknowledged"] == 0 and len(handoff.read_pending(settings)) == 5
+
+
+@pytest.mark.parametrize("corrupt", ["unrelated", "bm25_cache", "vector", "keyword"])
+def test_batched_verification_detects_other_corruptions(setup_handoff, monkeypatch, corrupt):
+    settings, adapter, paths = setup_handoff
+    put_many(paths, SIDS[:3])
+    assert handoff.apply_pending(settings, adapter)["acknowledged"] == 3          # untouched services already indexed
+    put(paths, "A", 지원내용="A 새 내용 대출")
+    put(paths, "B", 지원내용="B 새 내용 대출")
+    original = adapter.apply
+
+    def broken(event, chunks):
+        original(event, chunks)
+        if corrupt == "unrelated" and event["service_id"] == "B":
+            index._collection().update(ids=[ids_c for ids_c in ids("C")][:1], metadatas=[{"agency": "tampered"}])
+        elif corrupt == "bm25_cache" and event["service_id"] == "B":
+            key = str(index._store_dir()) + "|" + index._collection_name()
+            index._bm25_cache[key] = (index._read_version(), None, [])
+        elif corrupt == "vector":
+            monkeypatch.setattr(index, "vector_search", lambda *a, **kw: [])
+        elif corrupt == "keyword":
+            monkeypatch.setattr(index, "bm25_search", lambda *a, **kw: [(chunks[0], 1.0)])
+
+    monkeypatch.setattr(adapter, "apply", broken)
+    report = handoff.apply_pending(batched(settings, 2), adapter)
+    assert report["failed"][0]["stage"] == "verify" and report["acknowledged"] == 0
+    assert len(handoff.read_pending(settings)) == 2
+
+
+def test_batched_mixed_replace_and_remove(setup_handoff):
+    settings, adapter, paths = setup_handoff
+    put_many(paths, SIDS[:3])
+    assert handoff.apply_pending(settings, adapter)["acknowledged"] == 3
+    put(paths, "A", 지원내용="A 완전히 다른 내용 대출")
+    enqueue(paths, sid="B", action="remove")
+    report = handoff.apply_pending(batched(settings, 10), adapter)
+    assert report["failed"] == [] and report["acknowledged"] == 2
+    assert ids("B") == set() and ids("C")                                   # removal applied, unrelated untouched
+    assert "대출" in index.get_service_chunks("A")[0].text or any("대출" in c.text for c in index.get_service_chunks("A"))
+
+
+def test_batched_supersession_is_detected_once_per_batch(setup_handoff, monkeypatch):
+    settings, adapter, paths = setup_handoff
+    put_many(paths, SIDS[:3])
+    original = adapter.capture_batch
+
+    def new_event(events):
+        enqueue(paths, sid="B", chunks=[Chunk("B#지원대상", "B", "청년", "지원대상", "청년 최신")])   # unsupported direct writer
+        return original(events)
+
+    # The revalidation happens BEFORE capture_batch, so an event changed during apply fails at acknowledge instead.
+    monkeypatch.setattr(adapter, "capture_batch", new_event)
+    report = handoff.apply_pending(batched(settings, 3), adapter)
+    assert report["failed"][0]["stage"] == "acknowledge" and report["failed"][0]["code"] == "exact_event_not_acknowledged"
+    assert report["acknowledged"] == 2                                    # verified events with exact tokens are acknowledged
+    remaining = handoff.read_pending(settings)
+    assert [e["service_id"] for e in remaining] == ["B"] and remaining[0]["version"] == 2     # only the superseded one stays
+    assert handoff.apply_pending(batched(settings, 3), BIndexAdapter())["acknowledged"] == 1    # replay converges on the new event
+
+
+@pytest.mark.parametrize("value", [0, -1, 1001, "3", 2.5, True])
+def test_verify_every_is_validated(setup_handoff, value):
+    settings, _, _ = setup_handoff
+    with pytest.raises(ValueError, match="invalid_verify_every"):
+        handoff.Settings.resolve(db_path=settings.db_path, index_dir=settings.index_dir, verify_every=value)
+    assert handoff.Settings.resolve(db_path=settings.db_path, index_dir=settings.index_dir, verify_every=1000).verify_every == 1000
+
+
+def test_verify_every_cli_and_worker_settings_roundtrip(setup_handoff, capsys):
+    settings, _, paths = setup_handoff
+    put(paths)
+    assert handoff.main(["--db-path", settings.db_path, "--index-dir", settings.index_dir, "--verify-every", "50"]) == 0
+    assert json.loads(capsys.readouterr().out)["remaining"] == 1               # dry-run accepts the flag
+    assert handoff.main(["--db-path", settings.db_path, "--index-dir", settings.index_dir, "--verify-every", "0"]) == 1
+    assert "invalid_verify_every" in capsys.readouterr().out
+    assert handoff.Settings(**asdict(batched(settings, 25))).checked().verify_every == 25

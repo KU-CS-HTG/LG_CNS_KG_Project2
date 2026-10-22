@@ -341,9 +341,28 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 # 데이터가 있는 기존 B 컬렉션을 처음 연결할 때는 명시적으로 채택
 .\.venv\Scripts\python.exe -m src.ingest.handoff --apply --adopt-existing
 # 실패 원인을 해결한 뒤 같은 --apply 명령으로 재시도 (미처리 이벤트는 보존됨)
+# 대량 이벤트: N건을 적용한 뒤 한 번에 검증·확인 (기본 1 = 서비스마다, 권장 100). 중단·실패 시 그 묶음만 다시 적용
+.\.venv\Scripts\python.exe -m src.ingest.handoff --apply --verify-every 100
 ```
 
 원본 DB 하나는 색인 디렉터리·모델 설정 하나에 연결됩니다. 작업 프로세스는 색인 → 원본 DB 순서로 운영체제 파일 잠금을 획득하며, 지원되는 수집·갱신·실행 반영 경로도 같은 DB 잠금을 사용합니다. 잠금을 다른 프로세스가 사용 중이면 즉시 실패합니다. 반영 중 첫 오류가 발생하면 종료 코드 1로 중단합니다. 앞서 검증·확인 처리한 이벤트는 완료 상태를 유지하고, 실패한 이벤트와 이후 이벤트는 대기열에 남습니다. BM25는 Chroma 문서에서 재생성하고 B의 `index_version`으로 갱신하므로, 별도의 영속 BM25 DB를 만들지 않습니다.
+
+#### 임베딩 계산 분담 (여러 PC)
+
+조각이 많아 임베딩(GPU)이 오래 걸릴 때, **임베딩 계산만** 여러 PC가 나눠 하고 색인 적용·확인은 한 곳에서 합니다. 색인 형식과 잠금 구조는 바꾸지 않으며 위의 `handoff`를 그대로 씁니다. 모든 PC에서 같은 DB 사본, 같은 모델(`BAAI/bge-m3`)·`max_seq_length`·`sentence-transformers` 버전을 써야 합니다. DB는 git에 없으므로 파일로 전달합니다.
+
+```powershell
+# 각 PC (구간 번호만 다르게). DB는 읽기 전용으로 열어 쓰지 않는다. 중간에 끊겨도 같은 명령으로 이어서 계산
+python -m src.index.embed_shard run --shard 0/3 --out data\embed_shards\part0.npz
+# 주 PC: 세 파일을 모아 합치고(선택), 대기 중인 조각이 얼마나 계산됐는지 확인
+python -m src.index.embed_shard merge part0.npz part1.npz part2.npz --out data\embed_shards\all.npz
+python -m src.index.embed_shard coverage data\embed_shards --shards 3
+# 주 PC: 계산된 벡터를 쓰면서 평소처럼 적용 (없는 텍스트만 모델이 계산)
+$env:EMBEDDING_CACHE = "data\embed_shards"
+python -m src.ingest.handoff --apply
+```
+
+서비스는 `service_id` 해시로 구간이 정해져 서로 겹치지 않습니다. 구간 파일에 없는 텍스트는 주 PC가 직접 계산하므로 일부 파일이 빠져도 결과는 같고 시간만 더 듭니다. 서비스마다 하는 BM25 검증 시간은 줄지 않으니, GPU 사용률이 낮다면 분담보다 검증 방식 개선이 먼저입니다.
 
 테스트용 샘플 원본을 적용할 때는 `--validation`과 격리된 `--db-path`·`--index-dir`를 명시해야 합니다. 보호된 운영 경로나 같은 위치를 가리키는 별칭은 쓰기 전에 거부합니다. 자세한 내용은 [격리 실행 명령과 동시 실행 제약](docs/INGEST_A.md#stored-event-consumer-증분-색인-인계-소비자)을 참고하세요. 기존 `src.index.vector_store` 직접 실행 CLI는 이 잠금 절차를 우회하므로 수집·인계 소비자와 동시에 실행하지 마세요. 해당 CLI는 pending 이벤트를 확인 처리하지 않습니다.
 
@@ -353,7 +372,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 src/
   common/    config.py, schema.py                                  # 전원 공용: 설정, 모듈 간 데이터 계약
   ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
-  index/     embedder, vector_store                                # B
+  index/     embedder, embed_cache, embed_shard, vector_store          # B
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
 app/         main.py                                               # C: UI
