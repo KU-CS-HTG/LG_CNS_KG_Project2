@@ -167,7 +167,7 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
     named = _named_programs(asked)
     recs: list[Recommendation] = []
     for sid, chunks in evidence.items():
-        if named and not any(n in _squash_name(chunks[0].service_name) for n in named):
+        if named and not any(n in v for n in named for v in _name_variants(chunks[0].service_name)):
             continue                      # 특정 제도를 물었는데 그 제도가 아니다 ('청년희망적금' 질문에 청년미래적금, 평가 q30)
         gen = by_id.get(sid)
         if gen is None:
@@ -197,6 +197,21 @@ MIN_PROGRAM_NAME_CHARS = 5    # '청년적금'(4자)처럼 짧은 것은 일반 
 
 def _squash_name(s: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]", "", s or "")
+
+
+def _name_variants(service_name: str) -> list[str]:
+    """서비스명과, 가운뎃점으로 묶인 이름을 하나씩 푼 이름들 (글자만 남김).
+    '근로·자녀장려금' -> ['근로자녀장려금', '근로장려금', '자녀장려금']. 묶인 이름을 다른 제도로 보고 빼던 문제
+    ('근로장려금' 질문에 근로·자녀장려금이 1위로 검색됐는데 근거 없음, 범위 확대 색인 2026-10-22)."""
+    variants = [_squash_name(service_name)]
+    for m in re.finditer(r"([가-힣]{1,6})·([가-힣]{1,6})", service_name):
+        a, b = m.group(1), m.group(2)
+        # '·자녀'를 빼면 '근로장려금'. 뒤 낱말('자녀장려금')의 경계를 모르므로 앞 글자를 하나씩 빼 본다
+        # ('근로녀장려금' 같은 변형도 생기지만 질문의 제도 이름과 맞을 일이 없어 무해하다)
+        for k in range(1, len(b)):
+            variants.append(_squash_name(service_name[:m.start(2) - 1] + b[k:] + service_name[m.end(2):]))
+        variants.append(_squash_name(service_name[:m.start(1)] + service_name[m.start(2):]))   # '근로·'를 빼면 '자녀장려금'
+    return [v for v in variants if v]
 
 
 def _named_programs(asked: list[str] | None) -> list[str]:

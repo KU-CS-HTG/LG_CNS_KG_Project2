@@ -497,6 +497,10 @@ def test_named_program_question_drops_other_programs(monkeypatch, sample_chunks)
     same = [replace(c, service_name="대구 청년희망적금") for c in other]
     assert not generator._generate(q, {"SAMPLE001": same}, ["청년희망적금"], ["청년희망적금"]).no_evidence
     assert generator._named_programs(["청년희망적금", "청년 적금", "청년적금", "장학금", "주거비"]) == ["청년희망적금"]
+    # 가운뎃점으로 묶인 이름은 각각으로 인정 ('근로장려금' 질문에 1위 '근로·자녀장려금'을 빼던 문제)
+    eitc = [replace(c, service_name="근로·자녀장려금") for c in other]
+    for asked in ("근로장려금", "자녀장려금"):
+        assert not generator._generate(f"{asked}은 어떻게 신청하나요?", {"SAMPLE001": eitc}, [asked], [asked]).no_evidence
 
 
 def test_need_claim_is_rewritten_for_the_judge():
