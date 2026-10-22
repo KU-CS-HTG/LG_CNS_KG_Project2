@@ -453,6 +453,34 @@ def test_duplicate_judgement_uses_first_and_missing_judgement_is_retried(monkeyp
     assert names == [ev[a][0].service_name]                        # 중복 판정은 첫 판정('확인 필요')을 쓴다
 
 
+def test_all_dropped_judgement_is_asked_once_more(monkeypatch, sample_chunks):
+    # 같은 후보로도 판정이 흔들려 모두 '관련 없음'이 나오기도 했다 (q07: 6번 중 2번 근거 없음) -> 한 번 더 받는다
+    ev = evidence.select_evidence([c for c in sample_chunks if c.service_id == "SAMPLE001"])
+    sid = next(iter(ev))
+    none_ = {"services": [{"service_id": sid, "applicable": "관련 없음", "meets_need": False}]}
+    ok = {"services": [{"service_id": sid, "applicable": "확인 필요", "meets_need": True}]}
+    replies = []
+
+    def chat(system, user):
+        if system != generator.SYSTEM_PROMPT:
+            return {}
+        replies.append(1)
+        return none_ if len(replies) == 1 else ok
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", chat)
+    answer = generator._generate("지원 있나요?", ev, ["월세"], ["월세"])
+    assert len(replies) == 2 and len(answer.recommendations) == 1   # 두 번째 판정으로 안내
+
+    replies.clear()
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json",
+                        lambda s, u: (replies.append(1) or none_) if s == generator.SYSTEM_PROMPT else {})
+    assert generator._generate("지원 있나요?", ev, ["월세"], ["월세"]).no_evidence is True
+    assert len(replies) == 2                                        # 두 번 다 관련 없으면 근거 없음 (더 묻지 않음)
+
+    replies.clear()                                                 # 이름으로 물은 제도가 후보에 없으면 다시 묻지 않는다
+    assert generator._generate("청년희망적금 되나요?", ev, ["청년희망적금"], ["청년희망적금"]).no_evidence is True
+    assert len(replies) == 1
+
+
 def test_region_question_keeps_slots_for_national_programs(monkeypatch, sample_chunks):
     # 지역을 말하면 그 지역 제도가 상위 5개를 다 채워 전국 제도(출산급여 등)가 빠졌다 -> 지역 최대 3, 전국 최소 2
     from dataclasses import replace

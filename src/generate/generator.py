@@ -149,20 +149,30 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
     with ThreadPoolExecutor(max_workers=2) as pool:      # 답변 생성과 자격 체크리스트 추출을 동시에
-        answer_job = pool.submit(condition_extractor._chat_json, SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
+        answer_job = pool.submit(_judge, question, evidence, needs)
         checklists = pool.submit(_extract_checklists, evidence).result()
-        try:
-            out = answer_job.result()
-        except Exception as e:  # 네트워크·키·JSON 오류
-            log.warning("답변 생성 실패, 원문으로 대체: %s", e)
-            out = {}
-    # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
-    # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
-    judged = isinstance(out.get("services"), list)
-    # 원하는 도움을 주는 제도인지는 구조화된 값(meets_need)으로 받아 코드로 적용한다
-    # (applicable의 '관련 없음' 규칙만으로는 지역·나이만 맞는 제도가 섞였음: 공연 관람비 질문에 청년월세)
+        out = answer_job.result()
+    recs = _recommendations(question, evidence, needs, asked, out, checklists)
+    if not recs and isinstance(out.get("services"), list) and _named_candidates(evidence, asked):
+        # 후보가 있는데 판정에서 모두 빠졌으면 판정을 한 번 더 받는다. 같은 근거로도 판정이 흔들렸다
+        # ('대학생 자취방 주거비' 질문: 같은 후보 5개로 6번 중 2번 근거 없음, 평가 q07).
+        # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
+        out = _judge(question, evidence, needs)
+        recs = _recommendations(question, evidence, needs, asked, out, checklists)
+    if not recs:
+        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
+    text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
+    return Answer(text=text, recommendations=recs)
 
-    missing = _missing_judgements(out, evidence) if judged else set()
+
+def _judge(question: str, evidence: dict[str, list[Chunk]], needs: list[str]) -> dict:
+    """제도별 판정을 LLM에 받는다. 호출이 실패하면 빈 dict (판정 없음)."""
+    try:
+        out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
+    except Exception as e:  # 네트워크·키·JSON 오류
+        log.warning("답변 생성 실패, 원문으로 대체: %s", e)
+        return {}
+    missing = _missing_judgements(out, evidence) if isinstance(out.get("services"), list) else set()
     if missing:
         # 판정이 빠진 제도만 따로 한 번 더 묻는다. 출력이 꼬여 같은 제도를 여러 번 적고 다른 제도를 빠뜨렸다
         # (대전 출산 질문: '대전 소상공인 …'만 반복, 산모·신생아 건강관리 누락 -> 관련 없음으로 빠짐).
@@ -173,17 +183,25 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
             out = {**out, "services": list(out["services"]) + [s for s in retry.get("services") or [] if isinstance(s, dict)]}
         except Exception as e:  # 다시 묻기 실패: 첫 결과로 답한다
             log.warning("빠진 판정 다시 묻기 실패: %s", e)
+    return out
+
+
+def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: list[str], asked: list[str] | None,
+                     out: dict, checklists: dict) -> list[Recommendation]:
+    """판정(out)을 코드로 검증해 안내할 제도만 남긴다."""
+    # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
+    # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
+    # 원하는 도움을 주는 제도인지는 구조화된 값(meets_need)으로 받아 코드로 적용한다
+    # (applicable의 '관련 없음' 규칙만으로는 지역·나이만 맞는 제도가 섞였음: 공연 관람비 질문에 청년월세)
+    judged = isinstance(out.get("services"), list)
     # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다.
     # 같은 제도를 여러 번 적으면 첫 판정을 쓴다 (나중 것이 덮어써 '확인 필요'였던 국민취업지원제도가 '관련 없음'으로 빠졌다)
     by_id: dict[str, dict] = {}
     for s in out.get("services") or []:
         if isinstance(s, dict):
             by_id.setdefault(str(s.get("service_id")).strip(), s)
-    named = _named_programs(asked)
     recs: list[Recommendation] = []
-    for sid, chunks in evidence.items():
-        if named and not any(n in v for n in named for v in _name_variants(chunks[0].service_name)):
-            continue                      # 특정 제도를 물었는데 그 제도가 아니다 ('청년희망적금' 질문에 청년미래적금, 평가 q30)
+    for sid, chunks in _named_candidates(evidence, asked).items():
         gen = by_id.get(sid)
         if gen is None:
             if judged:
@@ -198,11 +216,16 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
         recs.append(_to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
                                        if gen.get("meets_need") is True else None, checklists.get(sid)))
+    return recs
 
-    if not recs:
-        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
-    text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
-    return Answer(text=text, recommendations=recs)
+
+def _named_candidates(evidence: dict[str, list[Chunk]], asked: list[str] | None) -> dict[str, list[Chunk]]:
+    """특정 제도를 이름으로 물었으면 그 제도만 남긴다 ('청년희망적금' 질문에 청년미래적금, 평가 q30)."""
+    named = _named_programs(asked)
+    if not named:
+        return evidence
+    return {sid: chunks for sid, chunks in evidence.items()
+            if any(n in v for n in named for v in _name_variants(chunks[0].service_name))}
 
 
 # 제도 이름처럼 끝나는 말 (상품·급여 이름). '지원금'·'대출'은 '청년지원금'·'청년전용대출'처럼 일반 표현에도 쓰여 넣지 않는다.
