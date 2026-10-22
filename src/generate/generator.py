@@ -215,16 +215,19 @@ def _name_variants(service_name: str) -> list[str]:
 
 
 def _named_programs(asked: list[str] | None) -> list[str]:
-    """질문이 이름으로 콕 집어 물은 제도 ('청년희망적금', '국가장학금'). 띄어쓰기 없는 한 단어이고 제도 이름처럼 끝날 때만.
+    """질문이 이름으로 콕 집어 물은 제도 ('청년희망적금', '국가장학금'). 찾는 도움 구절의 낱말 중 제도 이름처럼 끝나는
+    5자 이상 낱말 ('청년도약계좌 가입 조건' -> '청년도약계좌').
 
     LLM은 '특정 제도를 묻는데 근거에 없으면 관련 없음' 규칙이 있어도 이름이 비슷한 다른 제도(청년미래적금)를
-    도움이 된다고 판정했다 (q30, 3회 모두). 그래서 이름을 물었으면 서비스명에 그 이름이 있는 제도만 남긴다 (코드 검증)."""
+    도움이 된다고 판정했다 (q30, 3회 모두). 그래서 이름을 물었으면 서비스명에 그 이름이 있는 제도만 남긴다 (코드 검증).
+    처음에는 구절 전체가 한 낱말일 때만 봐서 '청년도약계좌 가입 조건'(q25)에 청년미래적금이 나왔다."""
     out = []
     for a in asked or []:
-        name = _JOSA_RE.sub("", a.strip())
-        if (" " not in name and len(name) >= MIN_PROGRAM_NAME_CHARS and _PROGRAM_SUFFIX_RE.search(name)
-                and name not in condition_extractor._GENERIC_HELP):
-            out.append(_squash_name(name))
+        for word in a.split():
+            name = _JOSA_RE.sub("", word.strip())
+            if (len(name) >= MIN_PROGRAM_NAME_CHARS and _PROGRAM_SUFFIX_RE.search(name)
+                    and name not in condition_extractor._GENERIC_HELP and _squash_name(name) not in out):
+                out.append(_squash_name(name))
     return out
 
 

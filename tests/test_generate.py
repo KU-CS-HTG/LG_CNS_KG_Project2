@@ -497,6 +497,7 @@ def test_named_program_question_drops_other_programs(monkeypatch, sample_chunks)
     same = [replace(c, service_name="대구 청년희망적금") for c in other]
     assert not generator._generate(q, {"SAMPLE001": same}, ["청년희망적금"], ["청년희망적금"]).no_evidence
     assert generator._named_programs(["청년희망적금", "청년 적금", "청년적금", "장학금", "주거비"]) == ["청년희망적금"]
+    assert generator._named_programs(["청년도약계좌 가입 조건"]) == ["청년도약계좌"]          # 뒤에 말이 붙은 구절 (q25)
     # 가운뎃점으로 묶인 이름은 각각으로 인정 ('근로장려금' 질문에 1위 '근로·자녀장려금'을 빼던 문제)
     eitc = [replace(c, service_name="근로·자녀장려금") for c in other]
     for asked in ("근로장려금", "자녀장려금"):
