@@ -389,3 +389,39 @@ def test_import_questions_reports_bad_rows_and_dry_run_writes_nothing(store, tmp
 def cli_import(store, path, dry_run=False):
     from src.review import intake
     return intake.import_questions(store, path, "taegyu", dry_run=dry_run)
+
+
+# --- 검수 화면 로직 (src/review/session.py) --------------------------------------------------------------------
+def _hits(*ids):
+    return lambda text, filters, n: [(sid, i, "vector") for i, sid in enumerate(ids, start=1)]
+
+
+def test_session_candidates_hide_expired_keep_judged_and_are_stably_shuffled(store, q):
+    from src.review import session
+    store.add_judgment("taegyu", q, "S4", ver("S4"), "bad", reason="irrelevant")            # 검색에는 안 나오지만 이미 판정함
+    state = store.state()
+    a = session.candidates_for(state, q, _hits("S1", "S2", "S3", "EXP"), SERVICES, today=TODAY, reviewer="taegyu")
+    b = session.candidates_for(state, q, _hits("S1", "S2", "S3", "EXP"), SERVICES, today=TODAY, reviewer="taegyu")
+    ids = [c["service_id"] for c in a]
+    assert sorted(ids) == ["S1", "S2", "S3", "S4"] and ids == [c["service_id"] for c in b]      # 기한 지난 EXP 제외, 순서 고정
+    assert next(c for c in a if c["service_id"] == "S4")["mine"]["data"]["label"] == "bad"
+
+
+def test_session_save_judgment_rules_and_run_link(store, q):
+    from src.review import session
+    cands = session.candidates_for(store.state(), q, _hits("S1"), SERVICES, today=TODAY, reviewer="taegyu")
+    run_id = session.start_run(store, "taegyu", q, cands)
+    session.save_judgment(store, "taegyu", q, SERVICES["S1"], "good", reason="irrelevant", run_id=run_id)   # good의 사유는 버려진다
+    j = store.state().judgments[(q, "S1")]["taegyu"]["data"]
+    assert j["label"] == "good" and j["reason"] is None and j["run_id"] == run_id
+    with pytest.raises(schema.ValidationError):
+        session.save_judgment(store, "taegyu", q, SERVICES["S2"], "bad", reason="other", note="  ")      # 기타는 메모 필수
+    assert session.reasons_for("good") == () and "needs_source_check" in session.reasons_for("unsure")
+
+
+def test_session_answer_review_and_overview(store, q):
+    from src.review import session
+    rid = session.save_answer_review(store, "taegyu", q, "답변 본문", [{"kind": "omission", "text": "신청기한 누락", "severity": "major"}])
+    assert [m["run_id"] for m in store.state().memos()] == [rid]
+    rows = session.questions_overview(store.state(), "taegyu", "dev")
+    assert rows[0]["question_id"] == q and rows[0]["mine"] == 0

@@ -70,6 +70,12 @@ python -m src.review queue --n 30             # 검수 대기열 (색인 필요)
 
 시험지 평가: `python -m eval.run_eval --questions reviews/exports/dev_v1.jsonl --experiment hybrid_filter`. `relevance`가 있는 시험지는 Hit/Recall/MRR에 더해 Precision@K, nDCG@K(good=2, partial=1), bad_rate@K(상위 K 중 '틀림' 판정 비율), unjudged_rate@K(아직 판정 없는 비율)를 출력한다. unjudged가 높으면 정답 목록이 불완전해 지표가 낮게 나온 것일 수 있으니 `queue`로 먼저 채운다.
 
+## 검수 화면 (`app/review_mode.py`)
+```powershell
+python -m app.review_mode      # 브라우저에서 검수. 색인(Chroma)과 data/services.db 필요
+```
+왼쪽에 검수자 이름(영문·숫자)을 넣고 dev/test 묶음과 기준일을 고른 뒤 질문을 선택한다. 후보(hybrid_filter·vector·bm25 합집합 상위 10)는 질문마다 고정된 순서로 섞여 보이고 어느 검색이 찾았는지는 가린다. 제도마다 좋음/부분/나쁨/보류 + 사유 + 메모를 저장하면 `judgment` 이벤트가, 첫 저장 때 후보 목록이 `run` 이벤트가 남는다. 이미 판정한 제도는 검색에 안 나와도 보이고, 기한이 지난 제도는 숨긴다. 아래쪽 '시스템 답변 검수'는 `generator.answer_question` 결과를 보고 빠진 내용·틀린 내용 메모(`answer_memo`)를 남긴다(OpenAI 키 필요). 로직은 `src/review/session.py`(테스트 포함), 화면은 `app/review_mode.py`이며 `app/main.py`는 고치지 않았다. 붙이려면 main에서 `review_mode.render()`를 호출하면 된다.
+
 ## 앱(C)에서 쓰는 법
 ```python
 from src.review import ReviewStore, schema
