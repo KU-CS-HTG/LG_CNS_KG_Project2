@@ -175,3 +175,68 @@ def test_region_inferred_from_agency_when_missing(fake_embedder, tmp_vectorstore
     assert stored == {"A": "서울", "B": "부산", "C": None, "D": None, "E": "전국"}
     ids = {chunk.service_id for chunk, _ in vs.vector_search("월세", 10, vs.build_where({"region": "서울", "today": "2026-10-19"}))}
     assert ids == {"A", "C", "D", "E"}                                  # 부산 제도만 빠지고, 전국·지역 미상은 통과 (소프트)
+
+
+def test_backfill_region_fills_old_chunks_without_touching_embeddings(fake_embedder, tmp_vectorstore):
+    from src.common.schema import Chunk
+    from src.index import vector_store as vs
+
+    def c(sid, agency, region=None):
+        md = {"agency": agency}
+        if region:
+            md["region"] = region
+        return Chunk(f"{sid}#지원대상", sid, f"{sid} 면접 정장", "지원대상", f"{sid} 면접 정장 대여", md, "")
+
+    vs.build_index([c("A", "충청남도 천안시"), c("B", "경기도"), c("C", "고용노동부"), c("D", "안산시 단원구")])
+    col = vs._collection()
+    col.update(ids=["A#지원대상", "B#지원대상"], metadatas=[{**col.get(ids=[i], include=["metadatas"])["metadatas"][0], "region": ""} for i in ("A#지원대상", "B#지원대상")])
+    before_vec = col.get(ids=["A#지원대상"], include=["embeddings"])["embeddings"]
+
+    dry = vs.backfill_region(dry_run=True)
+    assert dry["to_update"] == 2 and dry["by_region"] == {"경기": 1, "충남": 1}
+    assert not col.get(ids=["A#지원대상"], include=["metadatas"])["metadatas"][0]["region"]      # dry-run은 바꾸지 않음
+
+    done = vs.backfill_region()
+    assert done["updated"] == 2 and done["chunks"] == 4
+    stored = col.get(ids=["A#지원대상"], include=["metadatas"])["metadatas"][0]
+    assert stored["region"] == "충남" and stored["region_provenance"] == "agency_inference"           # 추정한 값임이 표시된다
+    assert col.get(ids=["C#지원대상"], include=["metadatas"])["metadatas"][0]["region"] == ""     # 중앙기관·시군구만 있는 기관은 그대로
+    assert (col.get(ids=["A#지원대상"], include=["embeddings"])["embeddings"] == before_vec).all()
+    assert vs.backfill_region()["updated"] == 0                                                  # 여러 번 실행해도 같다
+    ids = {x.service_id for x, _ in vs.vector_search("면접 정장", 10, vs.build_where({"region": "경기", "today": "2026-10-19"}))}
+    assert ids == {"B", "C", "D"}                                                                # 충남 제도는 걸러지고 전국·지역 미상은 통과
+
+
+def test_get_all_pages_match_single_get(fake_embedder, tmp_vectorstore):
+    """조각이 많은 색인에서 한 번에 get()하면 SQLite 변수 한도로 실패하므로 나눠 가져온다. 결과는 한 번에 가져온 것과 같아야 한다."""
+    from src.common.schema import Chunk
+    from src.index import vector_store as vs
+
+    chunks = [Chunk(f"S{i:02d}#지원대상", f"S{i:02d}", f"S{i:02d} 지원", "지원대상", f"S{i:02d} 지원\n내용 {i}", {"agency": "서울특별시" if i % 2 else "국토교통부"}, "") for i in range(11)]
+    vs.build_index(chunks)
+    direct = vs._collection().get(include=["documents", "metadatas"])
+    for page in (1, 3, 5, 11, 50):
+        paged = vs._get_all(["documents", "metadatas"], page=page)
+        assert sorted(paged["ids"]) == sorted(direct["ids"]) and len(paged["ids"]) == 11
+        assert dict(zip(paged["ids"], paged["documents"])) == dict(zip(direct["ids"], direct["documents"]))
+        assert dict(zip(paged["ids"], paged["metadatas"])) == dict(zip(direct["ids"], direct["metadatas"]))
+    assert vs._get_all([], where={"service_id": "S03"}, page=1)["ids"] == ["S03#지원대상"]
+    assert vs._get_all(["documents"], where={"service_id": "없음"}) == {"ids": [], "documents": []}
+
+
+def test_backfill_and_bm25_work_when_index_exceeds_one_page(fake_embedder, tmp_vectorstore, monkeypatch):
+    from src.common.schema import Chunk
+    from src.index import vector_store as vs
+
+    monkeypatch.setattr(vs, "GET_PAGE", 4)
+    monkeypatch.setattr(vs._get_all, "__defaults__", (None, 4))      # page 기본값도 작게: 여러 쪽을 거치게 한다
+    chunks = [Chunk(f"S{i:02d}#지원대상", f"S{i:02d}", f"S{i:02d} 월세", "지원대상", f"S{i:02d} 월세 지원 {i}", {"agency": "경기도"}, "") for i in range(10)]
+    vs.build_index(chunks)
+    col = vs._collection()
+    col.update(ids=[c.chunk_id for c in chunks], metadatas=[{"agency": "경기도", "region": "", "service_id": c.service_id, "service_name": c.service_name,
+                                                              "section": c.section, "detail_url": "", "field": "", "deadline": "", "deadline_int": 99999999,
+                                                              "age_min": -1, "age_max": 999, "target_tags": ""} for c in chunks])
+    assert vs.backfill_region()["updated"] == 10
+    vs.reset_cache()
+    assert len(vs._bm25_index()[1]) == 10
+    assert vs.bm25_search("월세", 5, vs.build_where({"region": "경기", "today": "2026-10-19"}))

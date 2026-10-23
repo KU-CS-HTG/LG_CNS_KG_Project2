@@ -13,10 +13,17 @@
 - Hit Rate@K : 정답이 하나라도 상위 K개 안에 있는 질문의 비율
 - Recall@K   : 질문별 (상위 K개 안의 정답 수 / 전체 정답 수)의 평균
 - MRR        : 질문별 1 / (첫 정답의 순위)의 평균. 검색 결과에 정답이 없으면 0
+
+정답이 K개보다 많을 수 있는 시험지(검수 저장소에서 내보낸 것)용 지표 — Recall@K는 정답이 5개를 넘으면 구조적으로 낮아진다
+- Precision@K: 질문별 (상위 K개 안의 정답 수 / K)의 평균. 정답이 K개보다 적으면 1.0이 불가능하다
+- nDCG@K     : 등급(good=2, partial=1)을 반영한 순위 품질. 정답 수에 영향을 덜 받는다 (이상적인 순서 대비 비율)
+- bad_rate@K / unjudged_rate@K: 상위 K개 중 '틀림(bad)'으로 판정된 비율 / 아직 아무도 판정하지 않은 비율.
+  unjudged가 높으면 정답 목록이 불완전해 위 지표들이 실제보다 낮게 나온 것일 수 있다 (검수 대기열로 채운다)
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 
 TARGETS = {"hit_rate@5": 0.80, "recall@5": 0.70, "mrr": 0.60}
 DEFAULT_KS = (3, 5, 10)
@@ -78,6 +85,59 @@ def evaluate(retrieved: Sequence[Sequence[str]], relevant: Sequence[set[str]], k
     result["n_questions"] = n
     result["n_skipped"] = len(relevant) - n
     return result
+
+
+def precision_at_k(retrieved: Sequence[Sequence[str]], relevant: Sequence[set[str]], k: int) -> float:
+    _check_k(k)
+    pairs = _evaluable(retrieved, relevant)
+    return sum(len(set(r[:k]) & rel) / k for r, rel in pairs) / len(pairs)
+
+
+def ndcg_at_k(retrieved: Sequence[Sequence[str]], grades: Sequence[Mapping[str, int]], k: int) -> float:
+    """grades: 질문별 {service_id: 등급(1 이상)}. 이득은 등급 그대로, 순위 할인은 1/log2(순위+1). 같은 id는 처음 자리만 센다."""
+    _check_k(k)
+    pairs = _evaluable(retrieved, [{s for s, g in gr.items() if g > 0} for gr in grades])
+    total = 0.0
+    for (r, _), gr in zip(pairs, [g for g in grades if any(v > 0 for v in g.values())]):
+        seen: set[str] = set()
+        dcg = 0.0
+        for rank, sid in enumerate(r[:k], start=1):
+            if sid not in seen:
+                seen.add(sid)
+                dcg += gr.get(sid, 0) / math.log2(rank + 1)
+        ideal = sorted((g for g in gr.values() if g > 0), reverse=True)[:k]
+        total += dcg / sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
+    return total / len(pairs)
+
+
+def judged_rates(retrieved: Sequence[Sequence[str]], bad: Sequence[set[str]], judged: Sequence[set[str]], k: int) -> dict[str, float]:
+    """질문마다 상위 K개(중복 제거) 중 bad 비율과 judged(좋음·부분·나쁨·보류)에 없는 비율의 평균. 검색 결과가 빈 질문은 계산에서 뺀다."""
+    _check_k(k)
+    if not (len(retrieved) == len(bad) == len(judged)):
+        raise ValueError("질문 수가 다릅니다")
+    bad_rates, unjudged = [], []
+    for r, b, j in zip(retrieved, bad, judged):
+        top = list(dict.fromkeys(r))[:k]
+        if top:
+            bad_rates.append(sum(s in b for s in top) / len(top))
+            unjudged.append(sum(s not in j for s in top) / len(top))
+    if not bad_rates:
+        raise ValueError("검색 결과가 있는 질문이 없습니다")
+    return {f"bad_rate@{k}": sum(bad_rates) / len(bad_rates), f"unjudged_rate@{k}": sum(unjudged) / len(unjudged)}
+
+
+def evaluate_graded(retrieved: Sequence[Sequence[str]], grades: Sequence[Mapping[str, int]], bad: Sequence[set[str]],
+                    judged: Sequence[set[str]], ks: Sequence[int] = DEFAULT_KS) -> dict[str, float]:
+    """precision@K, ndcg@K (+ 판정 정보가 있으면 bad_rate@K, unjudged_rate@K). 정답 있는 질문만 센다."""
+    relevant = [{s for s, g in gr.items() if g > 0} for gr in grades]
+    out: dict[str, float] = {}
+    for k in ks:
+        out[f"precision@{k}"] = precision_at_k(retrieved, relevant, k)
+        out[f"ndcg@{k}"] = ndcg_at_k(retrieved, grades, k)
+        if any(judged):
+            keep = [i for i, rel in enumerate(relevant) if rel]
+            out.update(judged_rates([retrieved[i] for i in keep], [bad[i] for i in keep], [judged[i] for i in keep], k))
+    return out
 
 
 def check_targets(results: dict[str, float], targets: dict[str, float] = TARGETS) -> dict[str, bool]:
