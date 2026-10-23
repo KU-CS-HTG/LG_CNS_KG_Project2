@@ -151,6 +151,28 @@ def _chunk_from_store(chunk_id: str, document: str, m: dict) -> Chunk:
     )
 
 
+GET_PAGE = 5000      # Chroma(SQLite)는 한 번에 가져오는 id가 약 3만 개를 넘으면 "too many SQL variables"로 실패한다
+
+
+def _get_all(include: list[str], where: dict | None = None, page: int = GET_PAGE) -> dict:
+    """col.get()을 page개씩 나눠 가져와 합친다 (조각이 많은 색인에서도 동작). 반환 형식은 col.get()과 같다."""
+    col = _collection()
+    out: dict = {"ids": [], **{key: [] for key in include}}
+    offset = 0
+    while True:
+        data = col.get(where=where, include=include, limit=page, offset=offset)
+        count = len(data["ids"])
+        if count == 0:
+            break
+        out["ids"].extend(data["ids"])
+        for key in include:
+            out[key].extend(data[key])
+        if count < page:
+            break
+        offset += page
+    return out
+
+
 def build_where(filters: Filters) -> dict | None:
     """Filters -> Chroma where. 값이 없는 제도는 통과(소프트), 신청기한이 지난 제도는 제외.
 
@@ -205,6 +227,31 @@ def build_index(chunks: list[Chunk], batch_size: int = config.INDEX_BATCH_SIZE) 
             metadatas=[_to_store_metadata(c) for c in part],
         )
     _bump_version()
+
+
+def backfill_region(dry_run: bool = False, batch_size: int = 500) -> dict:
+    """저장된 조각 중 `region`이 비어 있는데 소관기관명으로 시·도를 알 수 있는 것에 값을 채운다 (임베딩은 건드리지 않는다).
+
+    기관명 기반 지역 보충(`_to_store_metadata`)이 들어가기 전에 색인된 조각은 변경이 없으면 다시 색인되지 않아
+    `region`이 비어 있고, 그러면 지역 필터가 다른 지역 제도를 걸러 내지 못한다. 여러 번 실행해도 결과는 같다.
+    색인 적용(handoff)과 동시에 실행하지 않는다."""
+    col = _collection()
+    data = _get_all(["metadatas"])
+    updates = []
+    for chunk_id, metadata in zip(data["ids"], data["metadatas"]):
+        if not metadata.get("region"):
+            region = filter_rules.agency_region(metadata.get("agency"))
+            if region:
+                updates.append((chunk_id, {**metadata, "region": region, "region_provenance": "agency_inference"}))   # 출처 표시: 기관명 추정
+    if not dry_run:
+        for i in range(0, len(updates), batch_size):
+            part = updates[i : i + batch_size]
+            col.update(ids=[cid for cid, _ in part], metadatas=[m for _, m in part])
+    by_region: dict[str, int] = {}
+    for _, metadata in updates:
+        by_region[metadata["region"]] = by_region.get(metadata["region"], 0) + 1
+    return {"chunks": len(data["ids"]), "missing_region": sum(1 for m in data["metadatas"] if not m.get("region")),
+            "to_update" if dry_run else "updated": len(updates), "by_region": dict(sorted(by_region.items()))}
 
 
 def remove_services(service_ids: list[str]) -> None:
@@ -275,7 +322,7 @@ def _bm25_index():
         return cached[1], cached[2]
     from rank_bm25 import BM25Okapi
 
-    data = _collection().get(include=["documents"])
+    data = _get_all(["documents"])
     ids = list(data["ids"])
     bm25 = BM25Okapi([_tokenize(d) for d in data["documents"]]) if ids else None
     _bm25_cache[key] = (version, bm25, ids)
@@ -290,7 +337,7 @@ def bm25_search(query: str, k: int, where: dict | None = None) -> list[tuple[Chu
         return []
     scores = np.asarray(bm25.get_scores(tokens), dtype=float)
     if where is not None:
-        allowed = set(_collection().get(where=where, include=[])["ids"])
+        allowed = set(_get_all([], where=where)["ids"])
         scores = np.where([cid in allowed for cid in ids], scores, 0.0)
     top = [i for i in np.argsort(-scores)[:k] if scores[i] > 0]
     if not top:
@@ -322,9 +369,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--sample", action="store_true", help="A의 결과 대신 tests/fixtures 샘플 조각을 색인")
     ap.add_argument("--full", action="store_true", help="색인을 비우고 전체를 다시 만든다")
     ap.add_argument("--query", help="색인 후 이 질문으로 벡터·BM25 검색 결과를 출력")
+    ap.add_argument("--backfill-region", action="store_true", help="이미 색인된 조각의 비어 있는 region을 소관기관명으로 채우기 (색인·임베딩은 건드리지 않고 이것만 실행)")
+    ap.add_argument("--dry-run", action="store_true", help="--backfill-region과 함께: 바꾸지 않고 대상만 보여 줌")
     ap.add_argument("--k", type=int, default=config.DEFAULT_TOP_K)
     args = ap.parse_args(argv)
 
+    if args.backfill_region:
+        print(json.dumps(backfill_region(dry_run=args.dry_run), ensure_ascii=False, indent=2))
+        return
     if args.full:
         clear_index()
     if args.sample:

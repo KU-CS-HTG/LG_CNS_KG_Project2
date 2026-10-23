@@ -182,3 +182,18 @@ def test_missing_gold_reports_ids_not_in_index():
     from eval.run_eval import missing_gold
     assert missing_gold(qs, lambda sid: sid == "A") == {"q01": ["B"]}
     assert missing_gold(qs, lambda sid: True) == {}
+
+
+def test_graded_metrics_use_review_export_fields_and_print_judged_rates():
+    qs = [{"id": "g", "category": "상황형", "question": "qg", "relevant_service_ids": ["S1", "S2"], "relevance": {"S1": 2, "S2": 1},
+           "hard_negatives": ["X"], "unsure": []}]
+    r = run_eval.run_experiment("vector", qs, lambda q, f, d: (["S2", "X", "Z"], {}, False), k=3)
+    g = r["graded"]
+    assert g["precision@3"] == pytest.approx(1 / 3) and 0 < g["ndcg@3"] < 1
+    assert g["bad_rate@3"] == pytest.approx(1 / 3) and g["unjudged_rate@3"] == pytest.approx(1 / 3)
+    assert "unjudged" in run_eval.format_report(r)
+
+
+def test_graded_metrics_without_judgments_are_binary_and_have_no_judged_keys():
+    r = run_eval.run_experiment("vector", QUESTIONS, fake_search, k=5)
+    assert "precision@5" in r["graded"] and "bad_rate@5" not in r["graded"]

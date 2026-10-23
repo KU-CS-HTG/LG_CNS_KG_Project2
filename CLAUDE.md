@@ -64,6 +64,9 @@ observations defer; an API-disappeared record needs a new observation. Run sourc
 inspection with `python -m src.ingest.coverage`; exact commands and limits: `docs/INGEST_A.md`.
 No abandoned readiness/packaging/telemetry subsystem is part of this scope change.
 
+## 검수 저장소 (B, `src/review/`, `reviews/`)
+질문별 제도 판정(good/partial/bad/unsure)·답변 메모·제도별 주석·지침을 **추가만 하는 이벤트**로 `reviews/events/<검수자>.jsonl`에 쌓는다(사람마다 파일이 달라 git 충돌 없음). 판정은 `(질문, 제도, 제도 내용 버전)` 단위이고 버전은 서비스명·지원대상·선정기준·지원내용·신청방법·신청기한의 해시라, 데이터가 바뀌면 바뀐 것만 다시 검수한다. 기한이 지난 제도는 내보내기·대기열에서 자동 제외한다(판정은 보존). `export`가 `eval`용 시험지(dev/test 8:2, 기존 36문항은 dev, test는 덮어쓰기 금지)를 만들며 `relevant_service_ids`를 손으로 채우지 않는다. 앱 검수 모드(C)는 `ReviewStore.add_*`로 쓴다. 실사용 질문은 쓰지 않는다. 필드·규칙: `docs/REVIEW_STORE.md`. 검수 화면은 `python -m app.review_mode`(`app/review_mode.py` + `src/review/session.py`, `app/main.py`와 독립). `import-questions`로 csv/jsonl의 새 질문을 일괄 등록하고(중복 건너뜀), `eval.run_eval`은 `relevance`가 있는 시험지에서 Precision@K·nDCG@K·bad_rate·unjudged_rate도 출력한다.
+
 ## Metadata/replay corrections (2026-10-22)
 
 Shared additions are optional `Metadata.region_provenance` and `common.regions`; no required
@@ -110,11 +113,14 @@ python -m pytest tests/ingest -q -ra   # A: mock HTTP·임시 SQLite, 미구현 
 python -m src.ingest.handoff --dry-run # inspect pending; no index/model initialization
 python -m src.ingest.handoff --apply   # cached model only, apply→verify→exact ack; stops on first failure (--verify-every 100: 100건씩 묶어 검증·확인, 대량 이벤트용)
 python -m src.index.embed_shard run --shard 0/3 --out data/embed_shards/part0.npz   # B: 임베딩 계산 분담 (merge·coverage 하위 명령, 주 PC는 EMBEDDING_CACHE=data/embed_shards 로 handoff --apply)
+python -m src.index.vector_store --backfill-region --dry-run   # B: 이미 색인된 조각의 비어 있는 region을 기관명으로 채우기 (--dry-run 없이 실행하면 적용, 임베딩은 그대로)
 python -m src.index.vector_store       # legacy direct B CLI; bypasses consumer locking/ack
 python -m app.main                     # C: 앱 실행
+python -m app.review_mode              # B: 검수 화면 (후보 판정·답변 메모 -> reviews/events/)
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
 python -m eval.label_helper review                 # Claude 1차 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
+python -m src.review stats            # B: 검수 저장소 (reviews/, 사람별 이벤트 파일). import-legacy·import-questions·validate·agreement·export·queue 하위 명령, 설계는 docs/REVIEW_STORE.md
 python -m eval.sweep                  # B: Hybrid 가중치·RRF_K·FIELD_BOOST·지역 감점(--local-penalty) 격자 탐색 (색인 필요, 검색 결과는 질문별 캐시)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요 (baseline은 A의 SQLite `data/services.db` 필요)
 python -m src.ingest.guides --dir data/guides   # A: 판정 기준 문서 PDF 파싱·분할 (제안)
