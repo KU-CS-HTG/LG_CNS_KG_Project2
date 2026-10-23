@@ -47,10 +47,10 @@
 - `storage.StoragePaths`를 전달해 config 전역 변경 없이 실행별 DB/raw를 선택한다. fixture/validation의 운영 DB·raw·sidecar·lock 경로 및 resolved 별칭은 쓰기 전에 거부한다. `run_fixture()`와 CLI에 같은 격리를 적용한다. HTMLParser는 표 셀/행 경계를 보존하며 정제 변경은 다음 관측 시 한 번의 해시/전체 조각 갱신을 유발할 수 있다.
 - 격리 live 표본은 세 엔드포인트 3건씩 확인했으나 전체 종료·빈 스냅샷·실제 연령/지역 어댑터는 미검증이다. JA0110/JA0111 기본 라벨은 OAS에서 확인했어도 신청자/부양자 의미 등을 자동 추정하지 않는다.
 - Supported handoff uses one worker per target index, holding index→source-DB OS locks through apply/verify/ack. `pipeline._execute`, `store.upsert_services` and public `store.apply_run` share the source lock; the pipeline calls `_apply_run_locked` only while holding it. Competing processes fail immediately. Stale-ack protection alone does not synchronize arbitrary direct B writers. provenance 품질은 `store.get_record(service_id)`로 조회하고 후보 보류·C 표시 방침은 합의한다.
-- 판정 기준 문서(제안, 합의 후 확정):
+- 판정 기준 문서(계약 확정 2026-10-23, 타입은 `src/common/schema.py`. 구현은 진행 중):
   - A → B: `GuideChunk{chunk_id, doc_id, doc_title, publisher, year, page, heading, text, scope, service_ids, source_url}`. `scope`는 "전국" 또는 지역명, `service_ids`가 비면 공통 기준 문서.
   - B → C: `guide_store.search_guides(query, service_ids=None, region=None, k=3) -> list[GuideChunk]`. Vector+BM25(RRF), `service_ids`가 있으면 그 제도의 문서와 공통 기준 문서만, 전국 문서는 항상 통과·지역 문서는 지역이 맞을 때만, 없으면 `[]`.
-  - C 출력: `Citation`에 선택 필드 `kind`("service" 기본, "guide")·`page`(guide일 때 쪽 번호). 기존 필드·기본값은 그대로다.
+  - C 출력: `Citation`에 선택 필드 `kind`("service" 기본, "guide")·`page`(guide일 때 쪽 번호), `Recommendation`에 선택 필드 `service_id`(기본 "", 카드에서 `search_guides`의 `service_ids`로 쓴다). 기존 필드·기본값은 그대로다.
 
 ## Dataset inclusion and historical replay (2026-10-21)
 
@@ -116,6 +116,8 @@ python -m src.index.embed_shard run --shard 0/3 --out data/embed_shards/part0.np
 python -m src.index.vector_store --backfill-region --dry-run   # B: 이미 색인된 조각의 비어 있는 region을 기관명으로 채우기 (--dry-run 없이 실행하면 적용, 임베딩은 그대로)
 python -m src.index.vector_store       # legacy direct B CLI; bypasses consumer locking/ack
 python -m app.main                     # C: 앱 실행
+python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
+python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
 python -m app.review_mode              # B: 검수 화면 (후보 판정·답변 메모 -> reviews/events/)
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)

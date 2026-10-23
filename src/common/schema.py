@@ -59,6 +59,8 @@ class Citation:
     agency: str              # 소관기관
     quote: str               # 근거 원문 문구
     detail_url: str
+    kind: str = "service"    # "service"(보조금24 제도) | "guide"(판정 기준 문서: service_name=문서명, agency=발행 기관)
+    page: int | None = None  # kind="guide"일 때 쪽 번호
 
 
 @dataclass
@@ -71,6 +73,26 @@ class Recommendation:
     how_to_apply: str        # 신청방법·기한
     needs_check: list[str] = field(default_factory=list)  # 확인이 필요한 조건 ("확인 필요" 표시)
     citations: list[Citation] = field(default_factory=list)
+    service_id: str = ""     # 판정 기준 문서 검색(search_guides의 service_ids)용. 비어 있어도 기존 동작은 같다
+
+
+@dataclass
+class GuideChunk:
+    """판정 기준 문서(고시·업무처리기준·사업안내 PDF) 조각. 보조금24 Chunk와 별도 경로 (A -> B -> C)."""
+    chunk_id: str            # 예: "{doc_id}#p{page}-{n}"
+    doc_id: str
+    doc_title: str           # 예: "2026년 국민기초생활보장사업 안내"
+    publisher: str           # 발행 기관
+    year: int
+    page: int                # 쪽 번호
+    heading: str             # "문서명 > 소제목" 접두
+    text: str
+    scope: str = "전국"      # "전국" 또는 지역명
+    service_ids: list[str] = field(default_factory=list)   # 연결 제도. 비면 공통 기준 문서
+    source_url: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass

@@ -9,6 +9,7 @@
 실행 (run_eval.py 주석: "답변 평가는 C가 eval/answer_eval.py와 연결한다"):
     python -m eval.answer_eval                       # eval/questions.jsonl 전체, 결과를 eval/results/에 저장
     python -m eval.answer_eval --limit 5 --no-save   # 앞 5문항만 빠르게
+    python -m eval.answer_eval --guides              # 판정 기준 문서 근거 평가 (eval/guide_questions.jsonl, LLM 없음)
 전제: 검색 색인이 있어야 한다 (python -m src.index.vector_store ...). 질문 하나에 LLM을 최대 4번 부른다
 (조건 추출·생성·Faithfulness·Correctness). 답변 평가는 정답 서비스(relevant_service_ids)가 없어도 expected_answer로 채점한다.
 정답 서비스가 있으면 '정답 제도를 안내했는가'(service_hit·service_recall)도 코드로 잰다 (색인 밖 정답은 분모에서 뺌).
@@ -240,15 +241,140 @@ def format_report(result: dict) -> str:
     return "\n".join(lines)
 
 
+# --- 판정 기준 문서 근거 평가 (eval/guide_questions.jsonl, README 1.2) ---------------------------
+# LLM 없이 코드로 센다. 질문 형식: {id, mode("card"|"followup"), question, service_ids, item(card), region,
+# expected:[{file, page, phrases, doc_id?}], expect_no_guide}. 정답 쪽은 사람이 PDF를 읽고 정한다 (reviewed).
+GUIDE_QUESTIONS_PATH = Path(__file__).with_name("guide_questions.jsonl")
+# 답 문장에서 자격을 단정하는 표현 (판정 문서 규칙: 근거가 있어도 단정하지 않는다)
+_ASSERTIVE_RE = re.compile(r"해당됩니다|해당합니다|해당돼요|받을 수 있습니다|받을 수 있어요|대상입니다|자격이 있습니다")
+
+
+def guide_score(q: dict, cits: list, hits: list, text: str = "", region: str | None = None) -> dict:
+    """판정 근거 1문항 채점. cits: 화면에 보인 Citation(kind="guide"), hits: 검색이 돌려준 GuideChunk 전체.
+
+    - 정답 일치: 정답(쪽, 정답 문구)과 같은 쪽이고 그 근거가 나온 조각 원문에 정답 문구가 모두 있다
+      (doc_id가 정답에 있으면 문서도 같아야 한다. 문서 목록 guide_sources.json이 생기기 전에는 쪽·문구로만 본다)
+    - quote_accuracy: 보인 문구가 검색된 조각 원문의 일부인 비율 (요약·바꿔 쓰기 없음)
+    - phrase_in_quote: 정답 근거에서 보인 문구 자체에 정답 문구가 들어 있는가 (잘라 낸 위치 점검)
+    - 정답에 "alt": true인 쪽은 같은 내용이 적힌 다른 쪽(추가 정답): guide_hit에는 맞은 것으로 세고,
+      guide_recall은 원래 정답 수만 분모로 해서 추가 정답은 분자에만 더한다 (1을 넘지 않음)"""
+    from src.generate import guide_evidence
+
+    def source(c):                          # 근거 문구가 나온 검색 조각
+        return next((h for h in hits if h.page == c.page and _squash(c.quote) in _squash(h.text)), None)
+
+    matched, in_quote = 0, 0
+    expected = q.get("expected") or []
+    for e in expected:
+        phrases = [_squash(p) for p in e.get("phrases") or []]
+        for c in cits:
+            h = source(c)
+            if (h and c.page == e.get("page") and (not e.get("doc_id") or h.doc_id == e["doc_id"])
+                    and all(p in _squash(h.text) for p in phrases)):
+                matched += 1
+                in_quote += all(p in _squash(c.quote) for p in phrases)
+                break
+    n_exp = sum(1 for e in expected if not e.get("alt"))
+    row = {"shown": len(cits), "pages": [c.page for c in cits],
+           "quote_accuracy": (sum(1 for c in cits if source(c)) / len(cits)) if cits else 1.0,
+           "assertive": bool(_ASSERTIVE_RE.search(text or "")),
+           "region_leak": sum(1 for c in cits if (h := source(c)) and not guide_evidence._region_ok(h.scope, region))}
+    if q.get("expect_no_guide"):
+        row["no_guide_correct"] = 1.0 if not cits else 0.0
+    if n_exp:
+        row.update(guide_hit=1.0 if matched else 0.0, guide_recall=min(matched / n_exp, 1.0),
+                   phrase_in_quote=(in_quote / matched) if matched else 0.0)
+    return row
+
+
+def guide_evaluate(questions: list[dict]) -> dict:
+    """판정 근거 질문마다 카드 근거(find_guides) 또는 후속 질문 답(answer_guide_question)을 만들어 채점한다."""
+    from src.common.schema import Recommendation
+    from src.generate import guide_evidence
+
+    rows = []
+    for q in questions:
+        row = {"id": q.get("id"), "mode": q.get("mode"), "question": q["question"]}
+        hits: list = []
+        original = guide_evidence._search
+        def recording(*a, **k):                 # 검색 결과를 함께 받아 원문 일치를 채점한다
+            out = original(*a, **k)
+            hits.extend(out)
+            return out
+        guide_evidence._search = recording
+        try:
+            ids, region = q.get("service_ids") or [], q.get("region")
+            if q.get("mode") == "card":
+                cits = guide_evidence.find_guides(ids[0] if ids else "", "", [q.get("item") or q["question"]], region)
+                text = ""
+            else:
+                recs = [Recommendation("", "", "", "", "", service_id=sid) for sid in ids]
+                ans = guide_evidence.answer_guide_question(q["question"], recs, region)
+                cits, text = ans.citations, ans.text
+            row.update(guide_score(q, cits, hits, text, region))
+        except Exception as e:  # 한 문항이 실패해도 나머지는 계속
+            row["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            guide_evidence._search = original
+        rows.append(row)
+
+    ok = [r for r in rows if "error" not in r]
+    def mean(key):
+        vals = [r[key] for r in ok if key in r]
+        return round(sum(vals) / len(vals), 4) if vals else None
+    return {
+        "experiment": "guide_eval",
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "config": {"k": guide_evidence.GUIDE_K, "min_keyword_hits": guide_evidence.MIN_KEYWORD_HITS,
+                   "keywords": "kiwi" if guide_evidence._kiwi_nouns("가구") is not None else "regex"},
+        "counts": {"total": len(rows), "scored": len(ok), "errors": len(rows) - len(ok)},
+        "metrics": {"guide_hit": mean("guide_hit"), "guide_recall": mean("guide_recall"),
+                    "phrase_in_quote": mean("phrase_in_quote"), "quote_accuracy": mean("quote_accuracy"),
+                    "no_guide_correctness": mean("no_guide_correct"),
+                    "assertive": sum(r["assertive"] for r in ok), "region_leak": sum(r["region_leak"] for r in ok)},
+        "questions": rows,
+    }
+
+
+def format_guide_report(result: dict) -> str:
+    m, cnt = result["metrics"], result["counts"]
+    fmt = lambda v: "-" if v is None else f"{v:.2f}"  # noqa: E731
+    lines = [f"=== 판정 기준 문서 근거 평가 ({cnt['scored']}/{cnt['total']}문항, 오류 {cnt['errors']}, "
+             f"핵심 낱말 {result['config']['keywords']}) ===",
+             f"정답 근거 1개 이상 {fmt(m['guide_hit'])}  |  정답 근거 회수율 {fmt(m['guide_recall'])}"
+             f"  |  보인 문구에 정답 문구 {fmt(m['phrase_in_quote'])}  |  원문 일치 {fmt(m['quote_accuracy'])}",
+             f"근거 없음 질문 정확도 {fmt(m['no_guide_correctness'])}  |  단정 표현 {m['assertive']}건"
+             f"  |  다른 지역 문서 {m['region_leak']}건", "", "놓친 문항:"]
+    low = [r for r in result["questions"] if "error" in r or r.get("guide_hit", 1) < 1 or r.get("no_guide_correct", 1) < 1]
+    for r in low:
+        detail = r.get("error") or f"보인 쪽 {r['pages']}"
+        lines.append(f"  {r['id']}  {r['question'][:36]}  ->  {detail}")
+    if not low:
+        lines.append("  없음")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> None:
     from eval.run_eval import QUESTIONS_PATH, RESULTS_DIR, load_questions   # 질문 세트 형식·저장 위치는 B와 같게
 
     ap = argparse.ArgumentParser(description="답변 평가 (Answer Correctness / Faithfulness / Citation Accuracy)")
-    ap.add_argument("--questions", default=str(QUESTIONS_PATH), help="질문 세트(jsonl)")
+    ap.add_argument("--questions", default=None, help="질문 세트(jsonl). 기본: questions.jsonl (--guides면 guide_questions.jsonl)")
     ap.add_argument("--limit", type=int, help="앞에서부터 N문항만")
     ap.add_argument("--out-dir", default=str(RESULTS_DIR), help="결과 JSON 저장 폴더")
     ap.add_argument("--no-save", action="store_true", help="결과 파일을 저장하지 않는다")
+    ap.add_argument("--guides", action="store_true", help="판정 기준 문서 근거 평가 (LLM 없이, B의 guide_store 필요)")
     args = ap.parse_args(argv)
+
+    if args.guides:
+        from src.generate import guide_evidence
+        if not guide_evidence.available():
+            raise SystemExit("판정 기준 문서 검색(src.index.guide_store)이 없습니다. B의 색인이 준비된 뒤 실행하세요.")
+        path = Path(args.questions or GUIDE_QUESTIONS_PATH)
+        questions = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        result = guide_evaluate(questions[: args.limit])
+        print(format_guide_report(result))
+        _save(result, args, "guide_eval")
+        return
 
     if not config.OPENAI_API_KEY:
         raise SystemExit("OPENAI_API_KEY가 없습니다 (.env 확인).")
@@ -256,15 +382,20 @@ def main(argv: list[str] | None = None) -> None:
     if vector_store.count() == 0:
         raise SystemExit("색인이 비어 있습니다. 먼저: python -m src.index.vector_store --sample  (또는 A의 파이프라인 결과 색인)")
 
-    questions = load_questions(args.questions)[: args.limit]
+    questions = load_questions(args.questions or QUESTIONS_PATH)[: args.limit]
     result = evaluate(questions)
     print(format_report(result))
-    if not args.no_save:
-        out = Path(args.out_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        path = out / f"answer_eval_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
-        path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n  저장: {path}")
+    _save(result, args, "answer_eval")
+
+
+def _save(result: dict, args, prefix: str) -> None:
+    if args.no_save:
+        return
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{prefix}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n  저장: {path}")
 
 
 if __name__ == "__main__":

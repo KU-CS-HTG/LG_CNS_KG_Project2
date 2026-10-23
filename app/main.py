@@ -22,7 +22,7 @@ import streamlit as st  # noqa: E402
 from streamlit import runtime  # noqa: E402
 
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import generator  # noqa: E402
+from src.generate import generator, guide_evidence, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -110,6 +110,18 @@ header[data-testid="stHeader"] { background: transparent; }
 [class*="st-key-checklist_"] label[data-selected="true"] > div:first-of-type {
   background-color:var(--accent) !important; border-color:var(--accent) !important; }
 
+/* 판정 기준 문서 근거 (자격 해석용, 보조금24 근거와 구분되게 파란 상자) */
+.guide-box { border-radius:12px; padding:.65rem .9rem; background:var(--accent-soft); border:1px solid rgba(79,107,237,.25); }
+.guide-title { font-size:.84rem; font-weight:700; color:var(--accent); margin-bottom:.3rem; }
+.guide-doc { font-size:.8rem; font-weight:600; opacity:.85; margin-top:.35rem; }
+.guide-sub { font-size:.76rem; opacity:.7; line-height:1.45; margin-top:.4rem; }
+.calc-hint { font-size:.76rem; line-height:1.45; margin:-.5rem 0 .6rem 1.9rem; padding:.3rem .55rem; border-radius:8px; }
+.calc-hint.in { background:rgba(34,160,90,.10); }
+.calc-hint.over { background:rgba(230,140,30,.12); }
+.calc-big { font-size:1.35rem; font-weight:700; }
+.calc-table { font-size:.76rem; width:100%; border-collapse:collapse; margin:.3rem 0; }
+.calc-table td { padding:.12rem .2rem; border-bottom:1px solid rgba(128,128,128,.18); }
+.calc-table td:last-child { text-align:right; }
 details.src { border-top:1px dashed var(--line); padding-top:.55rem; }
 details.src summary { cursor:pointer; font-size:.85rem; font-weight:600; opacity:.75; list-style:none; }
 details.src summary::-webkit-details-marker { display:none; }
@@ -352,7 +364,77 @@ def _save_check(key: str) -> None:
     st.session_state.checks[key] = bool(st.session_state.get(key))
 
 
-def _card(i: int, r: Recommendation, key: str) -> None:
+def _guides_html(cits: list) -> str:
+    """판정 기준 문서 근거 상자: 문서명(연도)·발행 기관·쪽, 원문 일부, 원문 링크, API 우선 안내."""
+    head = '<div class="guide-title">📘 판정 기준 문서</div>'
+    if not cits:
+        return f'<div class="guide-box">{head}<div class="guide-sub">{_e(guide_evidence.NO_GUIDE_MESSAGE)}</div></div>'
+    items = []
+    for c in cits:
+        url = _safe_url(c.detail_url)
+        link = f' <a href="{_e(url)}" target="_blank" rel="noopener">원문 ↗</a>' if url else ""
+        page = f" · {c.page}쪽" if c.page else ""
+        items.append(f'<div class="guide-doc">{_e(c.service_name)} · {_e(c.agency)}{page}{link}</div>'
+                     f'<div class="quote">{_e(c.quote)}</div>')
+    return (f'<div class="guide-box">{head}{"".join(items)}'
+            f'<div class="guide-sub">{_e(guide_evidence.GUIDE_NOTICE)}</div></div>')
+
+
+def _card_guides(r: Recommendation, key: str, region: str | None) -> None:
+    """'확인 필요' 조건의 판정 기준 문서 근거 (README 1.2). 버튼을 누를 때만 카드당 1번 검색하고 결과를 저장한다
+    (답변 속도 유지, 다시 그려도 재검색하지 않음). B의 검색 모듈이 없으면 버튼을 보이지 않는다."""
+    if not (r.needs_check and r.service_id and guide_evidence.available()):
+        return
+    found = st.session_state.guides.get(key)
+    if found is None:
+        if not st.button("📘 판정 기준 문서에서 확인하기", key=f"guide_btn_{key}"):
+            return
+        with st.spinner("판정 기준 문서에서 관련 조항을 찾고 있어요…"):
+            found = guide_evidence.find_guides(r.service_id, r.service_name, r.needs_check, region)
+        st.session_state.guides[key] = found
+    st.markdown(_guides_html(found), unsafe_allow_html=True)
+
+
+def _income() -> tuple[int, int] | None:
+    """사이드바 계산기에 입력한 (가구원 수, 월 소득 원). 소득을 넣지 않았으면 None."""
+    household = st.session_state.get("calc_household")
+    man = st.session_state.get("calc_income_man")
+    if not household or not man:
+        return None
+    return int(household), int(man * 10_000)
+
+
+def _calc_hint(item: str) -> str:
+    """'중위소득 N% 이하' 항목 아래 계산기 비교 (참고용). 체크는 사용자가 한다: 제도마다 소득을 보는 방법이 달라서."""
+    entered = _income()
+    c = income_calc.check(item, *entered) if entered else None
+    if c is None:
+        return ""
+    word = "미만" if c.strict else "이하"
+    verdict = "기준 안쪽이에요" if c.within else "기준을 넘어요"
+    return (f'<div class="calc-hint {"in" if c.within else "over"}">🧮 입력하신 소득은 중위소득 약 <b>{c.mine:g}%</b> · '
+            f'이 기준({c.limit:g}% {word}, {entered[0]}인 가구 월 {_e(income_calc.won(c.limit_amount))})의 {verdict} '
+            f'<span style="opacity:.7">(참고용)</span></div>')
+
+
+def _income_calculator() -> None:
+    """사이드바 소득 기준 계산기: 가구원 수·월 소득 -> 기준 중위소득 대비 %와 자주 쓰는 기준 금액.
+    입력하면 카드의 '중위소득 N% 이하' 조건 아래에 비교가 함께 보인다 (_calc_hint)."""
+    with st.expander("🧮 소득 기준 계산기"):
+        st.caption(f"{income_calc.SOURCE}과 비교해요. 카드의 '중위소득 ○% 이하' 조건 옆에도 결과가 보여요.")
+        household = st.selectbox("가구원 수", list(range(1, income_calc.MAX_HOUSEHOLD + 1)), key="calc_household",
+                                 format_func=lambda n: f"{n}인 가구")
+        man = st.number_input("가구 월 소득 (만원, 세전)", min_value=0, max_value=100_000, step=10, key="calc_income_man")
+        if man:
+            pct = income_calc.percent(household, int(man * 10_000))
+            st.markdown(f'기준 중위소득의 약 <span class="calc-big">{pct:g}%</span>', unsafe_allow_html=True)
+        rows = "".join(f"<tr><td>중위소득 {p}%</td><td>월 {_e(income_calc.won(income_calc.amount(household, p)))}</td></tr>"
+                       for p in income_calc.COMMON_PERCENTS)
+        st.markdown(f'<table class="calc-table">{rows}</table>', unsafe_allow_html=True)
+        st.caption(income_calc.NOTICE)
+
+
+def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> None:
     """제도 카드 1장. 확인이 필요한 조건은 자격 체크리스트로 보여 준다 (사용자가 스스로 해당 여부를 체크).
 
     체크는 화면 안에서만 쓰고 답변·검색을 바꾸지 않는다. Streamlit은 화면에 그려지지 않은 위젯의 상태를 지우므로
@@ -370,11 +452,16 @@ def _card(i: int, r: Recommendation, key: str) -> None:
                             unsafe_allow_html=True)
                 for k, item in zip(keys, r.needs_check):
                     st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
+                    hint = _calc_hint(item)
+                    if hint:
+                        st.markdown(hint, unsafe_allow_html=True)
+        _card_guides(r, key, region)
         st.markdown(_card_sources(r), unsafe_allow_html=True)
 
 
-def _render_answer(answer: Answer, show_follow: bool = True, key: str = "") -> None:
-    """key: 이 답변을 구분하는 값 (주제 번호_메시지 번호). 카드 체크리스트 위젯의 key에 쓴다."""
+def _render_answer(answer: Answer, show_follow: bool = True, key: str = "", region: str | None = None) -> None:
+    """key: 이 답변을 구분하는 값 (주제 번호_메시지 번호). 카드 체크리스트 위젯의 key에 쓴다.
+    region: 사용자가 말한 시·도 (판정 기준 문서의 지역 비교용)."""
     if answer.no_evidence:
         links = "".join(f'<a class="btn" href="{u}" target="_blank" rel="noopener">{_e(n)} ↗</a>' for n, u in OFFICIAL_SITES)
         body = "<br>".join(_e(line) for line in answer.text.splitlines())
@@ -389,7 +476,7 @@ def _render_answer(answer: Answer, show_follow: bool = True, key: str = "") -> N
     st.markdown(f'<div class="summary">{chips}<span>상황에 맞는 지원제도 <b>{len(answer.recommendations)}개</b>를 찾았어요.</span></div>',
                 unsafe_allow_html=True)
     for i, r in enumerate(answer.recommendations, 1):
-        _card(i, r, f"{key}_{i}")
+        _card(i, r, f"{key}_{i}", region)
     if follow and show_follow:
         st.markdown(f'<div class="callout"><b>💬 더 정확히 안내해 드릴게요</b><br>{_e(follow)}</div>', unsafe_allow_html=True)
     st.markdown('<div class="disclaimer">※ 최종 신청 자격은 담당 기관에서 확인하세요. 답변은 수집된 공공데이터에 근거하며 '
@@ -432,6 +519,7 @@ def _sidebar() -> None:
                     '<div class="legend"><span class="badge ok">✓ 체크한 조건 모두 충족</span>'
                     '<div>체크리스트를 모두 체크했어요 (스스로 확인한 결과예요)</div></div>',
                     unsafe_allow_html=True)
+        _income_calculator()
         st.markdown("**잘 물어보는 팁**")
         st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요. "
                    "답변 아래 '이어서 질문하기'로 소득 같은 정보를 덧붙일 수 있어요.")
@@ -442,12 +530,14 @@ def _sidebar() -> None:
         if st.button("🗑 대화 모두 지우기", use_container_width=True):
             st.session_state.threads, st.session_state.current, st.session_state.follow = [], None, False
             st.session_state.checks = {}            # 주제 번호를 다시 쓰므로 체크 상태도 지운다
+            st.session_state.guides = {}            # 판정 기준 문서 결과도 같은 key를 쓴다
             st.rerun()
 
 
 def _render_thread(thread: list[dict]) -> None:
     """첫 질문·답변은 그대로, 이어서 한 질문·답변은 왼쪽 세로줄로 묶어 들여 쓴다 (위 질문과 이어진 대화임을 보이게)."""
     last_answer = max((i for i, m in enumerate(thread) if m["role"] == "assistant"), default=-1)
+    region = guide_evidence.question_region(" ".join(m["content"] for m in thread if m["role"] == "user"))
     group = None
     for i, msg in enumerate(thread):
         if msg["role"] == "user":
@@ -457,14 +547,32 @@ def _render_thread(thread: list[dict]) -> None:
                 if msg["role"] == "user":
                     tag = '<div class="fu-tag">↳ 위 질문에 이어서</div>' if msg.get("follow") else ""
                     st.markdown(f"{tag}<div>{_e(msg['content'])}</div>", unsafe_allow_html=True)
+                elif msg.get("guide"):
+                    _render_guide_answer(msg["content"])
                 else:
-                    _render_answer(msg["content"], show_follow=i != last_answer, key=f"{st.session_state.current}_{i}")
+                    _render_answer(msg["content"], show_follow=i != last_answer, key=f"{st.session_state.current}_{i}",
+                                   region=region)
+
+
+def _render_guide_answer(answer) -> None:
+    """판정 기준 문서로 답한 후속 질문 (guide_evidence.GuideAnswer): 고정 안내 문장 + 조항 원문."""
+    st.markdown(f'<div class="reason">{_e(answer.text)}</div>', unsafe_allow_html=True)
+    if answer.citations:
+        st.markdown(_guides_html(answer.citations), unsafe_allow_html=True)
+
+
+def _guide_targets(thread: list[dict]) -> list[Recommendation]:
+    """판정 기준으로 물어볼 대상 = 이 주제의 마지막 보통 답변에 나온 제도들 (판정 문서 답변은 건너뜀)."""
+    for m in reversed(thread):
+        if m["role"] == "assistant" and not m.get("guide"):
+            return [r for r in m["content"].recommendations if r.service_id]
+    return []
 
 
 def _merged_question(thread: list[dict], new: str) -> str:
     """이어서 질문: 같은 주제의 이전 질문들과 합쳐 하나의 질문으로 보낸다 (나이·지역 등 앞서 밝힌 정보 유지).
-    app은 여전히 answer_question 하나만 호출한다 (README 6장)."""
-    asked = [m["content"] for m in thread if m["role"] == "user"]
+    app은 여전히 answer_question 하나만 호출한다 (README 6장). 판정 기준 문서 질문은 제도 검색과 상관없어 합치지 않는다."""
+    asked = [m["content"] for m in thread if m["role"] == "user" and not m.get("guide")]
     return " ".join(asked + [new])
 
 
@@ -473,8 +581,9 @@ def main() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     st.session_state.setdefault("threads", [])     # 주제별 대화 [[{role, content}, ...], ...]
     st.session_state.setdefault("current", None)   # 화면에 보이는 주제 번호 (None = 첫 화면)
-    st.session_state.setdefault("follow", False)   # True면 다음 입력을 지금 주제에 이어서 묻는다
+    st.session_state.setdefault("follow", False)   # True면 다음 입력을 지금 주제에 이어서, "guide"면 판정 기준 문서로 묻는다
     st.session_state.setdefault("checks", {})      # 자격 체크리스트 체크 상태 {위젯 key: bool}
+    st.session_state.setdefault("guides", {})      # 판정 기준 문서 근거 {카드 key: list[Citation]} (카드당 1번 검색)
     if _search_ready():
         _warm_up()                                  # 첫 화면을 보는 동안 검색 준비
     _sidebar()
@@ -503,13 +612,19 @@ def main() -> None:
     _render_thread(thread)
     _answer_pending()
     following = st.session_state.follow and bool(thread)
+    guide_mode = bool(thread) and st.session_state.follow == "guide"
     if thread and not pending and thread[-1]["role"] == "assistant":
         if following:
+            title, sub = (("📘 판정 기준 문서로 묻는 중",
+                           "위 제도들의 판정 기준 문서(고시·사업안내)에서 관련 조항을 찾아 원문으로 보여 드려요.")
+                          if guide_mode else
+                          ("↳ 위 질문에 이어서 묻는 중",
+                           "아래 입력창에 추가 정보나 궁금한 점을 적어 주세요. 앞의 내용과 합쳐서 다시 찾아드려요."))
             with st.container(key="replybox"):
                 c1, c2 = st.columns([5, 1], vertical_alignment="center")
-                c1.markdown(f'<div class="fb-title">↳ 위 질문에 이어서 묻는 중</div>'
+                c1.markdown(f'<div class="fb-title">{title}</div>'
                             f'<div class="fb-q">“{_e(thread[0]["content"])}”</div>'
-                            f'<div class="fb-sub">아래 입력창에 추가 정보나 궁금한 점을 적어 주세요. 앞의 내용과 합쳐서 다시 찾아드려요.</div>',
+                            f'<div class="fb-sub">{sub}</div>',
                             unsafe_allow_html=True)
                 if c2.button("✕ 취소", use_container_width=True):
                     st.session_state.follow = False
@@ -525,30 +640,46 @@ def main() -> None:
                             + (f'<div class="fb-q">{_e(follow_q)}</div>' if follow_q else "")
                             + f'<div class="fb-sub">{sub}</div>',
                             unsafe_allow_html=True)
-                if st.button("↳ 이어서 질문하기"):
+                b1, b2 = st.columns(2)
+                if b1.button("↳ 이어서 질문하기", use_container_width=True):
                     st.session_state.follow = True
                     st.rerun()
+                # 판정 기준 문서 (README 1.2): 화면의 제도에 판정 문서를 찾을 수 있을 때만
+                if guide_evidence.available() and _guide_targets(thread) and \
+                        b2.button("📘 판정 기준으로 물어보기", use_container_width=True):
+                    st.session_state.follow = "guide"
+                    st.rerun()
 
-    placeholder = "이어서 입력하세요 (예: 소득은 월 150만 원이에요)" if following \
-        else "새 질문을 입력하세요 (예: 경기도 사는 25살 직장인인데 전세 대출 지원이 있나요?)"
+    if guide_mode:
+        placeholder = "판정 기준을 물어보세요 (예: 부모님과 따로 살면 같은 가구인가요?)"
+    elif following:
+        placeholder = "이어서 입력하세요 (예: 소득은 월 150만 원이에요)"
+    else:
+        placeholder = "새 질문을 입력하세요 (예: 경기도 사는 25살 직장인인데 전세 대출 지원이 있나요?)"
     question = st.chat_input(placeholder) or pending
     if not question:
         return
 
-    if following:
+    if guide_mode:                                  # 판정 문서 질문은 합치지 않고 그 문장 그대로 찾는다
+        asked = question
+    elif following:
         asked = _merged_question(thread, question)
     else:                                           # 새 주제: 화면을 새로 시작 (이전 주제는 사이드바 '최근 질문')
         st.session_state.threads.append([])
         st.session_state.current = len(st.session_state.threads) - 1
         asked = question
-    _thread().append({"role": "user", "content": question, "follow": following})
+    _thread().append({"role": "user", "content": question, "follow": bool(following), "guide": guide_mode})
     st.session_state.follow = False                 # 기본은 다시 '새 질문'
-    st.session_state.asking = asked
+    st.session_state["asking_guide" if guide_mode else "asking"] = asked
     st.rerun()                                      # 질문 말풍선이 있는 새 화면을 먼저 그린 뒤 답변을 만든다
 
 
 def _answer_pending() -> None:
     """직전 실행에서 받은 질문에 답한다. 화면에는 이미 지금 주제의 대화와 새 질문이 그려져 있다."""
+    guide_q = st.session_state.pop("asking_guide", None)
+    if guide_q:
+        _answer_guide(guide_q)
+        return
     asked = st.session_state.pop("asking", None)
     if not asked:
         return
@@ -570,6 +701,17 @@ def _answer_pending() -> None:
                 st.session_state.current = None
             return
     thread.append({"role": "assistant", "content": answer})
+    st.rerun()
+
+
+def _answer_guide(question: str) -> None:
+    """판정 기준 문서 후속 질문에 답한다: 이 주제에 나온 제도들의 판정 문서에서 검색 1번 (LLM 호출 없음)."""
+    thread = _thread()
+    region = guide_evidence.question_region(" ".join(m["content"] for m in thread if m["role"] == "user"))
+    with st.container(key="fu_pending"), st.chat_message("assistant", avatar="🧭"):
+        with st.spinner("판정 기준 문서에서 관련 조항을 찾고 있어요…"):
+            answer = guide_evidence.answer_guide_question(question, _guide_targets(thread), region)
+    thread.append({"role": "assistant", "content": answer, "guide": True})
     st.rerun()
 
 
