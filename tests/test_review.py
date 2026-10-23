@@ -356,3 +356,36 @@ def test_same_instant_edits_keep_write_order(store, q):
         store.append(second)
         assert consensus(store, qid)["label"] == "good"                                   # 나중에 쓴 판정이 이긴다
     assert schema.now_iso().endswith("Z") and "." in schema.now_iso()                    # 마이크로초까지
+
+
+# --- import-questions --------------------------------------------------------------------------------------------
+def test_import_questions_csv_with_korean_headers_and_bom(store, tmp_path):
+    f = tmp_path / "q.csv"
+    f.write_text("﻿질문,범주,나이,지역,태그\n월세 지원 알려줘,상황형,27,서울,주거;청년\n취업 준비 중이에요,상황형,,,\n", encoding="utf-8")
+    report = cli_import(store, f)
+    assert report["added"] == 2 and not report["invalid"] and sum(report["by_split"].values()) == 2
+    q = store.state().questions[schema.question_id("월세 지원 알려줘")]
+    assert q["gold_filters"] == {"region": "서울", "age": 27} and q["tags"] == ["주거", "청년"] and q["source"] == "team"
+
+
+def test_import_questions_is_idempotent_and_skips_duplicates(store, tmp_path):
+    store.add_question("taegyu", "이미 있는 질문")
+    f = tmp_path / "q.jsonl"
+    f.write_text("\n".join(json.dumps({"question": t}, ensure_ascii=False) for t in ("이미  있는 질문", "새 질문", "새 질문")), encoding="utf-8")
+    first = cli_import(store, f)
+    assert (first["added"], first["existing"], first["duplicate_in_file"]) == (1, 1, 1)
+    assert cli_import(store, f)["added"] == 0
+
+
+def test_import_questions_reports_bad_rows_and_dry_run_writes_nothing(store, tmp_path):
+    f = tmp_path / "q.jsonl"
+    f.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in (
+        {"question": "정상 질문"}, {"question": ""}, {"question": "나이 이상", "age": "abc"},
+        {"question": "출처 이상", "source": "real_user"}, {"question": "패러프레이즈", "source": "paraphrase"})), encoding="utf-8")
+    report = cli_import(store, f, dry_run=True)
+    assert report["added"] == 1 and len(report["invalid"]) == 4 and not store.state().questions
+
+
+def cli_import(store, path, dry_run=False):
+    from src.review import intake
+    return intake.import_questions(store, path, "taegyu", dry_run=dry_run)

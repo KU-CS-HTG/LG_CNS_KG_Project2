@@ -115,9 +115,14 @@ def run_experiment(experiment: str, questions: Sequence[dict], search_fn: Search
         ids, used, relaxed = search_fn(q["question"], q.get("filters", {}), depth)
         relevant = set(q.get("relevant_service_ids", []))
         hit_rank = next((i for i, sid in enumerate(ids, start=1) if sid in relevant), None)
-        return {"id": q["id"], "category": q.get("category", ""), "question": q["question"],
+        row = {"id": q["id"], "category": q.get("category", ""), "question": q["question"],
                 "relevant": sorted(relevant), "retrieved": ids, "first_hit_rank": hit_rank,
                 "filters": q.get("filters", {}), "filters_used": used, "relaxed": relaxed}
+        if "relevance" in q:                       # 검수 저장소 시험지: 등급과 판정 정보 (docs/REVIEW_STORE.md)
+            row["relevance"] = q["relevance"]
+            row["judged"] = sorted(set(q["relevance"]) | set(q.get("hard_negatives", [])) | set(q.get("unsure", [])))
+            row["hard_negatives"] = list(q.get("hard_negatives", []))
+        return row
 
     rows = [ask(q) for q in scored]
     na_rows = [ask(q) for q in no_answer]
@@ -125,6 +130,10 @@ def run_experiment(experiment: str, questions: Sequence[dict], search_fn: Search
     retrieved = [r["retrieved"] for r in rows]
     relevant = [set(r["relevant"]) for r in rows]
     summary = metrics.evaluate(retrieved, relevant, ks)
+
+    graded = metrics.evaluate_graded(
+        retrieved, [r.get("relevance") or {sid: 2 for sid in r["relevant"]} for r in rows],
+        [set(r.get("hard_negatives", [])) for r in rows], [set(r.get("judged", [])) for r in rows], ks)
 
     by_category: dict[str, dict[str, float]] = {}
     for cat in sorted({r["category"] for r in rows}):
@@ -143,6 +152,7 @@ def run_experiment(experiment: str, questions: Sequence[dict], search_fn: Search
                    "rrf_k": config.RRF_K, "hybrid_candidates": config.HYBRID_CANDIDATES, "hybrid_weights": list(config.HYBRID_WEIGHTS)},
         "counts": {"scored": len(rows), "no_answer": len(na_rows), "unlabeled": len(unlabeled)},
         "metrics": summary,
+        "graded": graded,
         "targets": metrics.check_targets(summary),
         "no_evidence_rate": metrics.no_evidence_rate([r["retrieved"] for r in na_rows]) if na_rows else None,
         "by_category": by_category,
@@ -162,6 +172,12 @@ def format_report(result: dict) -> str:
     for kk in cfg["ks"]:
         lines.append(f"  K={kk:<2d}  Hit Rate {m[f'hit_rate@{kk}']:.3f}   Recall {m[f'recall@{kk}']:.3f}")
     lines.append(f"  MRR   {m['mrr']:.3f}")
+    g = result.get("graded") or {}
+    if g:
+        lines.append("  정답이 K개보다 많아도 공정한 지표 (정답 목록이 불완전하면 unjudged가 높다):")
+        for kk in cfg["ks"]:
+            extra = f"   bad {g[f'bad_rate@{kk}']:.3f}  unjudged {g[f'unjudged_rate@{kk}']:.3f}" if f"bad_rate@{kk}" in g else ""
+            lines.append(f"  K={kk:<2d}  Precision {g[f'precision@{kk}']:.3f}   nDCG {g[f'ndcg@{kk}']:.3f}{extra}")
     if result["targets"]:
         goals = ", ".join(f"{name} {'달성' if ok else '미달'}(목표 {metrics.TARGETS[name]:.2f})" for name, ok in result["targets"].items())
         lines.append(f"  잠정 목표(Top-5): {goals}")

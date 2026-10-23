@@ -1,5 +1,9 @@
 """B: eval/metrics.py. 손으로 계산한 값과 비교."""
+import math
+
 import pytest
+
+from eval import metrics
 
 from eval.metrics import TARGETS, check_targets, evaluate, hit_rate_at_k, mrr, no_evidence_rate, recall_at_k
 
@@ -73,3 +77,38 @@ def test_evaluate_and_targets():
     assert r["mrr"] == pytest.approx((1 + 1 / 2) / 2)
     assert check_targets(r) == {"hit_rate@5": True, "recall@5": TARGETS["recall@5"] <= 0.75, "mrr": True}
     assert check_targets({"mrr": 0.5}) == {"mrr": False}          # 계산하지 않은 지표는 빠진다
+
+
+# --- Precision / nDCG / 판정 커버리지 ---------------------------------------------------------------------------
+def test_precision_at_k_hand_computed():
+    retrieved = [["a", "b", "c", "d"], ["x", "y", "z", "w"]]
+    relevant = [{"a", "c", "q"}, {"w"}]
+    assert metrics.precision_at_k(retrieved, relevant, 2) == pytest.approx((1 / 2 + 0) / 2)
+    assert metrics.precision_at_k(retrieved, relevant, 4) == pytest.approx((2 / 4 + 1 / 4) / 2)
+
+
+def test_ndcg_perfect_and_graded_order():
+    grades = [{"a": 2, "b": 1}]
+    assert metrics.ndcg_at_k([["a", "b", "x"]], grades, 3) == pytest.approx(1.0)
+    worse = metrics.ndcg_at_k([["b", "a", "x"]], grades, 3)
+    expected = (1 / 1 + 2 / math.log2(3)) / (2 / 1 + 1 / math.log2(3))
+    assert worse == pytest.approx(expected) and worse < 1.0
+    assert metrics.ndcg_at_k([["x", "y"]], grades, 3) == 0.0
+
+
+def test_ndcg_ignores_repeated_ids_and_questions_without_gold():
+    assert metrics.ndcg_at_k([["a", "a", "b"], ["z"]], [{"a": 2}, {}], 3) == pytest.approx(1.0)
+
+
+def test_judged_rates_skip_empty_results():
+    out = metrics.judged_rates([["a", "b", "c", "d"], []], [{"b"}, set()], [{"a", "b"}, set()], 4)
+    assert out == {"bad_rate@4": 0.25, "unjudged_rate@4": 0.5}
+    with pytest.raises(ValueError):
+        metrics.judged_rates([[]], [set()], [set()], 3)
+
+
+def test_evaluate_graded_adds_judged_keys_only_when_judgments_exist():
+    plain = metrics.evaluate_graded([["a", "b"]], [{"a": 2}], [set()], [set()], (2,))
+    assert set(plain) == {"precision@2", "ndcg@2"}
+    full = metrics.evaluate_graded([["a", "b"]], [{"a": 2}], [{"b"}], [{"a", "b"}], (2,))
+    assert full["bad_rate@2"] == 0.5 and full["unjudged_rate@2"] == 0.0
