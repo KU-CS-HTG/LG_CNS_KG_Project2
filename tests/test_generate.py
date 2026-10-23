@@ -284,6 +284,20 @@ def test_not_eligible_without_question_evidence_is_kept_as_needs_check(monkeypat
     assert len(answer.recommendations) == 1 and answer.recommendations[0].needs_check   # 빼지 않고 확인 필요
 
 
+def test_only_rescued_not_eligible_left_is_no_evidence(monkeypatch):
+    # 질문 구절을 근거로 '해당 없음'이라 본 제도만 남으면 안내하지 않는다 (q33 '기초연금 신청'에 노인일자리 단독 카드)
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    first, second = list(ev)[:2]
+    said = QUESTION_WITH_RESULTS[:8]
+    alone = {"service_id": first, "applicable": "해당 없음", "mismatch": {"said": said, "condition": "기초연금수급자"}}
+    _fake_llm(monkeypatch, {"services": [alone]})
+    assert generator.generate_answer(QUESTION_WITH_RESULTS, {first: ev[first]}).no_evidence
+    # 다른 제도와 함께면 뒤로 보내 남긴다
+    _fake_llm(monkeypatch, {"services": [alone, {"service_id": second, "applicable": "확인 필요"}]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, {s: ev[s] for s in (first, second)})
+    assert [r.service_name for r in answer.recommendations] == [ev[second][0].service_name, ev[first][0].service_name]
+
+
 def test_unverified_not_eligible_goes_after_other_cards(monkeypatch):
     # 신분이 맞지 않는다는 판정('구직 등록한 장애인')은 코드로 확인할 수 없어 빼지 않지만 1번 카드가 되지 않게 뒤로 보낸다 (평가 q02)
     ev = evidence.select_evidence(CASES["sr1"]["results"])

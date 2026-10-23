@@ -255,6 +255,7 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         if isinstance(s, dict):
             by_id.setdefault(str(s.get("service_id")).strip(), s)
     ranked: list[tuple[tuple, Recommendation]] = []
+    rescued_only = True                   # 통과한 제도가 모두 확인 안 된 '해당 없음'에서 살린 것뿐인가
     no_region = condition_extractor._find_region(question) is None
     for rank, (sid, chunks) in enumerate(_named_candidates(evidence, asked).items()):
         gen = by_id.get(sid)
@@ -288,6 +289,13 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         if closed:
             rec.needs_check.insert(0, f"{NEW_CLOSED_ITEM} — {closed} (원문 확인)")
         ranked.append((key, rec))
+        rescued_only = rescued_only and unverified and _said_in_question(question, gen.get("mismatch"))
+    # 확인 안 된 '해당 없음'을 살리는 것은 다른 제도와 함께 안내할 때만: 질문 구절을 근거로 해당 없다고 본 제도만
+    # 남으면 판정이 해당 없다고 본 제도로만 답하게 된다. '기초연금 신청'(범위 밖, q33)에 '65세이상 기초연금수급자'
+    # 대상인 노인일자리가 '해당 없음'+meets_need true로 남아 단독 카드가 됐다 (8번 중 4번, 판정 재시도로 기회가 두 번).
+    # 질문에 없는 구절을 근거로 댄 '해당 없음'은 판정 자체를 믿을 수 없어 혼자여도 확인 필요로 남긴다.
+    if ranked and rescued_only:
+        return []
     return [r for _, r in sorted(ranked, key=lambda kr: kr[0])]
 
 
@@ -786,6 +794,12 @@ _AGE_MAX_RE = re.compile(r"(\d+)\s*세\s*(이하|미만)")
 _AGE_MIN_RE = re.compile(r"(\d+)\s*세\s*(이상|초과)")
 
 
+def _said_in_question(question: str, mismatch) -> bool:
+    """'해당 없음' 판정이 댄 사용자 구절(said)이 질문 원문에 있는가."""
+    said = _str(mismatch.get("said")).strip("‘’'\"") if isinstance(mismatch, dict) else ""
+    return bool(said) and "".join(said.split()) in "".join(question.split())
+
+
 def _verified_mismatch(question: str, mismatch) -> bool:
     """'해당 없음' 판정을 코드로 확인한다. 확인되지 않으면 빼지 않고 '확인 필요'로 남긴다.
 
@@ -793,12 +807,10 @@ def _verified_mismatch(question: str, mismatch) -> bool:
       (실제 데이터: 질문 문장 전체를 said로 써서 청년도약계좌 질문의 제도가 모두 빠짐).
     - 나이면 근거의 연령 범위를 코드가 읽어 실제로 벗어나는지 본다 ('27살' vs '18세~45세'를 해당 없음으로 판정한 적 있음).
     - 거주지면 근거 구절이 다른 시·도를 말하고 사용자의 시·도는 말하지 않아야 한다."""
-    if not isinstance(mismatch, dict):
+    if not _said_in_question(question, mismatch):
         return False
     said = _str(mismatch.get("said")).strip("‘’'\"")
     cond = _str(mismatch.get("condition"))
-    if not said or "".join(said.split()) not in "".join(question.split()):
-        return False
 
     age = _AGE_RE.search(said)
     if age:
