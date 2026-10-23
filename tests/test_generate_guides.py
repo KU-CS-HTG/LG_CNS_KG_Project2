@@ -169,6 +169,9 @@ def test_kiwi_keywords_keep_nouns_only():
     pytest.importorskip("kiwipiepy")                                        # requirements.txt 밖 (설치된 PC에서만)
     assert guide_evidence._keywords("부모님과 따로 사는 25살인데 주거급여를 따로 받을 수 있나요?") == ["부모", "주거급여"]
     assert guide_evidence._keywords("자동차가 있으면 재산으로 계산되나요?") == ["자동차", "재산", "계산"]
+    # 제도 이름은 쪼개지 않는다 ('청년도약계좌' -> '청년 + 도 + 약계좌'였다), 어디에나 나오는 '동안'은 뺀다
+    assert guide_evidence._keywords("청년도약계좌는 몇 년 동안 넣어야 하나요?") == ["청년도약계좌"]
+    assert "청년" in guide_evidence._keywords("청년은 소득이 조금 높아도 참여할 수 있나요?")   # 청년 특례에선 핵심 낱말
 
 
 def test_guide_question_answers_with_original_clauses_only(fake_guides):
