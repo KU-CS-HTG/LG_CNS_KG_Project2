@@ -88,3 +88,17 @@ def save_answer_review(store: ReviewStore, reviewer: str, qid: str, answer_text:
     for m in memos:
         store.add_memo(reviewer, run_id, m["kind"], m["text"].strip(), severity=m.get("severity", "minor"))
     return run_id
+
+
+def set_no_answer(store: ReviewStore, reviewer: str, qid: str, checks: list[str], note: str = "") -> dict:
+    """질문을 '근거 없음'으로 확정한다. checks는 서로 다른 검색어 3개 이상 (스키마가 검증, 어기면 ValidationError)."""
+    checks = [c.strip() for c in checks if c.strip()]
+    fields = {"checks": checks}
+    if note.strip():
+        fields["note"] = note.strip()
+    return store.set_status(reviewer, qid, "no_answer", **fields)
+
+
+def clear_no_answer(store: ReviewStore, reviewer: str, qid: str) -> dict:
+    """근거 없음 지정을 되돌린다 (다시 일반 질문)."""
+    return store.set_status(reviewer, qid, "active")

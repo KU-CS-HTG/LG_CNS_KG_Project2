@@ -102,6 +102,31 @@ def _answer_review(store: ReviewStore, reviewer: str, qid: str, text: str) -> No
                 st.success("저장했어요.")
 
 
+def _no_answer_section(store: ReviewStore, reviewer: str, qid: str, q: dict, has_good: bool) -> None:
+    st.subheader("근거 없음 지정")
+    if q["status"] == "no_answer":
+        st.success("이 질문은 '근거 없음'(정답이 없는 질문)으로 지정되어 있어요. 시험지에서 빈 결과를 내야 맞는 질문으로 채점됩니다.")
+        if st.button("근거 없음 해제", key=f"clr:{qid}"):
+            session.clear_no_answer(store, reviewer, qid)
+            st.rerun()
+        return
+    st.caption("후보를 다 보고도 맞는 제도가 없을 때만 지정하세요. 검색어를 바꿔 직접 확인한 기록이 3개 이상 필요해요. "
+               "'좋음'으로 판정한 제도가 있으면 지정할 수 없습니다.")
+    if has_good:
+        st.warning("이 질문에는 '좋음' 판정이 있어서 근거 없음으로 지정할 수 없어요.")
+        return
+    with st.form(f"noans:{qid}", clear_on_submit=True):
+        checks = st.text_area("확인한 검색어 (한 줄에 하나, 3줄 이상)", placeholder="예)\n청년 해외주식 손실 보전\n해외 투자 손실 지원금\n투자 손실 정부 보전 제도")
+        note = st.text_input("메모 (선택)", max_chars=schema.MAX_NOTE)
+        if st.form_submit_button("근거 없음으로 지정"):
+            try:
+                session.set_no_answer(store, reviewer, qid, checks.splitlines(), note)
+            except schema.ValidationError:
+                st.error("서로 다른 검색어를 3개 이상, 한 줄에 하나씩 적어 주세요.")
+            else:
+                st.rerun()
+
+
 def render() -> None:
     st.title("검수 모드")
     store = ReviewStore()
@@ -140,7 +165,7 @@ def render() -> None:
         st.error(f"후보를 가져오지 못했어요: {exc}")
         return
     cands = session.candidates_for(state, qid, lambda *_: hits, services, today=today, reviewer=reviewer, n=limit, limit=limit)
-    st.caption(f"후보 {len(cands)}개 (순서는 섞여 있고, 어떤 검색이 찾았는지는 가려져 있어요). 이 질문에 맞는 제도가 없다면 모두 '나쁨'으로 판정하세요.")
+    st.caption(f"후보 {len(cands)}개 (순서는 섞여 있고, 어떤 검색이 찾았는지는 가려져 있어요). 맞지 않는 제도는 '나쁨'으로 판정하세요. 정말 답이 없는 질문이면 아래에서 '근거 없음'으로 지정하세요.")
 
     def run_id_for() -> str:                          # 첫 저장 때 한 번만 run을 남긴다
         key = f"run:{qid}"
@@ -151,6 +176,7 @@ def render() -> None:
     for cand in cands:
         _card(store, reviewer, qid, cand, run_id_for)
     st.divider()
+    _no_answer_section(store, reviewer, qid, q, any(c["consensus"].get("label") == "good" or (c["mine"] and c["mine"]["data"]["label"] == "good") for c in cands))
     _answer_review(store, reviewer, qid, q["text"])
 
 
