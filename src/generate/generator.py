@@ -396,6 +396,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
         how_to_apply=how,
         needs_check=needs,
         citations=citation.build_citations(chunks),
+        service_id=chunks[0].service_id,     # 카드에서 판정 기준 문서를 찾을 때 쓴다 (guide_evidence.find_guides)
     )
 
 
