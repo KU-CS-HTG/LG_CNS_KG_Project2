@@ -11,6 +11,7 @@ data/*.db.handoff.json*
 data/vectorstore.handoff.lock
 data/vectorstore/
 data/a_validation/
+data/guides/
 .pytest_cache/
 /pytest-cache-files-*/
 data/embed_shards/
