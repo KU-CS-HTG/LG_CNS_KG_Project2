@@ -135,6 +135,7 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 | 결정 | 이유 |
 |---|---|
 | 공식 기관 원본만, 원본은 `data/guides/`(커밋 금지), 목록은 `ingest/guide_sources.json` | 블로그·요약글은 같은 제도의 금액이 서로 달랐다(조사 결과). 출처·연도·공공누리 유형을 목록에 남겨 재현·검증한다. |
+| PDF는 git 밖(공유 드라이브 zip), git에는 목록과 `sha256` 파일 지문만 | 6개 약 39MB의 PDF를 커밋하면 저장소 이력에 영구히 남고 문서를 바꿀 때마다 커진다(`data/raw`와 같은 원칙). 대신 지문으로 팀원마다 같은 파일을 쓰는지 확인해, 같은 질문에 사람마다 다른 근거가 나오지 않게 한다. |
 | 별도 타입 `GuideChunk`, 별도 색인 | 기존 `Chunk`는 4개 항목만 허용하고 검색이 서비스당 1개로 줄인다. 문서 조각을 섞으면 handoff 검증·평가 지표가 깨진다. 분리하면 기존 테스트·평가에 영향이 없고 이 기능만 끌 수 있다. |
 | 조항·소제목 단위 분할, 쪽 번호 유지, "문서명 > 소제목" 접두 | 기존 "구조 기반 분할 + 서비스명 접두"와 같은 이유(조건 희석 방지, 출처 유지). 쪽 번호는 사용자가 원문을 직접 확인하게 한다. |
 | `scope`(전국/지역)와 `service_ids` 연결, 연결은 사람이 문서를 읽고 지정 | 지자체가 게시한 문서에는 그 지역에만 해당하는 내용이 섞인다. 연결을 검색 결과로 정하면 순환 평가가 된다(정답 지정 규칙과 같음). |
@@ -274,3 +275,4 @@ auxiliary-output failure cannot advance or rewind authoritative DB progress.
 - 2026-10-22: Canonical region/provenance, selected metadata reconciliation, Korean full-date grammar and transaction-bound segmented raw replay/resume. Preserve batch verification, expanded scope, ranking and evidence contracts; inspect local index read-only without claiming a historical build revision.
 
 - 2026-10-23 (제안): 판정 기준 문서 경로 추가 계획. `GuideChunk`, `search_guides`, `Citation.kind`·`page`, `data/guides/`, `ingest/guide_sources.json`, 파일 수정 규칙(담당 밖·공유 파일은 수정 전 알림, AI 포함). 팀 합의 전이며 코드는 아직 없다. 합의 후 기획서 8.3에 기록.
+- 2026-10-23: 판정 기준 문서 PDF 배포 방식 확정(공유 드라이브 zip → `data/guides/`, `.gitignore` 추가), `guide_sources.json`에 `sha256` 파일 지문 추가. 받은 6개 PDF는 모두 텍스트 추출 가능, 주거급여 고시본은 표가 이미지라 금액표는 제정문을 쓴다.

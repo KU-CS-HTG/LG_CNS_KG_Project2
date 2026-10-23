@@ -6,7 +6,7 @@
 - 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (general personal/household support included; `ingest.policy.inclusion_decision` / `personal-household-v1`. Youth matching remains a tag, not the dataset gate)
 - 서비스 1건 = 서비스명, 지원대상, 선정기준, 지원내용, 신청방법, 신청기한, 소관기관, 상세 링크 + 지원조건(정형)
 - 원본 응답은 `data/raw/`에 저장하고 커밋하지 않는다. API 키는 `.env`에만 둔다(커밋 금지).
-- 판정 기준 문서(제안, 미구현): 공무원 판정용 고시·업무처리기준·사업안내 지침 PDF. 공식 기관 원본만 쓰고(블로그·요약 금지), 원본은 `data/guides/`에 두고 커밋하지 않는다. 문서 목록·출처·공공누리 유형·적용 범위(전국/지역)·연결 `service_id`는 `src/ingest/guide_sources.json`(커밋)에 둔다. 연결 `service_id`는 사람이 문서를 읽고 정한다.
+- 판정 기준 문서(제안, 미구현): 공무원 판정용 고시·업무처리기준·사업안내 지침 PDF. 공식 기관 원본만 쓰고(블로그·요약 금지), 원본은 `data/guides/`에 두고 커밋하지 않는다. 문서 목록(`doc_id`·`file`·문서명·발행 기관·연도·출처·공공누리 유형·적용 범위(전국/지역)·연결 `service_id`·`sha256` 파일 지문)은 `src/ingest/guide_sources.json`(커밋)에 둔다. 연결 `service_id`는 사람이 문서를 읽고 정한다. PDF는 공유 드라이브 zip으로 나누고 각자 `data/guides/`에 풀며, 파싱 전에 `sha256`으로 같은 파일인지 확인한다(다르면 중단).
 
 ## 파이프라인 (RAG 구조도 기준)
 오프라인 색인 — 문서가 바뀔 때만 다시 실행
