@@ -11,16 +11,20 @@ from __future__ import annotations
 import calendar
 import logging
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 
 from src.common import config
+from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.generate import citation, condition_extractor
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
+from src.retrieve import filters as retrieve_filters   # B: 관심 분야 비교 (구 제도 거르기)
 from src.retrieve import hybrid
 
 # 테스트 규칙: B가 끝나기 전에도 시험할 수 있도록(tests/conftest.py의 fake_search, fake_conditions)
@@ -149,26 +153,59 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
     with ThreadPoolExecutor(max_workers=2) as pool:      # 답변 생성과 자격 체크리스트 추출을 동시에
-        answer_job = pool.submit(condition_extractor._chat_json, SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
+        answer_job = pool.submit(_judge, question, evidence, needs)
         checklists = pool.submit(_extract_checklists, evidence).result()
+        out = answer_job.result()
+    recs = _recommendations(question, evidence, needs, asked, out, checklists)
+    if not recs and isinstance(out.get("services"), list) and _named_candidates(evidence, asked):
+        # 후보가 있는데 판정에서 모두 빠졌으면 판정을 한 번 더 받는다. 같은 근거로도 판정이 흔들렸다
+        # ('대학생 자취방 주거비' 질문: 같은 후보 5개로 6번 중 2번 근거 없음, 평가 q07).
+        # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
+        out = _judge(question, evidence, needs)
+        recs = _recommendations(question, evidence, needs, asked, out, checklists)
+    if not recs:
+        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
+    text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
+    return Answer(text=text, recommendations=recs)
+
+
+def _judge(question: str, evidence: dict[str, list[Chunk]], needs: list[str]) -> dict:
+    """제도별 판정을 LLM에 받는다. 호출이 실패하면 빈 dict (판정 없음)."""
+    try:
+        out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
+    except Exception as e:  # 네트워크·키·JSON 오류
+        log.warning("답변 생성 실패, 원문으로 대체: %s", e)
+        return {}
+    missing = _missing_judgements(out, evidence) if isinstance(out.get("services"), list) else set()
+    if missing:
+        # 판정이 빠진 제도만 따로 한 번 더 묻는다. 출력이 꼬여 같은 제도를 여러 번 적고 다른 제도를 빠뜨렸다
+        # (대전 출산 질문: '대전 소상공인 …'만 반복, 산모·신생아 건강관리 누락 -> 관련 없음으로 빠짐).
+        # 전체를 다시 물으면 같은 이유로 또 빠져서, 빠진 제도만 넣은 짧은 입력으로 묻는다.
         try:
-            out = answer_job.result()
-        except Exception as e:  # 네트워크·키·JSON 오류
-            log.warning("답변 생성 실패, 원문으로 대체: %s", e)
-            out = {}
+            retry = condition_extractor._chat_json(
+                SYSTEM_PROMPT, _build_prompt(question, {sid: evidence[sid] for sid in evidence if sid in missing}, needs))
+            out = {**out, "services": list(out["services"]) + [s for s in retry.get("services") or [] if isinstance(s, dict)]}
+        except Exception as e:  # 다시 묻기 실패: 첫 결과로 답한다
+            log.warning("빠진 판정 다시 묻기 실패: %s", e)
+    return out
+
+
+def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: list[str], asked: list[str] | None,
+                     out: dict, checklists: dict) -> list[Recommendation]:
+    """판정(out)을 코드로 검증해 안내할 제도만 남긴다."""
     # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
     # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
-    judged = isinstance(out.get("services"), list)
     # 원하는 도움을 주는 제도인지는 구조화된 값(meets_need)으로 받아 코드로 적용한다
     # (applicable의 '관련 없음' 규칙만으로는 지역·나이만 맞는 제도가 섞였음: 공연 관람비 질문에 청년월세)
-
-    # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다
-    by_id = {str(s.get("service_id")).strip(): s for s in out.get("services") or [] if isinstance(s, dict)}
-    named = _named_programs(asked)
+    judged = isinstance(out.get("services"), list)
+    # 실제 서비스ID는 숫자로만 돼 있어('568000000347') LLM이 JSON 숫자로 돌려주기도 한다 -> 문자열로 맞춘다.
+    # 같은 제도를 여러 번 적으면 첫 판정을 쓴다 (나중 것이 덮어써 '확인 필요'였던 국민취업지원제도가 '관련 없음'으로 빠졌다)
+    by_id: dict[str, dict] = {}
+    for s in out.get("services") or []:
+        if isinstance(s, dict):
+            by_id.setdefault(str(s.get("service_id")).strip(), s)
     recs: list[Recommendation] = []
-    for sid, chunks in evidence.items():
-        if named and not any(n in _squash_name(chunks[0].service_name) for n in named):
-            continue                      # 특정 제도를 물었는데 그 제도가 아니다 ('청년희망적금' 질문에 청년미래적금, 평가 q30)
+    for sid, chunks in _named_candidates(evidence, asked).items():
         gen = by_id.get(sid)
         if gen is None:
             if judged:
@@ -181,13 +218,38 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
             continue
         if needs and gen.get("meets_need") is False:
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
+        if _tenure_mismatch(asked, chunks):
+            continue                      # 전세·월세를 묻는데 집을 사는 제도 (또는 그 반대)
         recs.append(_to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
                                        if gen.get("meets_need") is True else None, checklists.get(sid)))
+    return recs
 
-    if not recs:
-        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
-    text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
-    return Answer(text=text, recommendations=recs)
+
+# 집에 사는 방식: 세 들어 살기(보증금·전세·월세·임대) / 사기(구입·구매·매매). '매입임대'는 공공이 사서 빌려주는 임대다.
+_RENT_RE = re.compile(r"보증금|전세|월세|전월세|임차|임대")
+_BUY_RE = re.compile(r"구입|구매|매매|내\s*집\s*마련|분양")
+
+
+def _tenure_mismatch(asked: list[str] | None, chunks: list[Chunk]) -> bool:
+    """찾는 도움과 제도의 주거 방식이 반대인가 (코드 검증). 한쪽만 물었고 제도 원문에는 반대쪽 말만 있을 때 True.
+    '보증금 대출' 질문에 '구매용도만 가능'한 내집마련 디딤돌 대출이 meets_need=true로 안내됐다 (평가 q06, 2회 모두
+    근거 충실도에서 걸림). 원문에 두 쪽 말이 다 있거나 어느 쪽도 없으면 판단하지 않는다."""
+    said = " ".join(asked or [])
+    wants_rent, wants_buy = bool(_RENT_RE.search(said)), bool(_BUY_RE.search(said))
+    if wants_rent == wants_buy:
+        return False
+    body = " ".join(c.text for c in chunks)
+    has_rent, has_buy = bool(_RENT_RE.search(body)), bool(_BUY_RE.search(body))
+    return (has_buy and not has_rent) if wants_rent else (has_rent and not has_buy)
+
+
+def _named_candidates(evidence: dict[str, list[Chunk]], asked: list[str] | None) -> dict[str, list[Chunk]]:
+    """특정 제도를 이름으로 물었으면 그 제도만 남긴다 ('청년희망적금' 질문에 청년미래적금, 평가 q30)."""
+    named = _named_programs(asked)
+    if not named:
+        return evidence
+    return {sid: chunks for sid, chunks in evidence.items()
+            if any(n in v for n in named for v in _name_variants(chunks[0].service_name))}
 
 
 # 제도 이름처럼 끝나는 말 (상품·급여 이름). '지원금'·'대출'은 '청년지원금'·'청년전용대출'처럼 일반 표현에도 쓰여 넣지 않는다.
@@ -199,21 +261,45 @@ def _squash_name(s: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]", "", s or "")
 
 
+def _name_variants(service_name: str) -> list[str]:
+    """서비스명과, 가운뎃점으로 묶인 이름을 하나씩 푼 이름들 (글자만 남김).
+    '근로·자녀장려금' -> ['근로자녀장려금', '근로장려금', '자녀장려금']. 묶인 이름을 다른 제도로 보고 빼던 문제
+    ('근로장려금' 질문에 근로·자녀장려금이 1위로 검색됐는데 근거 없음, 범위 확대 색인 2026-10-22)."""
+    variants = [_squash_name(service_name)]
+    for m in re.finditer(r"([가-힣]{1,6})·([가-힣]{1,6})", service_name):
+        a, b = m.group(1), m.group(2)
+        # '·자녀'를 빼면 '근로장려금'. 뒤 낱말('자녀장려금')의 경계를 모르므로 앞 글자를 하나씩 빼 본다
+        # ('근로녀장려금' 같은 변형도 생기지만 질문의 제도 이름과 맞을 일이 없어 무해하다)
+        for k in range(1, len(b)):
+            variants.append(_squash_name(service_name[:m.start(2) - 1] + b[k:] + service_name[m.end(2):]))
+        variants.append(_squash_name(service_name[:m.start(1)] + service_name[m.start(2):]))   # '근로·'를 빼면 '자녀장려금'
+    return [v for v in variants if v]
+
+
 def _named_programs(asked: list[str] | None) -> list[str]:
-    """질문이 이름으로 콕 집어 물은 제도 ('청년희망적금', '국가장학금'). 띄어쓰기 없는 한 단어이고 제도 이름처럼 끝날 때만.
+    """질문이 이름으로 콕 집어 물은 제도 ('청년희망적금', '국가장학금'). 찾는 도움 구절의 낱말 중 제도 이름처럼 끝나는
+    5자 이상 낱말 ('청년도약계좌 가입 조건' -> '청년도약계좌').
 
     LLM은 '특정 제도를 묻는데 근거에 없으면 관련 없음' 규칙이 있어도 이름이 비슷한 다른 제도(청년미래적금)를
-    도움이 된다고 판정했다 (q30, 3회 모두). 그래서 이름을 물었으면 서비스명에 그 이름이 있는 제도만 남긴다 (코드 검증)."""
+    도움이 된다고 판정했다 (q30, 3회 모두). 그래서 이름을 물었으면 서비스명에 그 이름이 있는 제도만 남긴다 (코드 검증).
+    처음에는 구절 전체가 한 낱말일 때만 봐서 '청년도약계좌 가입 조건'(q25)에 청년미래적금이 나왔다."""
     out = []
     for a in asked or []:
-        name = _JOSA_RE.sub("", a.strip())
-        if (" " not in name and len(name) >= MIN_PROGRAM_NAME_CHARS and _PROGRAM_SUFFIX_RE.search(name)
-                and name not in condition_extractor._GENERIC_HELP):
-            out.append(_squash_name(name))
+        for word in a.split():
+            name = _JOSA_RE.sub("", word.strip())
+            if (len(name) >= MIN_PROGRAM_NAME_CHARS and _PROGRAM_SUFFIX_RE.search(name)
+                    and name not in condition_extractor._GENERIC_HELP and _squash_name(name) not in out):
+                out.append(_squash_name(name))
     return out
 
 
 _JOSA_RE = re.compile(r"(?:이나|으로|에서|에게|까지|부터|을|를|이|가|은|는|도|나|의|에|와|과|로)$")
+
+
+def _missing_judgements(out: dict, evidence: dict[str, list[Chunk]]) -> set[str]:
+    """LLM 출력에서 판정이 빠진 근거 제도 id."""
+    seen = {str(s.get("service_id")).strip() for s in out.get("services") or [] if isinstance(s, dict)}
+    return set(evidence) - seen
 
 
 def _met_asked(chunks: list[Chunk], needs: list[str], asked: list[str] | None) -> list[str] | None:
@@ -241,6 +327,7 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[s
         lines = [f"[근거 id={sid}] {c0.service_name}",
                  f"- 소관기관: {meta.get('agency') or '정보 없음'}",
                  f"- 지역: {meta.get('region') or '정보 없음'}",
+                 f"- 지역 출처: {meta.get('region_provenance') or 'legacy_unknown'} (검색용 지역 단서; 기관 추정·출처 미상 값은 검증된 거주 자격이 아니며 지원대상·선정기준 원문 확인)",
                  f"- 연령: {_age_text(meta)}",
                  f"- 신청기한: {meta.get('deadline') or '상시 또는 정보 없음'}"]
         for s in SECTIONS:
@@ -291,7 +378,7 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
     if applicable != LIKELY and not needs:
         needs.append("자격 요건 충족 여부")   # 확인할 조건을 하나도 못 찾았을 때만 (다른 조건과 함께 나오면 군더더기)
 
-    how = _str(gen.get("how_to_apply")) or raw.get("신청방법") or NOT_IN_EVIDENCE
+    how = _llm_or_raw(gen.get("how_to_apply"), raw.get("신청방법"))
     deadline = meta.get("deadline")
     period = _application_period(chunks[0].service_id)
     start = _period_start(period)
@@ -305,11 +392,24 @@ def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: lis
         service_name=chunks[0].service_name,
         agency=meta.get("agency") or citation.UNKNOWN_AGENCY,
         reason=reason,
-        benefit=_str(gen.get("benefit")) or raw.get("지원내용") or NOT_IN_EVIDENCE,
+        benefit=_llm_or_raw(gen.get("benefit"), raw.get("지원내용")),
         how_to_apply=how,
         needs_check=needs,
         citations=citation.build_citations(chunks),
     )
+
+
+_SAYS_MISSING_RE = re.compile(r"(?:자료|정보|내용)(?:에|이|가|은|는|에는)?\s*없")
+
+
+def _llm_or_raw(llm_text, raw_text: str | None) -> str:
+    """LLM 요약을 쓰되, 요약이 없거나 '자료에 없음'이라고 했는데 원문 항목이 있으면 원문을 쓴다 (코드 검증).
+    근거에 신청방법('방문, 인터넷')이 짧게 있으면 LLM이 '신청방법은 자료에 없음'이라고 써서 근거 충실도에서
+    빠졌다 (평가 q13, 2회 모두)."""
+    text = _str(llm_text)
+    if raw_text and (not text or _SAYS_MISSING_RE.search(text)):
+        return raw_text
+    return text or raw_text or NOT_IN_EVIDENCE
 
 
 MAX_PERIOD_CHARS = 120   # 카드에 보여 줄 신청기한 원문 최대 길이 (공고 안내 문단이 통째로 붙는 것 방지)
@@ -637,6 +737,22 @@ def _str(v) -> str:
     return v.strip() if isinstance(v, str) else ""
 
 
+# 진행 단계 알림: UI가 답변을 기다리는 동안 지금 단계를 보여 준다 (질문 하나에 10~20초).
+# answer_question의 인자를 늘리지 않도록(B·문서의 인터페이스 유지) 문맥 변수로 콜백을 받는다. 설정하지 않으면 아무 일도 없다.
+PROGRESS: ContextVar[Callable[[str], None] | None] = ContextVar("answer_progress", default=None)
+STEP_CONDITIONS, STEP_SEARCH, STEP_GENERATE = "conditions", "search", "generate"
+
+
+def _progress(step: str) -> None:
+    callback = PROGRESS.get()
+    if callback is None:
+        return
+    try:
+        callback(step)
+    except Exception as e:  # 화면 표시 실패로 답변을 멈추지 않는다
+        log.warning("진행 단계 알림 실패: %s", e)
+
+
 def answer_question(question: str) -> Answer:
     """온라인 전체 흐름: 조건 추출 -> 검색(필터 완화 재시도) -> 근거 선별 -> 생성. app은 이 함수만 호출한다.
 
@@ -647,12 +763,17 @@ def answer_question(question: str) -> Answer:
 
 def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]]:
     """answer_question의 본체. 생성에 넘긴 근거도 함께 돌려준다 (답변 평가가 같은 흐름으로 채점하도록)."""
+    _progress(STEP_CONDITIONS)
     conditions = condition_extractor.extract_conditions(question)
     filters = condition_extractor.to_filters(conditions)
     region = conditions.get("region")
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
     # 지역을 말했으면 후보를 넉넉히 받아 다른 지역 지자체 제도를 뺀 뒤 상위 5개를 고른다 (_drop_other_regions)
     k = config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR if region else config.DEFAULT_TOP_K
+    # 시·군·구는 검색어에 그대로 둔다. 빼고 검색했더니 그 구의 맞는 제도(동대문구 미취업청년 자격취득 활동비,
+    # 대전 서구 출산지원금)를 못 찾았다. 다른 구 제도는 검색 뒤 _drop_other_districts로 뺀다.
+    districts = _find_districts(question, region)
+    _progress(STEP_SEARCH)
     result = hybrid.search_with_info(question, filters, k=k)
     today = date.fromisoformat(filters.get("today") or date.today().isoformat())
     chunks = _drop_expired(result.chunks, today)
@@ -663,7 +784,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
     chunks, region_relaxed = _drop_other_regions(chunks, region)
+    chunks = _drop_other_districts(chunks, districts, filters.get("field"))
+    if region and not region_relaxed:
+        chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
     selected = evidence_mod.select_evidence(chunks)
+    _progress(STEP_GENERATE)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
     used = dict(result.filters_used)
     if region_relaxed:
@@ -675,6 +800,53 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
 
 
 REGION_CANDIDATE_FACTOR = 3   # 검색 후보 배수 (지역을 말했거나 기한 지난 제도가 빠졌을 때 5 -> 15개에서 5개를 고른다)
+MAX_LOCAL_SERVICES = 3        # 지역을 말했을 때 답변 5자리 중 그 지역 지자체 제도의 최대 수
+MIN_NATIONAL_SERVICES = 2     # 지역을 말했을 때 전국 제도(중앙부처·공공기관)에 남겨 두는 최소 자리
+
+
+def _national_candidates(question: str, region: str, filters: dict, today: date) -> list[Chunk]:
+    """지역 낱말을 뺀 질문으로 다시 검색해 얻은 전국 제도 후보.
+
+    질문에 '대전'이 있으면 검색이 대전 제도를 위로 올려, 범위 확대 색인(제도 10,603개)에서 '대전 사는데 곧 아이가 태어나요'의
+    상위 15개 중 전국 제도는 11위 아래 3개뿐이었다 (출산급여·행복출산 같은 핵심 제도가 안내되지 못함).
+    '대전'을 빼고 검색하면 상위가 전국 출산 제도였다.
+    지역 필터도 뺀다: B는 지역이 없을 때만 지자체 제도를 뒤로 보내(config.LOCAL_PENALTY) 전국 제도가 먼저 오는데,
+    지역 필터를 두면 그게 꺼져 지역 값이 빈 다른 지역 제도들이 후보를 채웠다 (경기 면접 질문). 결과에서 전국 제도만 쓰므로
+    지역 필터는 필요 없다. 나이·기한 필터는 그대로 둔다."""
+    stripped = " ".join(w for w in question.split()                       # 시·도와 시·군·구 낱말을 뺀다
+                        if condition_extractor._find_region(w) != region and not _find_districts(w)).strip()
+    if not stripped or stripped == question.strip():
+        return []
+    nationwide = {k: v for k, v in filters.items() if k != "region"}
+    try:
+        result = hybrid.search_with_info(stripped, nationwide, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
+    except Exception as e:  # 전국 후보를 못 구해도 지역 질문 결과로 답한다
+        log.warning("전국 제도 후보 검색 실패: %s", e)
+        return []
+    return [c for c in _drop_expired(result.chunks, today) if _agency_region(c.metadata.get("agency") or "") is None]
+
+
+def _mix_national(chunks: list[Chunk], national: list[Chunk]) -> list[Chunk]:
+    """지역 질문의 후보(그 지역 제도 + 전국 제도)에 전국 후보를 섞어, 답변 5자리 중 지역 제도는 MAX_LOCAL_SERVICES개까지,
+    전국 제도는 MIN_NATIONAL_SERVICES개 이상이 되게 순서를 정한다. 한쪽이 모자라면 다른 쪽으로 채운다.
+    지역 제도는 지역 질문의 검색 순위를, 전국 제도는 지역 낱말을 뺀 검색 순위를 먼저 따른다 (지역 질문 순위에서는 질문과
+    더 맞는 전국 제도가 뒤에 있었다: 대전 출산 질문에서 행복출산·산모 건강관리보다 의료급여가 먼저)."""
+    order: list[str] = []
+    by_service: dict[str, list[Chunk]] = {}
+    for c in chunks + national:
+        if c.service_id not in by_service:
+            order.append(c.service_id)
+        by_service.setdefault(c.service_id, []).append(c)
+    is_local = {sid: _agency_region(by_service[sid][0].metadata.get("agency") or "") is not None for sid in order}
+    local = [s for s in order if is_local[s]]
+    nat = list(dict.fromkeys([c.service_id for c in national] + [s for s in order if not is_local[s]]))
+    slots = config.MAX_RECOMMENDATIONS
+    n_local = min(len(local), MAX_LOCAL_SERVICES, max(slots - min(len(nat), MIN_NATIONAL_SERVICES), 0))
+    n_nat = min(len(nat), slots - n_local)
+    n_local = min(len(local), slots - n_nat)           # 전국 제도가 모자라면 지역 제도로 채운다
+    picked = set(local[:n_local] + nat[:n_nat])
+    first = [s for s in order if s in picked]           # 고른 제도는 원래 순서대로, 나머지는 뒤에 (근거 선별이 앞 5개를 쓴다)
+    return [c for s in first + [s for s in order if s not in picked] for c in by_service[s]]
 
 
 def _drop_expired(chunks: list[Chunk], today: date) -> list[Chunk]:
@@ -788,8 +960,268 @@ def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[C
     다 빠지면 원래 후보를 그대로 쓰고 지역 조건을 풀었다고 알린다 (소프트 필터, CLAUDE.md)."""
     if not region:
         return chunks, False
-    keep = [c for c in chunks if _agency_region(c.metadata.get("agency") or "") in (None, region)]
+    region = normalize_region(region) or region
+    def supported_region(chunk):
+        if chunk.metadata.get("region_provenance") == "explicit_eligibility":
+            return normalize_region(chunk.metadata.get("region"))
+        return _agency_region(chunk.metadata.get("agency") or "")
+    keep = [c for c in chunks if supported_region(c) in (None, "전국", region)]
     return (keep, False) if keep else (chunks, True)
+
+
+# 시·군·구 이름 -> 속한 시·도 짧은 이름 (구 단위 지역 매칭). 보조금24 수집 데이터(services.db, 2026-10-22)의
+# 소관기관 이름('서울특별시 강남구')에서 만들었다. 제주시·서귀포시는 소관기관에 없어(제주특별자치도로만 나옴) 직접 넣었다.
+# '서구'처럼 여러 시·도에 있는 이름은 시·도가 여럿이다.
+DISTRICTS: dict[str, tuple[str, ...]] = {
+    '가평군': ('경기',),
+    '강남구': ('서울',),
+    '강동구': ('서울',),
+    '강릉시': ('강원',),
+    '강북구': ('서울',),
+    '강서구': ('부산', '서울'),
+    '강진군': ('전남',),
+    '강화군': ('인천',),
+    '거제시': ('경남',),
+    '거창군': ('경남',),
+    '검단구': ('인천',),
+    '경산시': ('경북',),
+    '경주시': ('경북',),
+    '계룡시': ('충남',),
+    '계양구': ('인천',),
+    '고령군': ('경북',),
+    '고성군': ('강원', '경남'),
+    '고양시': ('경기',),
+    '고창군': ('전북',),
+    '고흥군': ('전남',),
+    '곡성군': ('전남',),
+    '공주시': ('충남',),
+    '과천시': ('경기',),
+    '관악구': ('서울',),
+    '광명시': ('경기',),
+    '광산구': ('전남',),
+    '광양시': ('전남',),
+    '광주시': ('경기',),
+    '광진구': ('서울',),
+    '괴산군': ('충북',),
+    '구례군': ('전남',),
+    '구로구': ('서울',),
+    '구리시': ('경기',),
+    '구미시': ('경북',),
+    '군산시': ('전북',),
+    '군위군': ('대구',),
+    '군포시': ('경기',),
+    '금산군': ('충남',),
+    '금정구': ('부산',),
+    '금천구': ('서울',),
+    '기장군': ('부산',),
+    '김제시': ('전북',),
+    '김천시': ('경북',),
+    '김포시': ('경기',),
+    '김해시': ('경남',),
+    '나주시': ('전남',),
+    '남구': ('대구', '부산', '울산', '전남'),
+    '남동구': ('인천',),
+    '남양주시': ('경기',),
+    '남원시': ('전북',),
+    '남해군': ('경남',),
+    '노원구': ('서울',),
+    '논산시': ('충남',),
+    '단양군': ('충북',),
+    '달서구': ('대구',),
+    '달성군': ('대구',),
+    '담양군': ('전남',),
+    '당진시': ('충남',),
+    '대덕구': ('대전',),
+    '도봉구': ('서울',),
+    '동구': ('대구', '대전', '부산', '울산', '전남'),
+    '동대문구': ('서울',),
+    '동두천시': ('경기',),
+    '동래구': ('부산',),
+    '동작구': ('서울',),
+    '동해시': ('강원',),
+    '마포구': ('서울',),
+    '목포시': ('전남',),
+    '무안군': ('전남',),
+    '무주군': ('전북',),
+    '문경시': ('경북',),
+    '미추홀구': ('인천',),
+    '밀양시': ('경남',),
+    '보령시': ('충남',),
+    '보성군': ('전남',),
+    '보은군': ('충북',),
+    '봉화군': ('경북',),
+    '부산진구': ('부산',),
+    '부안군': ('전북',),
+    '부여군': ('충남',),
+    '부천시': ('경기',),
+    '부평구': ('인천',),
+    '북구': ('대구', '부산', '울산', '전남'),
+    '사상구': ('부산',),
+    '사천시': ('경남',),
+    '사하구': ('부산',),
+    '산청군': ('경남',),
+    '삼척시': ('강원',),
+    '상주시': ('경북',),
+    '서구': ('대구', '대전', '부산', '전남'),
+    '서귀포시': ('제주',),
+    '서대문구': ('서울',),
+    '서산시': ('충남',),
+    '서천군': ('충남',),
+    '서초구': ('서울',),
+    '서해구': ('인천',),
+    '성남시': ('경기',),
+    '성동구': ('서울',),
+    '성북구': ('서울',),
+    '성주군': ('경북',),
+    '속초시': ('강원',),
+    '송파구': ('서울',),
+    '수성구': ('대구',),
+    '수영구': ('부산',),
+    '수원시': ('경기',),
+    '순창군': ('전북',),
+    '순천시': ('전남',),
+    '시흥시': ('경기',),
+    '신안군': ('전남',),
+    '아산시': ('충남',),
+    '안동시': ('경북',),
+    '안산시': ('경기',),
+    '안성시': ('경기',),
+    '안양시': ('경기',),
+    '양구군': ('강원',),
+    '양산시': ('경남',),
+    '양양군': ('강원',),
+    '양주시': ('경기',),
+    '양천구': ('서울',),
+    '양평군': ('경기',),
+    '여수시': ('전남',),
+    '여주시': ('경기',),
+    '연수구': ('인천',),
+    '연제구': ('부산',),
+    '연천군': ('경기',),
+    '영광군': ('전남',),
+    '영덕군': ('경북',),
+    '영도구': ('부산',),
+    '영동군': ('충북',),
+    '영등포구': ('서울',),
+    '영암군': ('전남',),
+    '영양군': ('경북',),
+    '영월군': ('강원',),
+    '영종구': ('인천',),
+    '영주시': ('경북',),
+    '영천시': ('경북',),
+    '예산군': ('충남',),
+    '예천군': ('경북',),
+    '오산시': ('경기',),
+    '옥천군': ('충북',),
+    '옹진군': ('인천',),
+    '완도군': ('전남',),
+    '완주군': ('전북',),
+    '용산구': ('서울',),
+    '용인시': ('경기',),
+    '울릉군': ('경북',),
+    '울주군': ('울산',),
+    '울진군': ('경북',),
+    '원주시': ('강원',),
+    '유성구': ('대전',),
+    '은평구': ('서울',),
+    '음성군': ('충북',),
+    '의령군': ('경남',),
+    '의성군': ('경북',),
+    '의왕시': ('경기',),
+    '의정부시': ('경기',),
+    '이천시': ('경기',),
+    '익산시': ('전북',),
+    '인제군': ('강원',),
+    '임실군': ('전북',),
+    '장성군': ('전남',),
+    '장수군': ('전북',),
+    '장흥군': ('전남',),
+    '전주시': ('전북',),
+    '정선군': ('강원',),
+    '정읍시': ('전북',),
+    '제물포구': ('인천',),
+    '제주시': ('제주',),
+    '제천시': ('충북',),
+    '종로구': ('서울',),
+    '중구': ('대구', '대전', '부산', '서울', '울산'),
+    '중랑구': ('서울',),
+    '증평군': ('충북',),
+    '진도군': ('전남',),
+    '진안군': ('전북',),
+    '진주시': ('경남',),
+    '진천군': ('충북',),
+    '창녕군': ('경남',),
+    '창원시': ('경남',),
+    '천안시': ('충남',),
+    '철원군': ('강원',),
+    '청도군': ('경북',),
+    '청송군': ('경북',),
+    '청양군': ('충남',),
+    '청주시': ('충북',),
+    '춘천시': ('강원',),
+    '충주시': ('충북',),
+    '칠곡군': ('경북',),
+    '태백시': ('강원',),
+    '태안군': ('충남',),
+    '통영시': ('경남',),
+    '파주시': ('경기',),
+    '평창군': ('강원',),
+    '평택시': ('경기',),
+    '포천시': ('경기',),
+    '포항시': ('경북',),
+    '하남시': ('경기',),
+    '하동군': ('경남',),
+    '함안군': ('경남',),
+    '함양군': ('경남',),
+    '함평군': ('전남',),
+    '합천군': ('경남',),
+    '해남군': ('전남',),
+    '해운대구': ('부산',),
+    '홍성군': ('충남',),
+    '홍천군': ('강원',),
+    '화성시': ('경기',),
+    '화순군': ('전남',),
+    '화천군': ('강원',),
+    '횡성군': ('강원',),
+}
+
+
+def _find_districts(question: str, region: str | None = None) -> set[str]:
+    """질문에서 말한 시·군·구 ('강남구에 사는' -> {'강남구'}). 실제 소관기관에 나오는 이름(DISTRICTS)만 인정한다
+    ('가구'·'친구'·'수시'처럼 구·시로 끝나는 일반 낱말 차단). 시·도를 말했으면 그 시·도에 있는 이름만
+    ('광주시'는 경기도의 시라서 '광주에 사는 … 광주시'처럼 광주광역시를 뜻하면 쓰지 않는다)."""
+    found = set()
+    for word in re.findall(r"[가-힣]+", question or ""):
+        for name in (word, _JOSA_RE.sub("", word)):
+            if name in DISTRICTS and (not region or region in DISTRICTS[name]):
+                found.add(name)
+    return found
+
+
+def _agency_districts(agency: str) -> set[str]:
+    """소관기관의 시·군·구 ('서울특별시 동대문구' -> {'동대문구'}). 시·도 기관('서울특별시')·전국 기관은 빈 집합."""
+    return {p for p in (agency or "").split()[1:] if p in DISTRICTS}
+
+
+def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str | None = None) -> list[Chunk]:
+    """사용자가 말한 시·군·구와 다른 시·군·구의 제도를 뺀다. 시·도 전체 제도와 전국 제도는 남긴다.
+
+    시·도까지만 비교하면 '서울 강남구에 사는' 질문에 동대문구 주민 대상 제도가 나왔다 (구 단위 제도 208곳).
+    그 구의 제도도 관심 분야(field)가 있으면 분야가 맞는 것만 남긴다: 검색어의 '강남구'가 주제와 상관없이 강남구
+    제도를 끌어올려 취업준비생 질문에 출산양육지원금·영유아 발달검사가 후보가 됐다 (넓은 질문은 '원하는 도움'으로
+    거르지 않아 그대로 안내되기도 함). 시·도 전체·전국 제도는 원래 관련도로 뽑혀서 분야로 거르지 않는다.
+    다 빠지면 원래 후보를 그대로 쓴다 (소프트 필터)."""
+    if not districts:
+        return chunks
+    keep = []
+    for c in chunks:
+        own = _agency_districts(c.metadata.get("agency") or "")
+        if own and not own & districts:
+            continue                       # 다른 구의 제도
+        if own and field and not retrieve_filters.field_matches(c.metadata.get("field"), field):
+            continue                       # 그 구의 제도지만 관심 분야가 다름
+        keep.append(c)
+    return keep or chunks
 
 
 def _agency_region(agency: str) -> str | None:

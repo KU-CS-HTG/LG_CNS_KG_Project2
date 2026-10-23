@@ -10,7 +10,7 @@
 이미 꺼낸 Chunk 목록을 파이썬에서 거를 때(Baseline 결과, 후처리, 테스트) 쓴다. 두 규칙은 항상 같아야 한다
 (tests/test_retrieval.py가 두 결과가 같은지 확인한다).
 
-지역은 문자열이 정확히 같아야 한다("서울" != "서울특별시"). 지역명 정규화는 A가 메타데이터를 만들 때 맞춘다.
+지역 별칭은 shared canonical vocabulary로 비교한다. 기관 기반 추정도 기존 검색 필터에 영향을 주지만 자격 검증은 아니다.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import re
 from datetime import date
 
 from src.common.schema import Chunk, Filters
+from src.common.regions import normalize_region
 
 NATIONWIDE = "전국"
 # 완화 순서: 지역 -> 연령. 신청기한(today)은 풀지 않는다. field·situation은 필터가 아니므로 풀 대상이 아니다.
@@ -48,8 +49,9 @@ def _passes(chunk: Chunk, filters: Filters) -> bool:
             return False
         if md.get("age_max") is not None and age > md["age_max"]:
             return False
-    region = filters.get("region")
-    if region and md.get("region") and md["region"] not in (region, NATIONWIDE):
+    region = normalize_region(filters.get("region"))
+    stored_region = normalize_region(md.get("region")) or agency_region(md.get("agency"))
+    if region and stored_region and stored_region not in (region, NATIONWIDE):
         return False
     return True                       # field·situation은 거르지 않는다 (가산점·참고용)
 

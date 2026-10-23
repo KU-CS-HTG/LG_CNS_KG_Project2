@@ -9,7 +9,7 @@
 > A의 수집·정제·SQLite·분할·증분 인계는 구현되어 있으며 오프라인 합성 테스트로 검증했습니다. 실제 API는 소량 표본을 확인했고 전체 적합성·자동 소실 권한은 미검증입니다. B의 색인·검색과 C의 근거 선별·답변 생성 경로도 구현되어 있습니다. 저장된 이벤트를 처리하는 인계 소비자는 실제 Chroma와 가짜 임베딩으로 검증했으며, 실제 모델과 운영 데이터의 통합 검증은 별도 확인이 필요합니다. 구현된 동작·필드 확인 수준·실행·B 인계는 [A 운영 계약](docs/INGEST_A.md)을 참고하세요.
 
 2차 수정에서 과거 상세/현재 목록 병합, fixture 저장소 격리, HTML 표 경계를 보완했습니다.
-격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. 전체 API 순회와 운영용 연령·지역 변환 어댑터는 아직 검증되지 않았습니다. 해당 인계 구현 단계에서 라이브 API나 실제 모델을 새로 검증한 것은 아닙니다.
+격리된 라이브 표본은 세 엔드포인트 각각 3건을 확인했습니다. Full API traversal and actual age-code mappings remain unverified; a narrow explicit residence-text adapter is now implemented. 해당 인계 구현 단계에서 라이브 API나 실제 모델을 새로 검증한 것은 아닙니다.
 
 ## 1. 데이터
 
@@ -35,6 +35,42 @@
 제외된 기관 전용 레코드는 최소한의 감사 정보만 보존합니다. 과거 `youth_scope_exit`로 제외됐던 제도를 다시 검색 가능하게 하려면 사용할 수 있는 원본 본문이 필요합니다.
 
 실행 방법은 [원본 재처리 안내](docs/INGEST_A.md#historical-raw-reprocessing-원본-재처리)를 참고하세요. `pipeline --full`은 API를 수집하고 활성 서비스의 조각을 다시 인계 대기열에 넣지만, 이전에 버린 본문까지 스스로 복구하지는 못합니다. 포함 판정기는 평가 정답을 읽거나 수정하지 않습니다.
+
+## Metadata tracing and resumable raw replay
+
+Region aliases now share a canonical vocabulary; optional `region_provenance` distinguishes
+explicit residence evidence, agency inference, legacy values and unknown. Only narrowly scoped
+지원대상/선정기준 residence statements are extracted. District/multiple-region evidence is kept
+without claiming full eligibility; the existing unknown-region soft filter remains.
+Korean full dates (`2026년9월9일`) and strict full-date ranges support expiry; ambiguous periods remain unknown.
+
+Use `python -m src.ingest.metadata_tools trace ...` for read-only source→index diagnosis,
+`correct ... --dry-run` before explicit selected-service `--apply`, and
+`python -m src.ingest.reprocess ... --offset N --limit K --checkpoint NAME` / `--resume NAME`.
+Exact tested PowerShell commands, checkpoint bindings, deployed-index findings and safe correction
+limits are in [INGEST_A.md](docs/INGEST_A.md#integrated-metadata-and-resumable-replay-2026-10-22).
+Code changes do not repair old documents automatically. No production backfill or embedding reuse is implicit.
+
+### 1.2 판정 기준 문서 (제안, 미구현)
+
+보조금24 API는 "어떤 제도가 있나"를 알려 주지만, 자격 판정의 세부 기준은 담당 공무원이 보는 고시·업무처리기준·사업안내 지침에 있습니다. 이 문서를 함께 검색해 '확인 필요' 조건과 후속 질문("부모님과 따로 살면 같은 가구인가요?")에 근거 조항과 쪽 번호로 답합니다.
+
+| 구분 | 문서 | 발행 기관 | 게시 위치 |
+|---|---|---|---|
+| 필수 | 2026년 국민기초생활보장사업 안내 | 보건복지부 | 공공데이터포털 파일데이터, 보건복지부 사전정보공표 |
+| 필수 | 2026년 주거급여 사업안내 | 국토교통부 | 국토교통부 정책Q&A |
+| 필수 | 2026년 주거급여 선정기준 및 최저보장수준 (고시 제2025-506호) + 제정문 | 국토교통부 | 고시 원본 (지자체 자료실 첨부본은 원본과 대조). 고시본은 표가 이미지라 금액표는 제정문(텍스트)을 쓴다 |
+| 필수 | 국민취업지원제도 업무매뉴얼 (2026년 1월) | 고용노동부 | 고용노동부 정책자료실 |
+| 선택 | 국민취업지원제도 운영규정 (고시 제2026-35호) | 고용노동부 | 국가법령정보센터 행정규칙 |
+| 선택 | 2026년 기준 중위소득 (보도자료·고시) | 보건복지부 | 보건복지부 보도자료 |
+
+- 발표 범위는 필수 4개, 일정이 되면 선택 2개까지입니다. 공식 PDF를 찾지 못한 제도(예: 버팀목 전세자금대출)는 넣지 않습니다.
+
+- 공식 기관 원본만 씁니다(블로그·요약 금지). 원본 PDF는 `data/guides/`에 두고 **커밋하지 않습니다**(`.gitignore`). 문서 목록은 `src/ingest/guide_sources.json`에 있습니다.
+- **PDF 받는 방법**: 팀 공유 드라이브의 `RAG 프로젝트 pdf 파일.zip`을 받아 `data/guides/` 바로 아래에 풉니다(하위 폴더 없이, 파일 이름은 바꾸지 않음). 한글 파일 이름이 깨지지 않도록 윈도우 탐색기의 "압축 풀기"를 권장합니다. 문서를 바꾸거나 추가할 때는 A에게 알리고 새 zip과 문서 목록을 함께 갱신합니다.
+- **같은 파일인지 확인**: 문서 목록의 `sha256`(파일 지문)과 내 파일의 지문이 같아야 합니다. PowerShell `Get-FileHash data\guides\*.pdf -Algorithm SHA256`으로 비교합니다(파싱 스크립트가 시작할 때 자동 확인하도록 구현 예정).
+- 금액·기한은 API 값이 우선이고, 판정 문서는 해석·설명용입니다. 자격을 확정하지 않습니다.
+- 지역 문서는 그 지역 사용자에게만 근거로 씁니다.
 
 ## 2. 전체 구조 — 색인과 질의응답
 
@@ -65,6 +101,8 @@
 **데이터 흐름**
 - 오프라인(기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
 - 온라인(질문마다): 질문 → `condition_extractor`(`Filters`) → `retrieve.hybrid.search`(필터 + Vector + BM25, 중복 제거, 필요 시 필터 완화) → `evidence.select_evidence` → `generator.generate_answer` + `citation` → `Answer`
+
+판정 기준 문서는 별도 경로입니다(제안): PDF → 조항 분할(`src/ingest/guides.py`, A) → 문서 전용 색인·`search_guides`(`src/index/guide_store.py`, B) → '확인 필요' 근거 연결(`src/generate/guide_evidence.py`, C). 기존 보조금24 경로는 바뀌지 않습니다.
 
 ### 2.1 단계별 입출력 예시
 
@@ -103,7 +141,7 @@ DB에 저장되는 서비스 1건(정제 결과 `dict`)은 다음과 같습니�
 }
 ```
 
-- 위 DB JSON은 초기 설계 예시입니다. 실제 SQLite는 정규 payload·실행 이력·미확인 인계 세 테이블을 사용하고, 검증된 자격은 eligibility에 보존합니다. 정확한 계약은 [A 운영 계약](docs/INGEST_A.md)을 따릅니다.
+- 위 DB JSON은 초기 설계 예시입니다. SQLite uses services/ingestion_runs/pending_changes plus the small ingest_state replay table; verified eligibility is retained in eligibility. 정확한 계약은 [A 운영 계약](docs/INGEST_A.md)을 따릅니다.
 - 신청기한이 상시·미정이면 `deadline`은 `null`입니다. 값을 알 수 없는 항목도 `null`로 두며(추측 금지), 이는 뒤에서 "확인 필요"로 이어집니다.
 
 #### ② 분할 — `chunker.chunk_service(service)`
@@ -206,7 +244,7 @@ python -m src.retrieve.hybrid "월세가 부담돼요" --age 27 --region 서울
 - **관심 분야(`field`)는 필터가 아니라 가산점**: 분야는 자격이 아니라 관심사라 거르지 않습니다. 분야가 제도의 분야와 맞으면(한쪽이 다른 쪽을 포함하면 맞음. 예: "주거"와 "주거·자립") RRF 점수에 `config.FIELD_BOOST`(기본 0.002)를 더해 앞으로 올릴 뿐이라, 질문에서 뽑은 분야 이름이 데이터와 달라도 제도가 사라지지 않고, 분야가 하나여도 다른 분야 제도(예: "월세 + 취업 준비" 질문의 구직 지원)가 후보에 남습니다. `FIELD_BOOST = 0`이면 끕니다. 상황(`situation`)은 지금 검색에 쓰이지 않습니다.
 - **필터 완화**: 거르는 조건에 맞는 제도가 하나도 없을 때만 **지역 → 연령** 순으로 하나씩 풀어 다시 찾습니다(신청기한은 풀지 않음, 분야·상황은 필터가 아니라 풀 대상도 아님). 끝까지 없으면 빈 리스트이고, C는 이를 "근거 없음"으로 처리합니다. 완화 여부는 `hybrid.search_with_info(...)`가 돌려주는 `relaxed`, `filters_used`로 볼 수 있습니다(C가 "조건을 완화해 찾았다"고 안내할 때 쓸 수 있음).
 - **`mode`(평가 실험용)**: `vector`·`bm25`·`hybrid`는 **필터를 쓰지 않고** 검색하고, `hybrid_filter`(서비스 기본값)만 필터와 완화를 적용합니다. 값은 코사인·BM25·RRF 점수입니다.
-- 지역은 문자열이 정확히 같아야 합니다("서울" ≠ "서울특별시"). 지역명 정규화는 A가 메타데이터를 만들 때 맞춥니다.
+- Region aliases are normalized consistently (서울특별시 = 서울). Provenance distinguishes eligibility evidence from agency heuristics; unknown still passes the regional soft filter.
 
 #### 근거 선별 — `evidence.select_evidence(chunks)`
 
@@ -326,7 +364,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 ```
 
 - **B가 보장할 것**: 순서는 관련도 순, 같은 서비스의 조각은 중복 제거, 신청기한이 지난 제도는 없음, 결과가 없으면 필터를 풀어 다시 검색한 뒤 돌려줌(그래도 없으면 빈 리스트).
-- **초기 C 계약의 미해결 기대값**: 모든 조각의 기관·상세 링크가 비어 있지 않다는 기대와 달리 원천에 누락이 있을 수 있습니다. A는 값을 만들지 않고 metadata 키 생략/빈 detail_url 및 품질 진단으로 표시합니다. 공용 타입과 C 코드는 유지했으며 누락 표시·후보 제외 방침은 팀 결정이 필요합니다. region·deadline 등 미상 조건은 기존처럼 "확인 필요" 대상입니다. 이 제안은 팀 합의 완료를 의미하지 않습니다.
+- **초기 C 계약의 미해결 기대값**: 모든 조각의 기관·상세 링크가 비어 있지 않다는 기대와 달리 원천에 누락이 있을 수 있습니다. A는 값을 만들지 않고 metadata 키 생략/빈 detail_url 및 품질 진단으로 표시합니다. 기관/링크 누락 표시·후보 제외 방침은 별도 팀 결정입니다. Optional region provenance is now preserved across shared types and C evidence readers. region·deadline 등 미상 조건은 기존처럼 "확인 필요" 대상입니다. 이 제안은 팀 합의 완료를 의미하지 않습니다.
 - C는 이 목록에서 같은 서비스의 다른 항목(선정기준, 신청방법 등)이 더 필요하면 `service_id`로 조각을 더 요청하거나 DB를 조회해야 합니다. 어느 쪽으로 할지는 B·C가 합의해서 정합니다. (근거 선별 단계가 이 문제를 다룹니다.)
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
@@ -387,10 +425,12 @@ src/
   index/     embedder, embed_cache, embed_shard, vector_store          # B
   retrieve/  hybrid, filters, baseline                             # B
   generate/  condition_extractor, evidence, generator, citation    # C
+  # 판정 기준 문서(제안): ingest/guides(A) · index/guide_store(B) · generate/guide_evidence(C)
 app/         main.py                                               # C: UI
 eval/        metrics, answer_eval, run_eval, label_helper(정답 채우기 도구), questions.jsonl, results/
 tests/       fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
+data/guides/ 판정 기준 문서 원본 PDF (커밋 금지, 제안)
 docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기 안내), images/
 ```
 
@@ -411,6 +451,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 - **C → B**: `Filters` (나이·지역·분야·상황·기준일, 값이 없으면 키 생략). **거르는 것은 나이·지역·기준일**이고, 분야는 맞는 제도에 가산점만 주며 상황은 현재 검색에 쓰이지 않습니다
 - **B → C**: `search(query, filters, k=5, mode="hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용)
 - **C → 사용자**: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
+- **판정 기준 문서 (제안)**: A → B `GuideChunk{chunk_id, doc_id, doc_title, publisher, year, page, heading, text, scope, service_ids, source_url}` / B → C `search_guides(query, service_ids=None, region=None, k=3) -> list[GuideChunk]` / C → 사용자 `Citation(kind="guide", page=쪽)`
 
 ## 5. 답변 생성 규칙
 
@@ -419,6 +460,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 - 모든 답변에 서비스명·소관기관·근거 문구·상세 링크를 붙이고, "최종 신청 자격은 담당 기관에서 확인" 안내를 넣습니다.
 - 신청기한이 지난 제도는 후보에서 제외합니다. 정형 필터는 하드가 아니라 소프트로 적용하고, 결과가 없으면 필터를 풀어 다시 검색합니다.
 - 사용자에게 보이는 문구는 한국어로 작성합니다.
+- 판정 기준 문서는 해석·설명용입니다. 금액·기한은 API 값을 쓰고, 다르면 "담당 기관 확인"을 함께 표시합니다. 판정 근거에는 문서명·발행 기관·연도·쪽·근거 문구를 붙입니다.
 
 ## 6. 설계 결정과 이유
 
@@ -438,6 +480,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 | `evidence.py`(근거 선별), `Answer`에 `no_evidence` | 질문당 제도를 3~5개로 제한하고, 근거 없음 응답을 UI·평가가 구분해 쓴다. |
 | `app/`은 `answer_question()` 하나만 호출 | UI 교체와 백엔드 수정이 서로 영향을 주지 않는다. |
 | 평가 채점 단위는 `service_id` | 분할 방식이 바뀌어도 질문 세트를 재사용한다. |
+| 판정 기준 문서를 별도 타입·별도 색인으로 추가 (제안) | API 요약만으로는 "내가 실제로 받을 수 있나"에 답할 수 없다. 기존 `Chunk`·`search`·handoff 계약을 바꾸지 않고 옆에 붙여, 기존 테스트·평가에 영향이 없고 문제가 생기면 이 기능만 끌 수 있다. |
 
 검색 난점별 대응 위치(기획서 7.1)와 결정별 상세 근거는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)를 봅니다.
 
@@ -567,6 +610,8 @@ python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (docs/LABELING.md)
+python -m src.ingest.guides --dir data/guides   # A: 판정 기준 문서 파싱 (data/guides/에 PDF를 먼저 넣기, 제안)
+python -m src.index.guide_store                 # B: 판정 기준 문서 색인 (제안)
 ```
 
 모델 다운로드 시 나오는 `Warning: You are sending unauthenticated requests to the HF Hub` 경고는 무시해도 됩니다. 없애려면 `.env`에 `HF_TOKEN=<Hugging Face 토큰>`을 넣거나(다운로드도 빨라짐), 모델을 이미 받은 뒤라면 `HF_HUB_OFFLINE=1`을 넣으세요(`.env.example` 참고).
@@ -622,6 +667,8 @@ def test_예시(fake_search, fake_conditions):
 - 변경 전에 `docs/사전기획서.docx`의 해당 절을 확인하고, 설계가 바뀌면 기획서(8.3)에도 기록합니다.
 - 새 라이브러리를 추가하면 `requirements.txt`를 함께 갱신합니다.
 - **문서 동기화**: 디렉터리·모듈·함수 시그니처·데이터 계약·담당 영역·명령을 바꾸면 같은 커밋에서 `README.md`, `docs/ARCHITECTURE.md`, `CLAUDE.md`의 해당 부분을 함께 갱신합니다.
+- 새 기능은 새 파일로 만들고, 다른 담당의 파일을 고쳐야 하면 고치기 전에 담당자에게 알리고 승인받습니다. 커밋 메시지에 `[B파일]`처럼 표시합니다.
+- AI(Claude 등)로 작업할 때도 같습니다. 담당 밖 파일이나 공유 파일을 고치기 전에 AI가 사용자에게 먼저 알리도록 `CLAUDE.md`에 적어 두었습니다.
 
 ## 10. 구현 현황
 
@@ -634,6 +681,7 @@ def test_예시(fake_search, fake_conditions):
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
 | 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
 | 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
+| 판정 기준 문서 (`ingest/guides`, `index/guide_store`, `generate/guide_evidence`) | 제안 단계, 미구현 |
 
 ### A 2차 수정의 운영 규칙
 

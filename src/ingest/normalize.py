@@ -10,6 +10,10 @@ from urllib.parse import parse_qsl, urlsplit
 
 from src.common import config
 from src.common.schema import Metadata
+from src.common.regions import normalize_region, REGION_PROVENANCE
+from src.ingest.regions import apply_region_evidence
+
+NORMALIZATION_VERSION = "region-deadline-v2"
 
 SOURCE_FIELDS = {
     "service_id": "서비스ID", "service_name": "서비스명", "agency": "소관기관명",
@@ -64,15 +68,17 @@ def clean_text(value) -> str:
 
 
 def parse_deadline(text: str) -> str | None:
-    """단일 전체 날짜 또는 명확한 전체 날짜~전체 날짜만 해석한다."""
-    pattern = r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})\.?"
-    match = re.fullmatch(pattern + r"(?:\s*[~～]\s*" + pattern + r")?", text)
+    """Strict whole numeric/Korean dates or two whole dates separated by ~ / ～."""
+    numeric = r"\d{4}[-./]\d{1,2}[-./]\d{1,2}\.?"
+    korean = r"\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일"
+    pattern = f"(?:{numeric}|{korean})"
+    match = re.fullmatch(r"\s*(" + pattern + r")(?:\s*[~～]\s*(" + pattern + r"))?\s*", text)
     if not match:
         return None
     try:
-        start = date(*(int(v) for v in match.groups()[:3]))
-        if match.group(4):
-            end = date(*(int(v) for v in match.groups()[3:]))
+        start = date(*(int(v) for v in re.findall(r"\d+", match[1])))
+        if match[2]:
+            end = date(*(int(v) for v in re.findall(r"\d+", match[2])))
             return end.isoformat() if start <= end else None
         return start.isoformat()
     except ValueError:
@@ -112,13 +118,20 @@ def verified_eligibility(conditions: dict | None) -> dict:
     region = data.get("region")
     if isinstance(region, str) and clean_text(region):
         result["region"] = clean_text(region)
+        result["region_raw"] = region
+        result["region_provenance"] = "explicit_eligibility"
+        result["region_adapter"] = "internal_verified_applicant_contract_not_API_mapping"
     return result
 
 
 def content_hash(service: dict) -> str:
     payload = {key: service.get(key) for key in SOURCE_FIELDS}
     payload["metadata"] = build_metadata(service)
-    payload["eligibility"] = service.get("eligibility", {})
+    def semantic(value):
+        if isinstance(value, dict):
+            return {k: semantic(v) for k, v in value.items() if k not in ("observation", "source_acquisition", "acquired_at", "run_id", "legacy_region")}
+        return [semantic(v) for v in value] if isinstance(value, list) else value
+    payload["eligibility"] = semantic(service.get("eligibility", {}))
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -132,6 +145,7 @@ def clean_service(raw: dict, conditions: dict | None = None) -> dict:
     service["detail_url"] = official_url(service["detail_url"])
     service["deadline"] = parse_deadline(service["application_period"])
     service["eligibility"] = verified_eligibility(conditions)
+    apply_region_evidence(service)
     service["data_quality"] = ["missing_" + key for key in ("agency", "detail_url") if not service[key]]
     from src.ingest.policy import inclusion_decision
     service["inclusion_policy"] = inclusion_decision(service)
@@ -160,8 +174,11 @@ def is_youth_service(service: dict) -> bool:
 def build_metadata(service: dict) -> Metadata:
     result = {key: service[key] for key in ("agency", "field", "deadline") if service.get(key)}
     eligibility = service.get("eligibility", {})
-    if eligibility.get("region"):
-        result["region"] = eligibility["region"]
+    canonical_region = normalize_region(eligibility.get("region"))
+    if canonical_region:
+        result["region"] = canonical_region
+        provenance = eligibility.get("region_provenance", "legacy_unknown")
+        result["region_provenance"] = provenance if provenance in REGION_PROVENANCE else "legacy_unknown"
     ranges = eligibility.get("age_ranges", [])
     # Multiple/disjoint alternatives cannot be represented by the shared interval.
     if len(ranges) == 1:
@@ -169,4 +186,13 @@ def build_metadata(service: dict) -> Metadata:
     tags = sorted({r["keyword"] for r in youth_inclusion_reasons(service) if r["reason"] == "keyword"})
     if tags:
         result["target_tags"] = tags
+    return result
+
+
+def refresh_service(service):
+    """Re-derive metadata from CURRENT normalized evidence without re-parsing HTML/text."""
+    result = dict(service)
+    result["deadline"] = parse_deadline(result.get("application_period") or "")
+    apply_region_evidence(result)
+    result["content_hash"] = content_hash(result)
     return result

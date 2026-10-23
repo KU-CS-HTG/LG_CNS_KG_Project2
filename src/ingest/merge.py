@@ -84,6 +84,9 @@ def merge_fields(listing: dict, detail: dict | None, previous: dict, *,
                     "chosen_value": chosen["normalized_value"], "reason": reason,
                     "raw_value": chosen["value"],
                     "inputs": [{"source": c["source"], "observation": c["observation"]} for c in candidates]}
+        if (chosen["observation"].startswith("retained_") and chosen["source"] == prior.get("source")
+                and chosen["value"] == prior.get("raw_value") and prior.get("source_acquisition")):
+            decision["source_acquisition"] = prior["source_acquisition"]
         provenance[field] = decision
         available = [c for c in candidates if c["observation"] in
                      ("fresh_value", "fresh_empty", "fresh_invalid", "retained_value", "retained_empty", "retained_invalid")

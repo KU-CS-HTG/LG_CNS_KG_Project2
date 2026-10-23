@@ -27,6 +27,7 @@ import numpy as np
 
 from src.common import config
 from src.common.schema import SECTIONS, Chunk, Filters
+from src.common.regions import normalize_region, aliases_for, REGION_PROVENANCE
 from src.index import embedder
 from src.retrieve import filters as filter_rules
 
@@ -100,6 +101,11 @@ def _date_int(iso: str | None) -> int:
 
 def _to_store_metadata(chunk: Chunk) -> dict:
     m = chunk.metadata or {}
+    explicit = normalize_region(m.get("region"))
+    inferred = filter_rules.agency_region(m.get("agency")) if not explicit else None
+    provenance = m.get("region_provenance", "legacy_unknown") if explicit else ("agency_inference" if inferred else "unknown")
+    if provenance not in REGION_PROVENANCE or (explicit and provenance == "unknown"):
+        provenance = "legacy_unknown"
     return {
         "service_id": chunk.service_id,
         "service_name": chunk.service_name,
@@ -107,7 +113,8 @@ def _to_store_metadata(chunk: Chunk) -> dict:
         "detail_url": chunk.detail_url,
         "agency": m.get("agency") or "",
         "field": m.get("field") or "",
-        "region": m.get("region") or filter_rules.agency_region(m.get("agency")) or "",   # A가 지역을 못 채우면 기관명으로 추정
+        "region": explicit or inferred or "",
+        "region_provenance": provenance,
         "deadline": m.get("deadline") or "",
         "deadline_int": _date_int(m.get("deadline")),
         "age_min": m["age_min"] if m.get("age_min") is not None else NO_AGE_MIN,
@@ -121,6 +128,11 @@ def _chunk_from_store(chunk_id: str, document: str, m: dict) -> Chunk:
     for key in ("agency", "field", "region", "deadline"):
         if m.get(key):
             md[key] = m[key]
+    if md.get("region"):
+        md["region"] = normalize_region(md["region"]) or md["region"]
+    provenance = m.get("region_provenance")
+    md["region_provenance"] = ("unknown" if not md.get("region") else
+                              provenance if provenance in REGION_PROVENANCE and provenance != "unknown" else "legacy_unknown")
     if m.get("age_min", NO_AGE_MIN) != NO_AGE_MIN:
         md["age_min"] = int(m["age_min"])
     if m.get("age_max", NO_AGE_MAX) != NO_AGE_MAX:
@@ -174,7 +186,9 @@ def build_where(filters: Filters) -> dict | None:
     if age is not None:
         conds += [{"age_min": {"$lte": age}}, {"age_max": {"$gte": age}}]
     if filters.get("region"):
-        conds.append({"region": {"$in": [filters["region"], NATIONWIDE, ""]}})
+        region_values = aliases_for(filters["region"])
+        if region_values:
+            conds.append({"region": {"$in": list(dict.fromkeys([*region_values, NATIONWIDE, ""]))}})
     conds.append({"deadline_int": {"$gte": _date_int(filters.get("today") or date.today().isoformat())}})
     return conds[0] if len(conds) == 1 else {"$and": conds}
 

@@ -83,7 +83,7 @@ retained_value/empty/missing/invalid 및 unavailable을 구분한다. `_merge_co
 삭제가 더 오래된 상세 값으로 되돌아가지 않게 한다. 원천별 마지막 성공 행 자체를 수정해 채우지는 않는다.
 
 개행·숫자·단위·부정·예외·목록을 보존하는 규칙 정제만 수행한다. LLM을 호출하지 않는다.
-단일 전체 날짜 또는 전체 날짜~전체 날짜만 파싱한다. `상시`, `예산 소진 시`, `별도 공고`, 혼합/모호한 기간은
+Whole numeric/Korean dates and supported ~ ranges are parsed (strict grammar below). `상시`, `예산 소진 시`, `별도 공고`, 혼합/모호한 기간은
 원문만 보존한다. UTC 시스템 날짜와 무관하게 만료 기준일은 한국 시간이다.
 
 OAS에서 JA0110/JA0111의 대상연령 시작/종료 라벨은 확인했다. 그러나 신청자/부양자 적용,
@@ -99,7 +99,7 @@ service = clean_service(raw, conditions)
 
 이 객체는 실제 API 필드가 아니다. 다중 연령 구간은 eligibility에 보존하지만 공유 Metadata의 단일
 age_min/age_max로 평탄화하지 않는다. 명시적인 전국은 `region='전국'`, 미상은 키 생략이다.
-기관명에서 거주지를 추정하지 않는다. age/region은 검증된 어댑터 결과만 사용한다. 모든 미상 metadata 키는 생략한다.
+A does not infer residence eligibility from agency names. A accepts narrowly scoped explicit residence statements; structured age-code mappings remain deferred. 모든 미상 metadata 키는 생략한다.
 기관/링크가 없으면 data_quality와 실행별 품질 건수로 드러내며 거짓 출처를 만들지 않는다.
 
 `is_youth_service()` keeps its legacy boolean youth-tag interface. Dataset inclusion now
@@ -127,7 +127,7 @@ is not this contract. Unmanifested endpoints or inconsistent layouts fail before
 Missing details defer the record; missing conditions defer restoration of a minimal excluded
 record. New records with details and missing conditions can retain unknown eligibility.
 
-The limit is selected listing records in source order (1–1000); decoding validates the
+The limit selects [offset, offset+limit) in source order (1–1000 records); decoding validates the
 entire selected acquisition run. No runs are mixed. Prior stored auxiliary fallback can be
 retained only after conservative record-level observation ordering passes. Original acquisition
 run/time and raw-file SHA-256 values are retained in payload/run audit. Replay field states
@@ -166,12 +166,169 @@ Absence in a sample is not an invalid gold label. Index presence does not establ
 applicability, applicant eligibility or retrieval quality. B's region fallback is checked through
 the current codec; A residence eligibility remains unknown. B ranking/Hybrid/field boost is unchanged.
 
+## Integrated metadata and resumable replay (2026-10-22)
+
+### Region meaning and provenance
+
+`common.regions.normalize_region()` uses the existing B/C province/metropolitan vocabulary,
+including historical 강원도/전라북도 and current special-province aliases. 서울특별시/서울시/서울
+become 서울. Unrecognized names never become 전국; explicit 전국 is distinct from unknown.
+Python and Chroma filters normalize user aliases consistently and use the existing agency
+fallback when A provides no supported single region. Unknown still passes the soft filter.
+Hybrid weights, local penalties, field boosting and relaxation defaults are unchanged.
+
+The A `regions.py` adapter accepts only anchored residence statements in 지원대상/선정기준:
+for example `서울특별시에 거주하는 청년` or `경기도 용인시 거주자`. It does not search arbitrary
+place mentions or derive applicant residence from agency/office/school location. Dependent,
+negative, alternative and ambiguous compound statements remain unresolved. Multiple source
+locations are preserved in `eligibility.residence_evidence`; different provinces have no single
+A region. District-qualified statements retain the full location and a
+`district_limited_province_approximation` label. A shared province field does not express complete
+district eligibility. An agency fallback may still influence retrieval when a single A region
+cannot be represented; that is visibly heuristic, not evidence that all source alternatives match.
+
+Evidence records include endpoint, normalized/source field, source phrase, raw/canonical region,
+rule and observation/acquisition provenance when known. Clear current residence evidence supersedes untagged legacy regions while preserving the old value in A audit. `clean_service()` alone cannot know a
+merged endpoint; `_join()` resolves that provenance. Source observation/run IDs do not enter the
+semantic content hash. Existing nonempty untagged values are `legacy_unknown`, not verified.
+
+Optional `Metadata.region_provenance` is preserved by Chunk serialization, pending validation,
+B encoding/Chroma/decoding, exact handoff verification and C evidence metadata:
+
+| Value | Meaning |
+|---|---|
+| `explicit_eligibility` | Supported explicit residence evidence or the existing explicitly verified internal applicant adapter; not a claim of full district/compound eligibility |
+| `agency_inference` | B's existing agency-name retrieval heuristic |
+| `legacy_unknown` | Nonempty legacy region with unavailable provenance |
+| `unknown` | No supported region |
+
+A explicit region takes precedence over agency inference. Legacy documents remain readable;
+changing code does not change persisted documents. C's evidence prompt carries provenance and
+its regional postprocessing prefers explicit A evidence over agency inference. Existing soft
+relaxation remains: C can restore candidates if all were removed. Postprocessing cannot recover
+candidate positions already occupied by other-region results, and does not always remove every
+mismatch. No answer-quality improvement is inferred from metadata correctness alone.
+
+### Diagnosis and correction boundaries
+
+`metadata_tools trace` reads only SQLite/Chroma metadata, without PersistentClient, HNSW/model
+initialization, API calls, index-version writes or acknowledgment. It shows effective DB/index/
+collection/model/manifest paths, current revision/dirty state and selected source→payload→Chunk
+→pending→expected B codec→persisted→decoded metadata. A standalone label-helper listing is
+diagnostic evidence only, not an A replay acquisition. Unsupported schema or inaccessible
+selected resources are reported explicitly; another collection/default is never substituted.
+The output distinguishes service and chunk counts. Missing region is not vector corruption.
+
+Observed locally on 2026-10-22: selected `data/vectorstore`, collection `chunks__BAAI_bge-m3`,
+33,021 chunks / 10,603 services; 9,522 blank-region chunks (28.84%), 2,817 services with blank
+chunks. Of the blanks, 1,828 chunks have a current agency fallback. Actual examples include
+`405000000631` (경기도 용인시 → 경기) and `330000000110` (부산광역시 동래구 → 부산).
+Blank central-agency cases such as `116010000001` remain unknown, not confirmed nationwide.
+These counts are one local index inspection, not an API population or newly established error rate.
+
+The selected default `data/services.db` was missing. The index manifest names another absolute
+workspace path, and records no build revision. Hence the blank-versus-current-code mismatch and
+path association discrepancy are observed; old code, alternate writers or incomplete updates
+remain hypotheses. Today's Git HEAD is not the historical build revision. Restore/identify the
+correct source/index association before production correction; do not edit manifests by hand.
+
+`metadata_tools correct` is dry-run by default. Explicit `--apply --service-ids ...` (1–50 IDs)
+calls `store.reconcile_services()` under the existing source lock. The producer re-derives
+metadata/deadlines from CURRENT authoritative normalized records, preserving acquisition
+history. Changed hash/status creates normal events; codec-only changes can explicitly requeue
+a new service version. Equivalent existing pending snapshots are reused. Inactive/missing
+records are skipped, never resurrected from an index copy. All current service chunks are
+replaced; empty replacements/removals retain existing semantics. The consumer applies ONLY
+the stored selected events, verifies persistent/Vector/BM25 state and acknowledges exact tokens.
+Unrelated pending is preserved. `--verify-every` batch failure/replay semantics and one
+source/index/model association remain intact. Default handoff without selection is unchanged.
+
+Metadata-only embedding reuse is **not implemented**. Normal replacement uses B's passage
+embedding path and may also use query embeddings for verification. No unsafe metadata patch,
+collection clearing, model download, or production-wide backfill is implicit.
+
+### Korean deadline grammar
+
+`parse_deadline()` still returns ISO date or None. Grammar: a whole numeric `YYYY-MM-DD`,
+`YYYY/MM/DD`, `YYYY.MM.DD` (optional final period), or `YYYY년 M월 D일` (spaces optional),
+optionally followed by `~`/`～` and another whole supported date. Calendar validation and
+nondecreasing range order are required; a range returns its ending date. No arbitrary date
+extraction or current-year inference occurs. 상시/예산 소진 시/별도 공고/multiple rounds and
+unsupported conditional schedules remain unparsed, with original application-period text kept.
+Only reliably parsed deadlines authorize automatic expiry. Deadline day is inclusive under
+the existing Asia/Seoul reference-date contract. Unknown is not confirmed open.
+
+### Segments and durable resume
+
+`--offset` is zero-based in validated page/row first-occurrence order of accepted unique IDs; `--limit` remains 1–1000
+and defaults to 100, offset defaults to 0. Conflicting listing IDs are outside this valid order and remain explicitly unresolved in the checkpoint; raw endpoint counts remain separate. The entire chosen acquisition is validated before
+selection. Replay reports source total, selected half-open interval, attempted/processed/
+unchanged/deferred counts, next position and end-of-source. End-of-source does not mean all
+records were restored or indexed. Deferred IDs/positions/reasons remain separately identifiable.
+
+`--checkpoint NAME` starts a new named cursor; `--resume NAME` continues it. The small A-owned
+`ingest_state(key,value)` table stores database UUID and cursor JSON. Binding covers original
+run ID and SHA-256 of acquisition contents/summaries, ordering version, target DB UUID/path,
+inclusion policy, normalization/adapter implementation fingerprint, chunk/tag settings, fixed
+reference date and inclusive Asia/Seoul semantics. A changed source/parser/policy/target/date
+rejects resume. A new pass uses a NEW checkpoint name and an explicit offset/date; it never
+deletes the old checkpoint, resets data, or mutates old events. Do not omit `--today` on a later
+day and assume a previous checkpoint will silently change reference dates.
+
+Cursor progress, services, pending and completed run summary commit in one transaction.
+Transaction failure does not advance. If raw `run-summary.json` output fails after commit,
+the DB cursor remains authoritative and resume starts at its committed next position. A crash
+before the first checkpoint commit requires rerunning the initial command; it cannot skip work.
+Supported writers use the same cross-process source lock. Historical ordering/deferrals remain,
+and replay never authorizes disappearance or changes global verified/authoritative gates.
+
+```powershell
+$metaPython = ".\.venv\Scripts\python.exe"
+$metaRoot = "data/a_validation/metadata-replay-local"
+$metaSource = "data/a_validation/readiness-real-20261020/raw/20261020T061626Z-72e54f11711f"
+
+# Read-only actual selected index. Missing source DB is reported, never replaced by another default.
+& $metaPython -m src.ingest.metadata_tools trace --db-path data/services.db --index-dir data/vectorstore --model BAAI/bge-m3 --service-ids 405000000631 330000000110 116010000001 --raw-list data/raw/serviceList.json
+
+# Bounded local replay: [0,3), then resume [3,6), then an explicit later interval [50,52).
+& $metaPython -m src.ingest.reprocess --source-run $metaSource --db-path "$metaRoot/services.db" --raw-dir "$metaRoot/replay-raw" --offset 0 --limit 3 --checkpoint small --today 2026-10-22 --validation
+& $metaPython -m src.ingest.reprocess --source-run $metaSource --db-path "$metaRoot/services.db" --raw-dir "$metaRoot/replay-raw" --limit 3 --resume small --today 2026-10-22 --validation
+& $metaPython -m src.ingest.reprocess --source-run $metaSource --db-path "$metaRoot/services.db" --raw-dir "$metaRoot/replay-raw" --offset 50 --limit 2 --today 2026-10-22 --validation
+
+# Inspect correction; produces no event/index/model initialization or acknowledgment.
+& $metaPython -m src.ingest.metadata_tools correct --db-path "$metaRoot/services.db" --index-dir "$metaRoot/vectorstore" --service-ids 105100000001 --today 2026-10-22 --validation --dry-run
+& $metaPython -m src.ingest.handoff --db-path "$metaRoot/services.db" --index-dir "$metaRoot/vectorstore" --service-ids 105100000001 --validation --dry-run
+
+# Explicit application only: cached compatible model and valid source/index association required.
+& $metaPython -m src.ingest.metadata_tools correct --db-path "$metaRoot/services.db" --index-dir "$metaRoot/vectorstore" --model BAAI/bge-m3 --service-ids 105100000001 --verify-every 2 --today 2026-10-22 --validation --apply
+# Retry failed selected events without re-deriving an older stored event:
+& $metaPython -m src.ingest.handoff --db-path "$metaRoot/services.db" --index-dir "$metaRoot/vectorstore" --model BAAI/bge-m3 --service-ids 105100000001 --verify-every 2 --validation --apply
+```
+
+For read-only checkpoint inspection:
+
+```python
+from pathlib import Path
+from src.ingest import store
+from src.ingest.storage import StoragePaths
+paths = StoragePaths(Path("data/a_validation/metadata-replay-local/services.db"),
+                     Path("data/a_validation/metadata-replay-local/replay-raw"), "validation")
+state = store.read_state("replay:small", storage=paths)
+```
+
+The existing `--full` ingestion option still collects/requeues active services. It does not
+recover sections discarded from excluded records or create a historical replay cursor.
+Actual age-code semantics remain deferred: local OAS labels JA0110/JA0111 as age start/end,
+but applicant/dependent meaning, inclusive boundaries, special/null/unrestricted values and
+alternative ranges need independent provider evidence. `_verified_eligibility` is not a real
+API mapping. Full traversal/disappearance authority remains unverified.
+
 ## SQLite·분할·증분 상태
 
 일반 live 기본값은 기존 `config.DB_PATH`, `config.RAW_DIR`이며 표준 sqlite3를 쓴다.
 `storage.StoragePaths`를 명시적으로 전달해 전역 config 변경 없이 실행별 DB/raw를 선택한다.
 테이블은 services(정규 JSON·해시·상태·버전),
-ingestion_runs(완전성 포함 요약), pending_changes(서비스별 최신 미확인 이벤트) 세 개다.
+ingestion_runs(완전성 포함 요약), pending_changes(서비스별 최신 미확인 이벤트), ingest_state(DB identity/replay cursor) four tables.
 상태/원인: active 또는 inactive, `expired`/`api_disappeared`/`policy_scope_exit` (legacy `youth_scope_exit` retained)를 구분한다.
 본문·이름·기관·URL·기간 원문·검증 자격·metadata의 정렬 JSON SHA-256으로 변경을 감지한다.
 수집 시각·fresh/retained 같은 운영 정보는 해시에서 제외한다. metadata만 바뀌어도 갱신된다.
@@ -400,7 +557,7 @@ Pytest는 테스트별 tmp_path로 fixture 상태와 legacy 기본 경로를 분
 ## 남은 검증
 
 OAS의 JA 기본 라벨 이후 신청자/부양자·경계·특수값·대안 조건 의미를 확인하는 실제 연령 어댑터가 다음 작업이다.
-지역 자격의 명시적 원천과 전국/미상의 구분도 추가 확인이 필요하며 기관명으로 추정하지 않는다.
+Explicit scoped residence text is supported as documented; structured residence codes and full source coverage remain unverified. Agency inference remains a B retrieval heuristic.
 전체 페이지 종료·빈 전체 목록의 권위성·ID 카디널리티는 추가 검증 전까지 자동 소실 권한으로 쓰지 않는다.
 Full youth counts, production throughput, actual-model/production-data integration and search/answer quality remain unverified.
 기존 B/C fixtures와 eval 질문은 교체하지 않았으며 실제 수집 후 팀원이 정답·공식 근거를 확인해야 한다.
