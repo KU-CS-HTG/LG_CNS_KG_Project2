@@ -2,5 +2,5 @@
 {"id": "d_q30", "source": "q30", "question": "청년희망적금에 지금 가입할 수 있나요?", "shows": "기한 지난 제도: 신청기한이 지난 제도를 후보에서 뺀다", "expect_no_answer": true, "relevant_service_names": []}
 {"id": "d_q02", "source": "q02", "question": "대학을 졸업했는데 아직 취업을 못 했어요. 취업 준비하는 동안 생활비나 수당을 받을 수 있는 지원이 있나요?", "shows": "폐지된 제도: 일반 LLM은 학습 시점의 제도(청년구직활동지원금 등)를 안내할 수 있다", "expect_no_answer": false, "relevant_service_names": ["국민취업지원제도", "청년도전지원사업 안내"]}
 {"id": "d_q29", "source": "q29", "question": "부산에 사는 33살 직장인이 받을 수 있는 주거 지원이 있나요?", "shows": "지역 제도: 부산의 주거 지원을 지역 데이터에서 찾는다", "expect_no_answer": false, "relevant_service_names": ["청년 임차보증금 대출 및 대출이자 지원(머물자리론)", "버팀목전세자금대출", "주택금융공사 월세자금보증", "주거안정 월세대출"]}
-{"id": "d_district", "source": null, "question": "서울 동대문구에 사는 26살인데 월세 지원 받을 수 있는 게 있나요?", "shows": "구 단위: 사는 구의 제도와 서울시·전국 제도를 함께 찾는다 (일반 LLM은 구별 제도를 잘 모른다)", "expect_no_answer": false, "relevant_service_names": []}
+{"id": "d_district", "source": null, "question": "서울 동대문구에 사는 취업준비생인데 자격증 따는 비용을 지원받을 수 있나요?", "shows": "구 단위: 동대문구 제도(미취업청년 자격취득 활동비)를 찾는다 (일반 LLM은 구별 제도를 잘 모른다)", "expect_no_answer": false, "relevant_service_names": []}
 {"id": "d_q34", "source": "q34", "question": "청년이 해외 주식 투자에서 손실을 보면 정부가 보전해 주는 제도가 있나요?", "shows": "없는 제도: 지어내지 않고 모른다고 답한다", "expect_no_answer": true, "relevant_service_names": []}

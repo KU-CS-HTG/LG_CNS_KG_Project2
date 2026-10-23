@@ -54,7 +54,8 @@ SYSTEM_PROMPT = f"""너는 정부 지원제도 안내 도우미다. 사용자 �
   질문이 아직 시행되지 않았거나 발표되지 않은 제도처럼 [근거]가 다룰 수 없는 것을 물으면, 비슷한 기존 제도도
   "{NOT_RELEVANT}"이다. 비슷한 제도로 대신 답하는 것은 추측이다.
 - 각 제도의 meets_need: [사용자가 원하는 도움]이 주어지면, 그 제도의 지원내용이 그중 하나라도 직접 도와주면 true,
-  아니면 false다. 지역·나이·신분이 맞는다는 것은 meets_need의 근거가 아니다. [사용자가 원하는 도움]이 없으면 true다.- 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
+  아니면 false다. 지역·나이·신분이 맞는다는 것은 meets_need의 근거가 아니다. [사용자가 원하는 도움]이 없으면 true다.
+- 관련 있는 제도는 사용자 조건과 제도의 자격을 비교해 applicable을 정한다:
   "{LIKELY}" = 근거에 적힌 자격 조건을 사용자가 밝힌 정보로 모두 충족함,
   "{UNCLEAR}" = 근거가 부족하거나, 사용자가 밝히지 않은 자격 조건(소득·가구·재산 등)이 하나라도 있음,
   "{NOT_ELIGIBLE}" = 근거에 적힌 연령 범위나 지역이 사용자가 질문에서 직접 밝힌 나이·거주지와 명백히 다를 때만.
@@ -170,24 +171,53 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
 
 
 def _judge(question: str, evidence: dict[str, list[Chunk]], needs: list[str]) -> dict:
-    """제도별 판정을 LLM에 받는다. 호출이 실패하면 빈 dict (판정 없음)."""
-    try:
-        out = condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, evidence, needs))
-    except Exception as e:  # 네트워크·키·JSON 오류
-        log.warning("답변 생성 실패, 원문으로 대체: %s", e)
+    """제도별 판정을 LLM에 받는다. 제도마다 따로 묻고(동시에) 결과를 한 출력으로 합친다. 모두 실패하면 빈 dict.
+
+    5개를 한 번에 물으면 첫 제도만 제대로 보고 나머지를 '지원대상 정보가 부족'하다며 '관련 없음'으로 넘겼다:
+    '부산 33살 직장인 주거 지원'에서 청년(19~39세) 대상이 적힌 매입임대·전세임대가 5번 모두 관련 없음, 따로 물으면
+    2번 모두 확인 필요·도움 맞음 (평가 q29). 따로 물으니 같은 제도를 여러 번 적고 다른 제도를 빠뜨리는 꼬임
+    (대전 출산 질문)도 생기지 않는다. 판정이 빠진 제도만 한 번 더 묻는다.
+    situation은 첫 제도(가장 관련 높은 근거) 판정의 것, follow_up은 비어 있지 않은 첫 판정의 것을 쓴다."""
+    sids = list(evidence)
+    if not sids:
         return {}
-    missing = _missing_judgements(out, evidence) if isinstance(out.get("services"), list) else set()
-    if missing:
-        # 판정이 빠진 제도만 따로 한 번 더 묻는다. 출력이 꼬여 같은 제도를 여러 번 적고 다른 제도를 빠뜨렸다
-        # (대전 출산 질문: '대전 소상공인 …'만 반복, 산모·신생아 건강관리 누락 -> 관련 없음으로 빠짐).
-        # 전체를 다시 물으면 같은 이유로 또 빠져서, 빠진 제도만 넣은 짧은 입력으로 묻는다.
-        try:
-            retry = condition_extractor._chat_json(
-                SYSTEM_PROMPT, _build_prompt(question, {sid: evidence[sid] for sid in evidence if sid in missing}, needs))
-            out = {**out, "services": list(out["services"]) + [s for s in retry.get("services") or [] if isinstance(s, dict)]}
-        except Exception as e:  # 다시 묻기 실패: 첫 결과로 답한다
-            log.warning("빠진 판정 다시 묻기 실패: %s", e)
-    return out
+    with ThreadPoolExecutor(max_workers=min(len(sids), MAX_JUDGE_WORKERS)) as pool:
+        outs = dict(zip(sids, pool.map(lambda sid: _judge_one(question, sid, evidence[sid], needs), sids)))
+    missing = [sid for sid in sids if outs[sid] is not None and not _services_for(outs[sid], sid)]
+    for sid in missing:                   # 판정이 빠진 제도만 한 번 더 (드물어서 차례로)
+        retry = _judge_one(question, sid, evidence[sid], needs)
+        if retry is not None and _services_for(retry, sid):
+            outs[sid] = retry
+    ok = [outs[sid] for sid in sids if outs[sid] is not None]
+    if not ok:
+        return {}
+    if not any(isinstance(o.get("services"), list) for o in ok):
+        return ok[0]                      # 판정 형식이 아님: 판정 없이 원문으로 안내 (_recommendations)
+    return {"situation": ok[0].get("situation", ""),
+            "services": [s for sid in sids if outs[sid] is not None for s in _services_for(outs[sid], sid)],
+            "follow_up": next((o.get("follow_up") for o in ok if o.get("follow_up")), "")}
+
+
+MAX_JUDGE_WORKERS = 5   # 제도별 판정 동시 호출 수 (근거 제도 수 = 최대 MAX_RECOMMENDATIONS)
+
+
+def _judge_one(question: str, sid: str, chunks: list[Chunk], needs: list[str]) -> dict | None:
+    """제도 하나의 판정 (LLM 1번). 호출이 실패하면 None."""
+    try:
+        return condition_extractor._chat_json(SYSTEM_PROMPT, _build_prompt(question, {sid: chunks}, needs))
+    except Exception as e:  # 네트워크·키·JSON 오류
+        log.warning("판정 실패(%s), 이 제도는 판정 없이 처리: %s", sid, e)
+        return None
+
+
+def _services_for(out: dict, sid: str) -> list[dict]:
+    """제도 하나만 물은 출력에서 그 제도의 판정. id를 잘못 적었어도 판정이 하나뿐이면 그 제도의 것으로 본다
+    (실제 id는 숫자로만 돼 있어 LLM이 바꿔 적을 수 있다)."""
+    services = [s for s in out.get("services") or [] if isinstance(s, dict)]
+    own = [s for s in services if str(s.get("service_id")).strip() == sid]
+    if not own and len(services) == 1:
+        own = [{**services[0], "service_id": sid}]
+    return own
 
 
 def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: list[str], asked: list[str] | None,
@@ -296,12 +326,6 @@ def _named_programs(asked: list[str] | None) -> list[str]:
 _JOSA_RE = re.compile(r"(?:이나|으로|에서|에게|까지|부터|을|를|이|가|은|는|도|나|의|에|와|과|로)$")
 
 
-def _missing_judgements(out: dict, evidence: dict[str, list[Chunk]]) -> set[str]:
-    """LLM 출력에서 판정이 빠진 근거 제도 id."""
-    seen = {str(s.get("service_id")).strip() for s in out.get("services") or [] if isinstance(s, dict)}
-    return set(evidence) - seen
-
-
 def _met_asked(chunks: list[Chunk], needs: list[str], asked: list[str] | None) -> list[str] | None:
     """meets_need가 true인 제도의 이유 문장에 쓸 '원하는 도움' 구절 (코드 검증).
 
@@ -312,12 +336,16 @@ def _met_asked(chunks: list[Chunk], needs: list[str], asked: list[str] | None) -
     if not asked:
         return None
     body = re.sub(r"[^0-9A-Za-z가-힣]", "", " ".join(c.text for c in chunks))     # 서비스명 포함
-    def in_body(phrase: str) -> bool:
-        words = (_JOSA_RE.sub("", w) for w in re.findall(r"[0-9A-Za-z가-힣]+", phrase))
-        return any(len(w) >= 2 and w not in condition_extractor._GENERIC_HELP and w in body for w in words)
-    phrases = [a for a in asked if in_body(a)]
+    phrases = [a for a in asked if _asked_in(a, body)]
     situations = [n.split("(")[0] for n in needs if n not in asked]
     return phrases or [f"{s} 상황" for s in situations] or asked
+
+
+def _asked_in(phrase: str, body: str) -> bool:
+    """찾는 도움 구절('월세 지원')의 핵심 낱말('월세')이 제도 원문(기호·공백을 뺀 body)에 있는가.
+    2자 이상이고 '지원·제도'처럼 어디에나 붙는 말이 아닌 낱말만 본다."""
+    words = (_JOSA_RE.sub("", w) for w in re.findall(r"[0-9A-Za-z가-힣]+", phrase))
+    return any(len(w) >= 2 and w not in condition_extractor._GENERIC_HELP and w in body for w in words)
 
 
 def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[str] | None = None) -> str:
@@ -785,7 +813,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
     chunks, region_relaxed = _drop_other_regions(chunks, region)
-    chunks = _drop_other_districts(chunks, districts, filters.get("field"))
+    chunks = _drop_other_districts(chunks, districts, filters.get("field"), conditions.get("help"))
     if region and not region_relaxed:
         chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
     selected = evidence_mod.select_evidence(chunks)
@@ -1204,13 +1232,16 @@ def _agency_districts(agency: str) -> set[str]:
     return {p for p in (agency or "").split()[1:] if p in DISTRICTS}
 
 
-def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str | None = None) -> list[Chunk]:
+def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str | None = None,
+                          asked: list[str] | None = None) -> list[Chunk]:
     """사용자가 말한 시·군·구와 다른 시·군·구의 제도를 뺀다. 시·도 전체 제도와 전국 제도는 남긴다.
 
     시·도까지만 비교하면 '서울 강남구에 사는' 질문에 동대문구 주민 대상 제도가 나왔다 (구 단위 제도 208곳).
     그 구의 제도도 관심 분야(field)가 있으면 분야가 맞는 것만 남긴다: 검색어의 '강남구'가 주제와 상관없이 강남구
     제도를 끌어올려 취업준비생 질문에 출산양육지원금·영유아 발달검사가 후보가 됐다 (넓은 질문은 '원하는 도움'으로
     거르지 않아 그대로 안내되기도 함). 시·도 전체·전국 제도는 원래 관련도로 뽑혀서 분야로 거르지 않는다.
+    분야가 달라도 찾는 도움(asked)의 핵심 낱말이 제도 원문에 있으면 남긴다: 분야 값이 '생활안정'인 동대문구
+    '저소득층 중개보수 지원'(주택임대차 중개보수, 월세 환산보증금)이 '월세 지원' 질문에서 빠졌다.
     다 빠지면 원래 후보를 그대로 쓴다 (소프트 필터)."""
     if not districts:
         return chunks
@@ -1219,10 +1250,23 @@ def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str |
         own = _agency_districts(c.metadata.get("agency") or "")
         if own and not own & districts:
             continue                       # 다른 구의 제도
-        if own and field and not retrieve_filters.field_matches(c.metadata.get("field"), field):
-            continue                       # 그 구의 제도지만 관심 분야가 다름
+        if (own and field and not retrieve_filters.field_matches(c.metadata.get("field"), field)
+                and not _service_mentions(c, asked)):
+            continue                       # 그 구의 제도지만 관심 분야도, 찾는 도움도 다름
         keep.append(c)
     return keep or chunks
+
+
+def _service_mentions(c: Chunk, asked: list[str] | None) -> bool:
+    """제도 원문 전체(B의 같은 서비스 조각들)에 찾는 도움의 핵심 낱말이 있는가. 조각을 못 가져오면 이 조각만 본다."""
+    if not asked:
+        return False
+    try:
+        texts = [x.text for x in evidence_mod.vector_store.get_service_chunks(c.service_id)] or [c.text]
+    except Exception:  # 색인 없음 등
+        texts = [c.text]
+    body = re.sub(r"[^0-9A-Za-z가-힣]", "", " ".join(texts))
+    return any(_asked_in(a, body) for a in asked)
 
 
 def _agency_region(agency: str) -> str | None:

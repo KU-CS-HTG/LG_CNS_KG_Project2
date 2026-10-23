@@ -426,31 +426,45 @@ def test_expired_services_are_dropped_and_upcoming_marked(monkeypatch, sample_ch
     assert rec.how_to_apply.endswith(f" / 신청기한: {generator.UPCOMING_MARK} · 2099.11.01~2099.11.30")
 
 
-def test_duplicate_judgement_uses_first_and_missing_judgement_is_retried(monkeypatch, sample_chunks):
-    # LLM이 같은 제도를 여러 번 적고(나중 것이 '관련 없음') 다른 제도를 빠뜨린 실제 출력 (대전 출산·서울 취업준비 질문)
+def test_each_service_is_judged_alone_and_missing_judgement_is_retried(monkeypatch, sample_chunks):
+    # 5개를 한 번에 물으면 뒤쪽 제도를 '정보 부족 -> 관련 없음'으로 넘겼다 (평가 q29) -> 제도마다 따로 묻는다.
+    # 같은 제도를 여러 번 적으면(나중 것이 '관련 없음') 첫 판정을 쓰고, 판정이 빠진 제도는 한 번 더 묻는다
+    import threading
     ev = evidence.select_evidence([c for c in sample_chunks if c.service_id in ("SAMPLE001", "SAMPLE004")])
     a, b = list(ev)
-    broken = {"services": [{"service_id": a, "applicable": "확인 필요", "meets_need": True},
-                           {"service_id": a, "applicable": "관련 없음", "meets_need": False}]}
-    only_b = {"services": [{"service_id": b, "applicable": "확인 필요", "meets_need": True}]}
-    prompts = []
+    dup_a = {"situation": "구직", "follow_up": "",
+             "services": [{"service_id": a, "applicable": "확인 필요", "meets_need": True},
+                          {"service_id": a, "applicable": "관련 없음", "meets_need": False}]}
+    ok_b = {"follow_up": "소득을 알려 주세요.", "services": [{"service_id": b, "applicable": "확인 필요", "meets_need": True}]}
+    prompts, lock = [], threading.Lock()
 
     def chat(system, user):
         if system != generator.SYSTEM_PROMPT:
             return {}
-        prompts.append(user)
-        return broken if len(prompts) == 1 else only_b
+        with lock:
+            prompts.append(user)
+            first_b = sum(f"id={b}" in p for p in prompts) == 1
+        if f"id={a}" in user:
+            return dup_a
+        return {"services": []} if first_b else ok_b          # b는 처음에 판정이 빠졌다
     monkeypatch.setattr("src.generate.condition_extractor._chat_json", chat)
-    names = [r.service_name for r in generator._generate("지원 있나요?", ev, [], None).recommendations]
-    assert len(prompts) == 2 and len(names) == 2                   # 빠진 판정이 있어 한 번 더 물었다
-    assert f"id={b}" in prompts[1] and f"id={a}" not in prompts[1]   # 빠진 제도만 넣어서
-    calls = []
+    answer = generator._generate("지원 있나요?", ev, [], None)
+    assert all((f"id={a}" in p) != (f"id={b}" in p) for p in prompts)   # 프롬프트마다 제도 하나
+    assert len(prompts) == 3                                            # a 1번, b 2번 (빠져서 다시)
+    assert [r.service_name for r in answer.recommendations] == [ev[a][0].service_name, ev[b][0].service_name]
+    assert "소득을 알려 주세요." in answer.text                         # 비어 있지 않은 첫 follow_up
 
-    calls.clear()
+
+def test_single_service_judgement_with_wrong_id_is_kept(monkeypatch, sample_chunks):
+    # 제도 하나만 물었는데 id를 바꿔 적어도(숫자 id) 판정이 하나뿐이면 그 제도의 판정이다
+    ev = evidence.select_evidence([c for c in sample_chunks if c.service_id == "SAMPLE001"])
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {
+        "services": [{"service_id": "12345", "applicable": "확인 필요", "meets_need": True}]}
+        if s == generator.SYSTEM_PROMPT else {})
+    assert len(generator._generate("지원 있나요?", ev, [], None).recommendations) == 1
     monkeypatch.setattr("src.generate.condition_extractor._chat_json",
-                        lambda s, u: (calls.append(1) or broken) if s == generator.SYSTEM_PROMPT else {})
-    names = [r.service_name for r in generator._generate("지원 있나요?", ev, [], None).recommendations]
-    assert names == [ev[a][0].service_name]                        # 중복 판정은 첫 판정('확인 필요')을 쓴다
+                        lambda s, u: (_ for _ in ()).throw(TimeoutError()) if s == generator.SYSTEM_PROMPT else {})
+    assert generator._judge("지원 있나요?", ev, []) == {}                 # 모두 실패하면 판정 없음
 
 
 def test_district_question_drops_other_districts_in_same_city(sample_chunks):
@@ -482,6 +496,20 @@ def test_district_programs_must_match_interest_field(sample_chunks):
     assert kept == ["job", "city", "nat"]          # 구 제도만 분야로 거르고, 시 전체·전국 제도는 그대로
     assert [c.service_id for c in generator._drop_other_districts(chunks, {"강남구"})] == [
         "birth", "job", "city", "nat"]             # 관심 분야가 없으면 거르지 않는다 ('곧 아이가 태어나요')
+
+
+def test_district_program_with_other_field_kept_when_it_mentions_the_help(monkeypatch, sample_chunks):
+    # 분야 값이 '생활안정'인 동대문구 '저소득층 중개보수 지원'(월세 환산보증금)이 '월세 지원' 질문에서 빠졌다
+    from dataclasses import replace
+    def at(sid, field, text):
+        return replace(sample_chunks[0], service_id=sid, text=text,
+                       metadata={**sample_chunks[0].metadata, "agency": "서울특별시 동대문구", "field": field})
+    broker = at("broker", "생활안정", "저소득층 중개보수 지원 (지원대상) 기초생활수급자")
+    safety = at("safety", "안전", "1인가구 안심장비 지원사업 현관문 이중잠금장치")
+    full = {"broker": [replace(broker, text="주택임대차 중개보수 지원, 월세 환산보증금 1억원 이하")]}
+    monkeypatch.setattr(generator.evidence_mod.vector_store, "get_service_chunks", lambda sid: full.get(sid, []))
+    kept = generator._drop_other_districts([broker, safety], {"동대문구"}, "주거·자립", ["월세 지원"])
+    assert [c.service_id for c in kept] == ["broker"]   # 원문 전체에 '월세'가 있어 남고, '지원'만 맞는 제도는 빠진다
 
 
 def test_llm_says_missing_but_raw_section_exists_uses_raw():

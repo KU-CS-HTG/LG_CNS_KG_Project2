@@ -412,10 +412,10 @@ src/
   ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
   index/     embedder, embed_cache, embed_shard, vector_store          # B
   retrieve/  hybrid, filters, baseline                             # B
-  generate/  condition_extractor, evidence, generator, citation    # C
+  generate/  condition_extractor, evidence, generator, citation, guide_evidence, income_calc  # C
   # 판정 기준 문서(제안): ingest/guides(A) · index/guide_store(B) · generate/guide_evidence(C)
 app/         main.py                                               # C: UI
-eval/        metrics, answer_eval, run_eval, label_helper(정답 채우기 도구), questions.jsonl, results/
+eval/        metrics, answer_eval, rag_compare(일반 LLM 비교), run_eval, label_helper(정답 채우기 도구), questions.jsonl, guide_questions.jsonl, demo_questions.jsonl, results/
 tests/       fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
 data/guides/ 판정 기준 문서 원본 PDF (커밋 금지, 제안)
@@ -595,6 +595,8 @@ python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
 python -m src.ingest.handoff --dry-run # A→B: 저장된 미처리 이벤트 확인 (--apply로 반영·검증·확인 처리)
 python -m src.index.vector_store       # B: 기존 직접 색인 CLI (pending 확인 처리·소비자 잠금 없음)
 python -m app.main                     # C: 앱 실행
+python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
+python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (docs/LABELING.md)
@@ -669,7 +671,7 @@ def test_예시(fake_search, fake_conditions):
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
 | 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
 | 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
-| 판정 기준 문서 (`ingest/guides`, `index/guide_store`, `generate/guide_evidence`) | 제안 단계, 미구현 |
+| 판정 기준 문서 (`ingest/guides`, `index/guide_store`, `generate/guide_evidence`) | C `guide_evidence` 구현 (B 검색 전에는 화면 그대로), A·B 진행 중 |
 
 ### A 2차 수정의 운영 규칙
 
