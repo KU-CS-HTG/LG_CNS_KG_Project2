@@ -331,6 +331,18 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
 
+### 2.2.1 검수 저장소 — 판정·피드백을 쌓고 시험지를 만든다 (B, `src/review/`)
+
+사람이 질문마다 "이 제도가 정답인가"를 판정하고(`good` `partial` `bad` `unsure`) 답변에 메모를 남기면, 그 기록이 평가용 시험지(`eval` 형식), 검색 노이즈 분석, 생성 지침의 근거가 됩니다. 기록은 `reviews/events/<검수자>.jsonl`에 한 줄씩 추가만 하므로 사람마다 파일이 달라 git 충돌이 없고, 판정은 제도 내용의 해시(신청기한 포함)와 함께 저장되어 **제도가 바뀌면 바뀐 것만 다시 검수**합니다. 기한이 지난 제도는 판정과 무관하게 시험지에서 자동 제외됩니다.
+
+```powershell
+python -m src.review import-legacy                       # eval/questions.jsonl의 질문·정답을 이벤트로 이전 (기존 질문은 모두 dev)
+python -m src.review export --split dev --out reviews/exports/dev_v1.jsonl   # 판정 -> 시험지
+python -m src.review queue --n 30                        # 판정 없는 새 후보·내용이 바뀐 후보 (색인 필요)
+python -m src.review stats                               # 판정·사유 통계
+```
+필드, 합의 규칙(조정자는 B), 앱(C) 연동 방법은 [`docs/REVIEW_STORE.md`](docs/REVIEW_STORE.md)를 보세요.
+
 ### 2.3 증분 색인 인계
 
 ```powershell
