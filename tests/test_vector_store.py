@@ -198,7 +198,8 @@ def test_backfill_region_fills_old_chunks_without_touching_embeddings(fake_embed
 
     done = vs.backfill_region()
     assert done["updated"] == 2 and done["chunks"] == 4
-    assert col.get(ids=["A#지원대상"], include=["metadatas"])["metadatas"][0]["region"] == "충남"
+    stored = col.get(ids=["A#지원대상"], include=["metadatas"])["metadatas"][0]
+    assert stored["region"] == "충남" and stored["region_provenance"] == "agency_inference"           # 추정한 값임이 표시된다
     assert col.get(ids=["C#지원대상"], include=["metadatas"])["metadatas"][0]["region"] == ""     # 중앙기관·시군구만 있는 기관은 그대로
     assert (col.get(ids=["A#지원대상"], include=["embeddings"])["embeddings"] == before_vec).all()
     assert vs.backfill_region()["updated"] == 0                                                  # 여러 번 실행해도 같다

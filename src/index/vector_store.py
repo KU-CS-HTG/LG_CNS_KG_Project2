@@ -242,7 +242,7 @@ def backfill_region(dry_run: bool = False, batch_size: int = 500) -> dict:
         if not metadata.get("region"):
             region = filter_rules.agency_region(metadata.get("agency"))
             if region:
-                updates.append((chunk_id, {**metadata, "region": region}))
+                updates.append((chunk_id, {**metadata, "region": region, "region_provenance": "agency_inference"}))   # 출처 표시: 기관명 추정
     if not dry_run:
         for i in range(0, len(updates), batch_size):
             part = updates[i : i + batch_size]
