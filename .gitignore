@@ -14,3 +14,6 @@ data/a_validation/
 .pytest_cache/
 /pytest-cache-files-*/
 data/embed_shards/
+
+# A-1 runtime catalog, original files, acquisition diagnostics and OS locks.
+data/official_documents/
