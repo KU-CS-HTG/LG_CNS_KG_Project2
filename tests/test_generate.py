@@ -284,6 +284,25 @@ def test_not_eligible_without_question_evidence_is_kept_as_needs_check(monkeypat
     assert len(answer.recommendations) == 1 and answer.recommendations[0].needs_check   # 빼지 않고 확인 필요
 
 
+def test_unverified_not_eligible_goes_after_other_cards(monkeypatch):
+    # 신분이 맞지 않는다는 판정('구직 등록한 장애인')은 코드로 확인할 수 없어 빼지 않지만 1번 카드가 되지 않게 뒤로 보낸다 (평가 q02)
+    ev = evidence.select_evidence(CASES["sr1"]["results"])
+    first, second = list(ev)[:2]
+    _fake_llm(monkeypatch, {"services": [
+        {"service_id": first, "applicable": "해당 없음", "mismatch": {"said": "졸업", "condition": "구직 등록한 장애인"}},
+        {"service_id": second, "applicable": "확인 필요"}]})
+    answer = generator.generate_answer(QUESTION_WITH_RESULTS, {s: ev[s] for s in (first, second)})
+    assert [r.service_name for r in answer.recommendations] == [ev[second][0].service_name, ev[first][0].service_name]
+
+
+def test_group_only_program_not_in_question_goes_later():
+    assert generator._other_group("대학을 졸업했는데 취업을 못 했어요", "장애인 취업성공패키지")
+    assert not generator._other_group("장애가 있는데 취업 지원 있나요?", "장애인 취업성공패키지")
+    assert not generator._other_group("한부모 가정인데 양육비 지원 있나요", "한부모가족 아동양육비")
+    assert generator._other_group("취업 준비 중이에요", "국가보훈대상자 취업수강료 지원")
+    assert not generator._other_group("월세가 부담돼요", "주거급여 (맞춤형 급여)")
+
+
 def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
     ev = evidence.select_evidence(CASES["sr1"]["results"])
     _fake_llm(monkeypatch, {"services": []})                      # 판정은 왔지만 관련 있는 제도가 없음
@@ -482,6 +501,18 @@ def test_district_question_drops_other_districts_in_same_city(sample_chunks):
     assert generator._drop_other_districts(chunks, set()) == chunks  # 구를 말하지 않으면 그대로
     only_other = [at("D", "서울특별시 동대문구")]
     assert generator._drop_other_districts(only_other, {"강남구"}) == only_other   # 다 빠지면 원래 후보 (소프트 필터)
+
+
+def test_agency_region_from_district_name_inside_foundation_name():
+    # 지자체 산하 기관은 이름에 시·도가 없어 전국 제도로 보였다 (서울 질문에 의왕시·시흥시 청소년 상담, 평가 q36)
+    assert generator._agency_region("재단법인의왕시청소년재단") == "경기"
+    assert generator._agency_region("동대문구시설관리공단") == "서울"
+    assert generator._agency_region("재단법인광주시문화재단") == "경기"       # 경기 광주시 (광주광역시 아님)
+    assert generator._agency_region("충청북도 충주시") == "충북"              # 원래 방식 그대로
+    assert generator._agency_region("중구시설관리공단") is None               # 여러 시·도에 있는 이름
+    assert generator._agency_region("한국남동발전") is None                   # 끝 글자 없는 '남동'은 보지 않는다
+    assert generator._agency_region("재단법인용산복지재단") is None           # '용산구'가 아니라 '용산'
+    assert generator._agency_region("보건복지부") is None
 
 
 def test_district_programs_must_match_interest_field(sample_chunks):

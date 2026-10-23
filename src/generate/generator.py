@@ -235,6 +235,7 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         if isinstance(s, dict):
             by_id.setdefault(str(s.get("service_id")).strip(), s)
     recs: list[Recommendation] = []
+    doubtful: list[Recommendation] = []   # '해당 없음' 판정이 코드로 확인되지 않은 제도: 빼지 않고 뒤로 보낸다
     for sid, chunks in _named_candidates(evidence, asked).items():
         gen = by_id.get(sid)
         if gen is None:
@@ -242,7 +243,8 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
                 continue
             gen = {}
         applicable = gen.get("applicable")
-        if applicable == NOT_ELIGIBLE and not _verified_mismatch(question, gen.get("mismatch")):
+        unverified = applicable == NOT_ELIGIBLE and not _verified_mismatch(question, gen.get("mismatch"))
+        if unverified:
             applicable = UNCLEAR          # 나이·거주지가 실제로 다르다고 확인되지 않으면 제외하지 않고 확인 필요로 남긴다
         if applicable in (NOT_ELIGIBLE, NOT_RELEVANT):
             continue
@@ -250,9 +252,27 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
         if _tenure_mismatch(asked, chunks):
             continue                      # 전세·월세를 묻는데 집을 사는 제도 (또는 그 반대)
-        recs.append(_to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
-                                       if gen.get("meets_need") is True else None, checklists.get(sid)))
-    return recs
+        # 신분(중고등 신입생·보훈대상)이 맞지 않는다는 판정은 코드로 확인할 수 없어 빼지 않지만 맨 앞 카드가 되지 않게
+        # 뒤로 보낸다. 질문에 없는 특정 대상 전용 제도도 같다: 졸업 후 미취업 질문에 '장애인 취업성공패키지'가
+        # 1번 카드였다 (평가 q02, 판정은 장애 여부를 말하지 않아 '확인 필요'로 맞게 냈고 검색 순위가 1위였다)
+        later = unverified or _other_group(question, chunks[0].service_name)
+        (doubtful if later else recs).append(_to_recommendation(
+            question, chunks, gen, _met_asked(chunks, needs, asked) if gen.get("meets_need") is True else None,
+            checklists.get(sid)))
+    return recs + doubtful
+
+
+# 특정 대상 전용 제도의 이름 낱말 -> 질문에 있으면 그 대상으로 보는 말. '저소득·수급자'는 주거급여처럼 넓은 제도에도
+# 붙어 넣지 않는다
+_GROUP_WORDS = {"장애": ("장애",), "보훈": ("보훈", "유공"), "국가유공": ("보훈", "유공"), "북한이탈": ("북한", "탈북"),
+                "탈북": ("북한", "탈북"), "한부모": ("한부모", "미혼모", "미혼부"), "다문화": ("다문화", "이민", "외국"),
+                "결혼이민": ("다문화", "이민", "외국"), "어르신": ("어르신", "노인", "65세"), "노인": ("어르신", "노인", "65세")}
+
+
+def _other_group(question: str, service_name: str) -> bool:
+    """제도 이름이 특정 대상(장애인·보훈·북한이탈주민 등) 전용인데 질문에 그 대상이 없는가."""
+    q = "".join((question or "").split())
+    return any(w in (service_name or "") and not any(s in q for s in said) for w, said in _GROUP_WORDS.items())
 
 
 # 집에 사는 방식: 세 들어 살기(보증금·전세·월세·임대) / 사기(구입·구매·매매). '매입임대'는 공공이 사서 빌려주는 임대다.
@@ -1270,10 +1290,27 @@ def _service_mentions(c: Chunk, asked: list[str] | None) -> bool:
 
 
 def _agency_region(agency: str) -> str | None:
-    """지자체 소관기관의 시·도 짧은 이름 ('충청북도 충주시' -> '충북'). 전국 기관이면 None."""
-    if not evidence_mod._LOCAL_AGENCY_RE.search(agency):
-        return None
-    return condition_extractor._find_region(agency)
+    """지자체 소관기관의 시·도 짧은 이름 ('충청북도 충주시' -> '충북'). 전국 기관이면 None.
+
+    지자체 산하 기관은 이름에 시·도가 없다 ('재단법인의왕시청소년재단', '고양시청소년재단'): 지역을 몰라 전국 제도로
+    보고 '서울 심리 상담' 질문에 의왕시·시흥시 청소년 상담이 1·2번 카드로 나왔다 (평가 q36). 그래서 이름에 시·군·구
+    이름이 그대로('의왕시') 들어 있고 그 이름이 한 시·도에만 있으면 그 시·도로 본다 (_district_region)."""
+    if evidence_mod._LOCAL_AGENCY_RE.search(agency):
+        found = condition_extractor._find_region(agency)
+        if found:
+            return found
+    return _district_region(agency)
+
+
+def _district_region(agency: str) -> str | None:
+    """기관 이름 안의 시·군·구 이름('의왕시', '동대문구')으로 시·도를 찾는다. 같은 이름이 여러 시·도에 있으면
+    (중구·서구·고성군) 정할 수 없어 None. 끝 글자를 뗀 이름('의왕')은 보지 않는다: '한국남동발전'이 인천 남동구가 된다."""
+    name = "".join((agency or "").split())
+    regions = {DISTRICTS[d][0] for d in _UNIQUE_DISTRICTS if d in name}
+    return regions.pop() if len(regions) == 1 else None
+
+
+_UNIQUE_DISTRICTS = sorted((d for d, rs in DISTRICTS.items() if len(rs) == 1), key=len, reverse=True)
 
 
 # B가 결과가 없을 때 푸는 조건 (CLAUDE.md: 지역 -> 연령. 관심 분야는 필터가 아니라 가산점이라 풀지 않는다)
