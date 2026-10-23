@@ -467,11 +467,54 @@ def test_each_service_is_judged_alone_and_missing_judgement_is_retried(monkeypat
             return dup_a
         return {"services": []} if first_b else ok_b          # b는 처음에 판정이 빠졌다
     monkeypatch.setattr("src.generate.condition_extractor._chat_json", chat)
-    answer = generator._generate("지원 있나요?", ev, [], None)
+    answer = generator._generate("서울에서 받을 수 있는 지원 있나요?", ev, [], None)   # 지역 질문: 순서는 검색 순서
     assert all((f"id={a}" in p) != (f"id={b}" in p) for p in prompts)   # 프롬프트마다 제도 하나
     assert len(prompts) == 3                                            # a 1번, b 2번 (빠져서 다시)
     assert [r.service_name for r in answer.recommendations] == [ev[a][0].service_name, ev[b][0].service_name]
     assert "소득을 알려 주세요." in answer.text                         # 비어 있지 않은 첫 follow_up
+
+
+def test_more_candidates_are_judged_but_only_five_are_shown(monkeypatch, sample_chunks):
+    import re
+    from dataclasses import replace
+    base = next(c for c in sample_chunks if c.section == "지원대상")      # 체크리스트는 지원대상·선정기준에서 뽑는다
+    ev = {f"S{i}": [replace(base, service_id=f"S{i}", service_name=f"제도{i}")] for i in range(8)}
+    judged, checked = [], []
+
+    def chat(system, user):
+        sid = re.search(r"id=(S\d)", user).group(1)
+        (judged if system == generator.SYSTEM_PROMPT else checked).append(sid)
+        if system == generator.SYSTEM_PROMPT:
+            return {"services": [{"service_id": sid, "applicable": "관련 없음" if sid == "S0" else "확인 필요"}]}
+        return {"services": [{"id": sid, "conditions": [{"item": "연령", "criterion": ""}]}]}
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", chat)
+    recs = generator._generate("지원 있나요?", ev, [], None).recommendations
+    assert sorted(judged) == sorted(ev) and sorted(checked) == sorted(ev)   # 8개 모두 따로 판정·체크리스트
+    assert [r.service_name for r in recs] == ["제도1", "제도2", "제도3", "제도4", "제도5"]   # S0이 빠진 자리를 6번째가 채움
+
+    # 상위 5개가 모두 관련 없으면 뒤 후보만 통과해도 근거 없음 (근거 없음 질문에 뒤 후보가 안내되던 문제, q33)
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {"services": [{
+        "service_id": re.search(r"id=(S\d)", u).group(1),
+        "applicable": "확인 필요" if "id=S7" in u else "관련 없음"}]} if s == generator.SYSTEM_PROMPT else {})
+    assert generator._generate("지원 있나요?", ev, [], None).no_evidence is True
+
+
+def test_card_order_puts_likely_and_national_first_for_questions_without_region(monkeypatch, sample_chunks):
+    # 판정 후보 10개 중 앞 5개만 나가 검색 순서로만 정하면 판정 '가능'인 정답·전국 제도가 잘렸다 (q09·q12)
+    from dataclasses import replace
+    base = sample_chunks[0]
+    def svc(sid, agency):
+        return [replace(base, service_id=sid, service_name=sid, metadata={**base.metadata, "agency": agency, "region": None})]
+    ev = {"local": svc("local", "재단법인강원인재원"), "unclear": svc("unclear", "한국장학재단"),
+          "likely": svc("likely", "교육부"), "jeonju": svc("jeonju", "전주시복지재단전주사람")}
+    verdict = {"local": "확인 필요", "unclear": "확인 필요", "likely": "가능", "jeonju": "가능"}
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {"services": [
+        {"service_id": sid, "applicable": verdict[sid]} for sid in verdict if f"id={sid}]" in u]}
+        if s == generator.SYSTEM_PROMPT else {})
+    names = lambda q: [r.service_name for r in generator._generate(q, ev, [], None).recommendations]  # noqa: E731
+    # '재단법인강원인재원'은 이름으로 지역을 알 수 없어 전국 쪽에 남는다 (저장된 지역 값이 없을 때)
+    assert names("학자금 이자 지원 있나요?") == ["likely", "local", "unclear", "jeonju"]
+    assert names("전북에 사는데 학자금 이자 지원 있나요?") == ["likely", "jeonju", "local", "unclear"]   # 지역 질문은 지자체를 뒤로 보내지 않음
 
 
 def test_single_service_judgement_with_wrong_id_is_kept(monkeypatch, sample_chunks):
@@ -611,31 +654,30 @@ def test_region_question_keeps_slots_for_national_programs(monkeypatch, sample_c
     assert only_local == ["L0", "L1", "L2", "L3", "L4"]          # 전국 후보가 없으면 지역 제도로 채운다
 
 
-def test_expired_slots_are_refilled_without_changing_top_order(fake_conditions, monkeypatch, sample_chunks):
-    # 처음부터 후보 수를 키우면 B의 순위가 바뀌어(q03) 기한 지난 제도가 빠졌을 때만 더 큰 검색으로 채운다
+def test_judge_candidates_are_filled_without_changing_top_order(fake_conditions, monkeypatch, sample_chunks):
+    # 처음부터 후보 수를 키우면 B의 순위가 바뀌어(q03) 처음 검색(k=5)의 순서는 그대로 두고, 판정 후보 10개의
+    # 나머지와 기한 지난 제도가 빠진 자리를 더 큰 검색으로 뒤에 채운다
     from src.retrieve import hybrid
     by_sid = {}
     for c in sample_chunks:
         by_sid.setdefault(c.service_id, c)
-    order = list(by_sid)                                       # 검색 순위 (k가 커도 같은 순서라고 가정)
+    first = list(by_sid)
+    big = list(reversed(first))                                # 큰 검색은 순위가 다르다고 가정
     calls = []
 
     def search(query, filters, k=5, mode="hybrid_filter"):
         calls.append(k)
-        return hybrid.SearchResult([by_sid[s] for s in order[:k]], [], filters, False)
+        return hybrid.SearchResult([by_sid[s] for s in (first if k == 5 else big)[:k]], [], filters, False)
     monkeypatch.setattr(hybrid, "search_with_info", search)
     fake_conditions({"conditions": {}})
     _fake_llm(monkeypatch, {})
-    monkeypatch.setattr(generator, "_application_period", lambda sid: "")
-    generator._answer_with_evidence("받을 수 있는 지원")
-    assert calls == [5]                                        # 빠진 제도가 없으면 예전과 같은 검색 한 번
-
-    calls.clear()
-    expired = order[1]
+    expired = first[1]
     monkeypatch.setattr(generator, "_application_period", lambda sid: "2020년 상반기" if sid == expired else "")
     _, selected = generator._answer_with_evidence("받을 수 있는 지원")
     assert calls == [5, 15]
-    assert list(selected) == [s for s in order if s != expired][:5]   # 원래 순서 유지, 빈자리는 6위로 채움
+    top = [s for s in first[:5] if s != expired]
+    rest = [s for s in big if s not in first[:5] and s != expired]
+    assert list(selected) == (top + rest)[:generator.JUDGE_CANDIDATES]   # 처음 순서 유지, 뒤는 큰 검색 순서
 
 
 def _fake_two_calls(monkeypatch, answer_out: dict, checklist_out: dict):

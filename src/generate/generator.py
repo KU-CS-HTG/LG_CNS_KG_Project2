@@ -108,25 +108,36 @@ def _extract_checklists(evidence: dict[str, list[Chunk]]) -> dict[str, list[dict
     """제도별 자격 체크리스트 원본 (LLM, 근거 검증 전). 실패하면 빈 dict (답변 생성의 needs_check로 대신한다).
 
     답변 생성 LLM이 덤으로 적는 needs_check는 소득 한두 줄만 나오고 무주택·세대주·자녀 수·재학 같은 핵심 자격이
-    빠졌다 (청년월세·버팀목·다자녀 국가장학금). 자격만 뽑는 호출을 따로 두고, 답변 생성과 동시에 돌려 시간이 늘지 않게 한다."""
-    blocks = []
+    빠졌다 (청년월세·버팀목·다자녀 국가장학금). 자격만 뽑는 호출을 따로 두고, 답변 생성과 동시에 돌려 시간이 늘지 않게 한다.
+    제도마다 따로(동시에) 묻는다: 5개를 한 번에 물으면 응답이 길어 6.5초로 답변 시간의 대부분이었고(판정 3.4초),
+    판정 후보를 10개로 늘리면 더 길어진다. 실패한 제도만 빠진다."""
+    blocks = {}
     for sid, chunks in evidence.items():
         sections = _sections(chunks)
         body = "\n".join(f"- {s}: {sections[s]}" for s in ("지원대상", "선정기준") if sections.get(s))
         if body:
-            blocks.append(f"[제도 id={sid}] {chunks[0].service_name}\n{body}")
+            blocks[sid] = f"[제도 id={sid}] {chunks[0].service_name}\n{body}"
     if not blocks:
         return {}
+    with ThreadPoolExecutor(max_workers=min(len(blocks), MAX_JUDGE_WORKERS)) as pool:
+        outs = dict(zip(blocks, pool.map(_checklist_one, blocks.values())))
+    result: dict[str, list[dict]] = {}
+    for sid, out in outs.items():
+        services = [s for s in (out or {}).get("services") or []
+                    if isinstance(s, dict) and isinstance(s.get("conditions"), list)]
+        own = [s for s in services if str(s.get("id")).strip() == sid] or services[:1]   # 하나만 물었으니 id가 달라도 그 제도
+        if own:
+            result[sid] = own[0]["conditions"][:MAX_CHECKLIST_ITEMS]
+    return result
+
+
+def _checklist_one(block: str) -> dict | None:
+    """제도 하나의 자격 체크리스트 (LLM 1번). 실패하면 None (그 제도는 답변 생성의 needs_check로 대신한다)."""
     try:
-        out = condition_extractor._chat_json(CHECKLIST_PROMPT, "\n\n".join(blocks))
+        return condition_extractor._chat_json(CHECKLIST_PROMPT, block)
     except Exception as e:  # 네트워크·키·JSON 오류
         log.warning("자격 체크리스트 추출 실패, 답변 생성의 확인 필요 조건으로 대체: %s", e)
-        return {}
-    result: dict[str, list[dict]] = {}
-    for s in out.get("services") or []:
-        if isinstance(s, dict) and isinstance(s.get("conditions"), list):
-            result[str(s.get("id")).strip()] = s["conditions"][:MAX_CHECKLIST_ITEMS]
-    return result
+        return None
 
 
 def generate_answer(question: str, evidence: dict[str, list[Chunk]]) -> Answer:
@@ -157,15 +168,16 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         answer_job = pool.submit(_judge, question, evidence, needs)
         checklists = pool.submit(_extract_checklists, evidence).result()
         out = answer_job.result()
-    recs = _recommendations(question, evidence, needs, asked, out, checklists)
+    recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists), evidence)
     if not recs and isinstance(out.get("services"), list) and _named_candidates(evidence, asked):
         # 후보가 있는데 판정에서 모두 빠졌으면 판정을 한 번 더 받는다. 같은 근거로도 판정이 흔들렸다
         # ('대학생 자취방 주거비' 질문: 같은 후보 5개로 6번 중 2번 근거 없음, 평가 q07).
         # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
         out = _judge(question, evidence, needs)
-        recs = _recommendations(question, evidence, needs, asked, out, checklists)
+        recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists), evidence)
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
+    recs = recs[:config.MAX_RECOMMENDATIONS]   # 판정 후보는 JUDGE_CANDIDATES개, 안내는 앞 5개 (뒤로 보낸 제도가 먼저 잘린다)
     text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
     return Answer(text=text, recommendations=recs)
 
@@ -198,7 +210,15 @@ def _judge(question: str, evidence: dict[str, list[Chunk]], needs: list[str]) ->
             "follow_up": next((o.get("follow_up") for o in ok if o.get("follow_up")), "")}
 
 
-MAX_JUDGE_WORKERS = 5   # 제도별 판정 동시 호출 수 (근거 제도 수 = 최대 MAX_RECOMMENDATIONS)
+MAX_JUDGE_WORKERS = 10  # 제도별 판정·체크리스트 동시 호출 수 (판정 후보 수 JUDGE_CANDIDATES와 같게)
+
+
+def _top_or_none(recs: list[Recommendation], evidence: dict[str, list[Chunk]]) -> list[Recommendation]:
+    """검색 상위 MAX_RECOMMENDATIONS개 후보 중 하나라도 통과했을 때만 그 뒤 후보(6~10위)로 빈자리를 채운다.
+    상위가 모두 관련 없으면 근거 없음이 맞는 질문일 가능성이 높다: 후보를 10개로 늘리자 '기초연금 신청' 질문(범위 밖,
+    q33)에 노인일자리가 2번 중 1번 안내됐다. 뒤 후보만 통과한 경우는 안내하지 않는다."""
+    top = set(list(evidence)[:config.MAX_RECOMMENDATIONS])
+    return recs if any(r.service_id in top for r in recs) else []
 
 
 def _judge_one(question: str, sid: str, chunks: list[Chunk], needs: list[str]) -> dict | None:
@@ -234,9 +254,9 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
     for s in out.get("services") or []:
         if isinstance(s, dict):
             by_id.setdefault(str(s.get("service_id")).strip(), s)
-    recs: list[Recommendation] = []
-    doubtful: list[Recommendation] = []   # '해당 없음' 판정이 코드로 확인되지 않은 제도: 빼지 않고 뒤로 보낸다
-    for sid, chunks in _named_candidates(evidence, asked).items():
+    ranked: list[tuple[tuple, Recommendation]] = []
+    no_region = condition_extractor._find_region(question) is None
+    for rank, (sid, chunks) in enumerate(_named_candidates(evidence, asked).items()):
         gen = by_id.get(sid)
         if gen is None:
             if judged:
@@ -256,10 +276,22 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         # 뒤로 보낸다. 질문에 없는 특정 대상 전용 제도도 같다: 졸업 후 미취업 질문에 '장애인 취업성공패키지'가
         # 1번 카드였다 (평가 q02, 판정은 장애 여부를 말하지 않아 '확인 필요'로 맞게 냈고 검색 순위가 1위였다)
         later = unverified or _other_group(question, chunks[0].service_name)
-        (doubtful if later else recs).append(_to_recommendation(
+        # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
+        # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
+        # (전주·세종·강원)가 앞자리를 차지했다 -> 뒤로 보낸 제도 맨 뒤, 지역 없는 질문의 지자체 제도는 전국 제도 뒤,
+        # 판정 '가능'을 '확인 필요' 앞. 같은 조건 안에서는 검색 순서 (CLAUDE.md B 계약: 지역 없는 질문은 지자체 제도를 뒤로)
+        key = (later, no_region and _is_local(chunks), applicable != LIKELY, rank)
+        ranked.append((key, _to_recommendation(
             question, chunks, gen, _met_asked(chunks, needs, asked) if gen.get("meets_need") is True else None,
-            checklists.get(sid)))
-    return recs + doubtful
+            checklists.get(sid))))
+    return [r for _, r in sorted(ranked, key=lambda kr: kr[0])]
+
+
+def _is_local(chunks: list[Chunk]) -> bool:
+    """지자체 제도인가: 소관기관으로 시·도를 알 수 있거나(산하 기관 포함), 저장된 지역 값이 전국이 아닌 시·도."""
+    meta = chunks[0].metadata if chunks else {}
+    region = normalize_region(meta.get("region") or "")
+    return _agency_region(meta.get("agency") or "") is not None or region not in (None, "전국")
 
 
 # 특정 대상 전용 제도의 이름 낱말 -> 질문에 있으면 그 대상으로 보는 말. '저소득·수급자'는 주거급여처럼 넓은 제도에도
@@ -826,9 +858,10 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     result = hybrid.search_with_info(question, filters, k=k)
     today = date.fromisoformat(filters.get("today") or date.today().isoformat())
     chunks = _drop_expired(result.chunks, today)
-    if len(chunks) < len(result.chunks) and not region:
-        # 기한 지난 제도가 빠진 자리만 더 큰 검색으로 채운다. 처음부터 k를 키우면 B의 후보 수(k*5)가 늘어 상위 순위가
-        # 달라졌다 (면접 비용 질문에서 면접정장 제도들이 6위 밖으로 밀려 근거 없음, 평가 q03)
+    if not region:
+        # 판정 후보(JUDGE_CANDIDATES)를 채우려고 더 큰 검색 결과를 뒤에 붙인다. 처음 검색의 순서는 그대로 둔다:
+        # 처음부터 k를 키우면 B의 후보 수(k*5)가 늘어 상위 순위가 달라졌다 (면접 비용 질문에서 면접정장 제도들이
+        # 6위 밖으로 밀려 근거 없음, 평가 q03)
         more = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
@@ -836,7 +869,9 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     chunks = _drop_other_districts(chunks, districts, filters.get("field"), conditions.get("help"))
     if region and not region_relaxed:
         chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
-    selected = evidence_mod.select_evidence(chunks)
+    # 상위 5개만 판정하면 관련 없는 제도가 빠진 자리가 비어 버렸다: 정답 손실 분석에서 검색 6~15위에 있던 정답 10개가
+    # 판정 기회가 없었다 (q02 청년도전지원사업 13위 등). 10개를 판정하고(동시) 통과한 것 중 앞 5개만 안내한다
+    selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
     _progress(STEP_GENERATE)
     answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
     used = dict(result.filters_used)
@@ -848,6 +883,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     return answer, selected
 
 
+JUDGE_CANDIDATES = 10         # 판정에 넘기는 후보 제도 수 (안내는 그중 통과한 앞 config.MAX_RECOMMENDATIONS개)
 REGION_CANDIDATE_FACTOR = 3   # 검색 후보 배수 (지역을 말했거나 기한 지난 제도가 빠졌을 때 5 -> 15개에서 5개를 고른다)
 MAX_LOCAL_SERVICES = 3        # 지역을 말했을 때 답변 5자리 중 그 지역 지자체 제도의 최대 수
 MIN_NATIONAL_SERVICES = 2     # 지역을 말했을 때 전국 제도(중앙부처·공공기관)에 남겨 두는 최소 자리
