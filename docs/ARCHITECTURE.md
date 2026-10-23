@@ -93,7 +93,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
-| 판정 기준 문서: 별도 타입 `GuideChunk`·별도 색인·`search_guides`, `Citation.kind`·`page` 선택 필드 (제안) | 3.2 참고. 기존 `Chunk`(4개 항목 검증·서비스당 1개 결과)와 handoff 계약을 바꾸지 않으려고 분리했다. `Citation` 추가 필드는 기본값이 있어 기존 코드와 호환된다. |
+| 판정 기준 문서: 별도 타입 `GuideChunk`·별도 색인·`search_guides`, `Citation.kind`·`page`·`Recommendation.service_id` 선택 필드 (계약 확정 2026-10-23) | 3.2 참고. 기존 `Chunk`(4개 항목 검증·서비스당 1개 결과)와 handoff 계약을 바꾸지 않으려고 분리했다. 추가 필드는 모두 기본값이 있어 기존 코드와 호환된다. `service_id`는 카드를 펼쳤을 때 그 제도의 판정 문서만 찾으려고 넣었다. |
 
 ### 3.0 기획서 8.3 기록용 (벡터 저장소)
 
@@ -276,3 +276,4 @@ auxiliary-output failure cannot advance or rewind authoritative DB progress.
 
 - 2026-10-23 (제안): 판정 기준 문서 경로 추가 계획. `GuideChunk`, `search_guides`, `Citation.kind`·`page`, `data/guides/`, `ingest/guide_sources.json`, 파일 수정 규칙(담당 밖·공유 파일은 수정 전 알림, AI 포함). 팀 합의 전이며 코드는 아직 없다. 합의 후 기획서 8.3에 기록.
 - 2026-10-23: 판정 기준 문서 PDF 배포 방식 확정(공유 드라이브 zip → `data/guides/`, `.gitignore` 추가), `guide_sources.json`에 `sha256` 파일 지문 추가. 받은 6개 PDF는 모두 텍스트 추출 가능, 주거급여 고시본은 표가 이미지라 금액표는 제정문을 쓴다.
+- 2026-10-23: 판정 기준 문서 계약을 `src/common/schema.py`에 반영(`GuideChunk`, `Citation.kind`·`page`, `Recommendation.service_id`, 모두 선택 필드·기본값). 팀 승인. 구현(A `guides`, B `guide_store`, C `guide_evidence`)은 진행 중.

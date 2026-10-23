@@ -439,7 +439,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 - **C → B**: `Filters` (나이·지역·분야·상황·기준일, 값이 없으면 키 생략). **거르는 것은 나이·지역·기준일**이고, 분야는 맞는 제도에 가산점만 주며 상황은 현재 검색에 쓰이지 않습니다
 - **B → C**: `search(query, filters, k=5, mode="hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용)
 - **C → 사용자**: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
-- **판정 기준 문서 (제안)**: A → B `GuideChunk{chunk_id, doc_id, doc_title, publisher, year, page, heading, text, scope, service_ids, source_url}` / B → C `search_guides(query, service_ids=None, region=None, k=3) -> list[GuideChunk]` / C → 사용자 `Citation(kind="guide", page=쪽)`
+- **판정 기준 문서 (계약 확정, 구현 중)**: A → B `GuideChunk{chunk_id, doc_id, doc_title, publisher, year, page, heading, text, scope, service_ids, source_url}` / B → C `search_guides(query, service_ids=None, region=None, k=3) -> list[GuideChunk]` / C → 사용자 `Citation(kind="guide", page=쪽)`, `Recommendation.service_id`(선택, 카드의 제도 ID)
 
 ## 5. 답변 생성 규칙
 
