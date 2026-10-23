@@ -38,8 +38,8 @@ def questions_overview(state: State, reviewer: str, split: str | None = None) ->
 
 
 def candidates_for(state: State, qid: str, search_fn: SearchFn, services: dict[str, dict], *, today: date | str, reviewer: str,
-                   n: int = 10) -> list[dict]:
-    """질문의 후보 제도 (순서 섞음). 항목: service_id, service, source, search_rank, mine(내 판정 이벤트 또는 None), consensus."""
+                   n: int = 10, limit: int | None = None) -> list[dict]:
+    """질문의 후보 제도 (순서 섞음). limit이 있으면 검색 후보를 순위 좋은 순으로 그만큼만 남긴다 (이미 판정한 제도는 따로 항상 보인다). 항목: service_id, service, source, search_rank, mine(내 판정 이벤트 또는 None), consensus."""
     today_d = date.fromisoformat(today) if isinstance(today, str) else today
     q = state.questions[qid]
     best: dict[str, tuple[int, str]] = {}
@@ -48,8 +48,14 @@ def candidates_for(state: State, qid: str, search_fn: SearchFn, services: dict[s
             best[sid] = (rank, source)
     for sid in state.judged_services(qid):                              # 이미 판정한 것은 검색에 안 나와도 보여 준다
         best.setdefault(sid, (n + 1, "independent_search"))
+    judged = set(state.judged_services(qid))
+    kept = sorted((sid for sid in best if sid not in judged), key=lambda s: (best[s][0], s))
+    if limit is not None:
+        kept = kept[:limit]
     out = []
     for sid, (rank, source) in best.items():
+        if sid not in judged and sid not in kept:
+            continue
         service = services.get(sid)
         if service is None or _is_expired(service, today_d):
             continue

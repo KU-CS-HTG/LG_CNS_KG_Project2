@@ -374,6 +374,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 사람이 질문마다 "이 제도가 정답인가"를 판정하고(`good` `partial` `bad` `unsure`) 답변에 메모를 남기면, 그 기록이 평가용 시험지(`eval` 형식), 검색 노이즈 분석, 생성 지침의 근거가 됩니다. 기록은 `reviews/events/<검수자>.jsonl`에 한 줄씩 추가만 하므로 사람마다 파일이 달라 git 충돌이 없고, 판정은 제도 내용의 해시(신청기한 포함)와 함께 저장되어 **제도가 바뀌면 바뀐 것만 다시 검수**합니다. 기한이 지난 제도는 판정과 무관하게 시험지에서 자동 제외됩니다.
 
 ```powershell
+python -m app.review_mode                                  # 브라우저 검수 화면 (후보 판정·답변 메모, 후보 수는 왼쪽 슬라이더)
 python -m src.review import-questions q.csv --reviewer 이름 [--dry-run]   # 새 질문 일괄 등록 (csv/jsonl, 이미 있는 질문은 건너뜀)
 python -m src.review import-legacy                       # eval/questions.jsonl의 질문·정답을 이벤트로 이전 (기존 질문은 모두 dev)
 python -m src.review export --split dev --out reviews/exports/dev_v1.jsonl   # 판정 -> 시험지

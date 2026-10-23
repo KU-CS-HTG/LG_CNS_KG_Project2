@@ -21,7 +21,8 @@ from src.review import schema, session  # noqa: E402
 from src.review.cli import hybrid_search_fn, load_services  # noqa: E402
 from src.review.store import ReviewStore  # noqa: E402
 
-SEARCH_DEPTH = 10
+DEFAULT_CANDIDATES = 10      # 질문당 후보 수 기본값 (화면 왼쪽 슬라이더로 바꾼다)
+MAX_CANDIDATES = 30
 FIELDS = [("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"),
           ("신청방법", "how_to_apply"), ("신청기한", "application_period")]
 MARK = {"good": "🟢", "partial": "🟡", "bad": "🔴", "unsure": "⚪"}
@@ -32,13 +33,13 @@ def _services() -> dict[str, dict]:
     return load_services(config.DB_PATH)
 
 
-def _hits(qid: str, text: str, filters: dict) -> list[tuple[str, int, str]]:
-    """질문당 한 번만 검색해 두고 화면을 다시 그려도 재사용한다."""
+def _hits(qid: str, text: str, filters: dict, depth: int) -> list[tuple[str, int, str]]:
+    """질문당 한 번만 검색해 두고 화면을 다시 그려도 재사용한다 (후보 수를 바꾸면 다시 검색)."""
     cache = st.session_state.setdefault("review_hits", {})
-    if qid not in cache:
+    if (qid, depth) not in cache:
         with st.spinner("후보를 찾는 중…"):
-            cache[qid] = hybrid_search_fn()(text, filters, SEARCH_DEPTH)
-    return cache[qid]
+            cache[(qid, depth)] = hybrid_search_fn()(text, filters, depth)
+    return cache[(qid, depth)]
 
 
 def _card(store: ReviewStore, reviewer: str, qid: str, cand: dict, run_id_for) -> None:
@@ -107,6 +108,7 @@ def render() -> None:
     with st.sidebar:
         reviewer = st.text_input("검수자 이름 (영문·숫자)", value=st.session_state.get("reviewer", ""), placeholder="예: taegyu").strip()
         split = st.selectbox("질문 묶음", ["dev", "test", "all"], format_func={"dev": "dev (개발용)", "test": "test (최종 시험용)", "all": "전체"}.get)
+        limit = st.slider("질문당 후보 수", 3, MAX_CANDIDATES, DEFAULT_CANDIDATES, help="검색 방식 세 가지의 결과를 합쳐 순위가 좋은 순으로 이만큼만 보여 줘요. 이미 판정한 제도는 따로 보입니다.")
         today = st.date_input("기준일 (기한이 지난 제도는 숨김)", value=date.today()).isoformat()
         st.caption("판정은 reviews/events/<이름>.jsonl 에 쌓여요. git으로 올려 공유하세요.")
     if not reviewer:
@@ -133,11 +135,11 @@ def render() -> None:
 
     try:
         services = _services()
-        hits = _hits(qid, q["text"], q.get("gold_filters", {}))
+        hits = _hits(qid, q["text"], q.get("gold_filters", {}), limit)
     except (SystemExit, Exception) as exc:           # noqa: BLE001 — DB·색인이 없을 때 안내
         st.error(f"후보를 가져오지 못했어요: {exc}")
         return
-    cands = session.candidates_for(state, qid, lambda *_: hits, services, today=today, reviewer=reviewer, n=SEARCH_DEPTH)
+    cands = session.candidates_for(state, qid, lambda *_: hits, services, today=today, reviewer=reviewer, n=limit, limit=limit)
     st.caption(f"후보 {len(cands)}개 (순서는 섞여 있고, 어떤 검색이 찾았는지는 가려져 있어요). 이 질문에 맞는 제도가 없다면 모두 '나쁨'으로 판정하세요.")
 
     def run_id_for() -> str:                          # 첫 저장 때 한 번만 run을 남긴다

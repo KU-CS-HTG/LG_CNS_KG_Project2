@@ -425,3 +425,11 @@ def test_session_answer_review_and_overview(store, q):
     assert [m["run_id"] for m in store.state().memos()] == [rid]
     rows = session.questions_overview(store.state(), "taegyu", "dev")
     assert rows[0]["question_id"] == q and rows[0]["mine"] == 0
+
+
+def test_session_candidate_limit_keeps_best_ranked_and_all_judged(store, q):
+    from src.review import session
+    store.add_judgment("taegyu", q, "S4", ver("S4"), "bad", reason="irrelevant")
+    state = store.state()
+    got = session.candidates_for(state, q, _hits("S1", "S2", "S3"), SERVICES, today=TODAY, reviewer="taegyu", limit=2)
+    assert sorted(c["service_id"] for c in got) == ["S1", "S2", "S4"]          # 검색 상위 2개 + 이미 판정한 S4
