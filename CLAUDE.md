@@ -80,6 +80,18 @@ Replay uses `--offset/--limit` plus named DB checkpoints bound to source/DB/poli
 `ingest_state` progress commits with services/pending/run summary. Exact commands and known local
 path/region discrepancies are in `docs/INGEST_A.md`. Never infer index build revision from today's HEAD.
 
+## Official decision documents A-1 (2026-10-23)
+
+`document_catalog.py`, `document_acquire.py`, `official_documents.py` and `official_sources.json`
+own isolated registration/original acquisition, byte-based versions, temporal/source facts,
+audit and explicit topic-specific service links. Runtime catalog/originals/diagnostics have
+separate explicit paths and never initialize the live API DB/index. pypdf validates structure/
+page count only; no extraction/OCR/document chunks/index/events/retrieval/answers in A-1.
+The existing API Chunk/Citation, pending/ack, locks/associations, B ranking and C expansion stay
+unchanged. Separate document collection/events/citations are proposed, not agreed/implemented.
+Commands, verified sources, unresolved currency and A-2/A-3 evaluation plan:
+`docs/OFFICIAL_DOCUMENTS_A1.md`. No label changes or automatic human-review approval.
+
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.
 - 자격이 불명확하거나 정형 조건 값이 비어 있으면 단정하지 않고 "확인 필요"로 표시한다.

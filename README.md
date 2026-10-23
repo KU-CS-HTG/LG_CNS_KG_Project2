@@ -16,7 +16,7 @@
 - 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (전체 약 1만 건 중 **일반 개인·가구 지원제도도 포함**하며, 실제 건수는 관측된 원본에 따라 달라짐)
 - 서비스 1건 = 서비스명, 지원대상, 선정기준, 지원내용, 신청방법, 신청기한, 소관기관, 상세 링크 + 지원조건(정형)
 - 원본 응답은 `data/raw/`에 저장하고 **커밋하지 않습니다**. API 키는 `.env`에만 두고 **커밋하지 않습니다**.
-- 첨부 문서·이미지는 수집하지 않고 상세 링크로 대신합니다.
+- API ingestion does not crawl attachments/images. A-1 separately registers and collects an explicit small official-document source list; those originals are not yet indexed or used in answers.
 
 ### 1.1 데이터 범위 — 청년 사용자를 위한 개인·가구 지원
 
@@ -51,6 +51,15 @@ Exact tested PowerShell commands, checkpoint bindings, deployed-index findings a
 limits are in [INGEST_A.md](docs/INGEST_A.md#integrated-metadata-and-resumable-replay-2026-10-22).
 Code changes do not repair old documents automatically. No production backfill or embedding reuse is implicit.
 
+## Official documents — A-1
+
+Extension direction: **Explain detailed criteria and exceptions from the applicable official
+documents, with document identity and reproducible source locations.**
+A-1 implements an isolated source/catalog/original-file path with exact-byte version identity,
+publication/effectivity evidence, audit and scoped service links. It does not yet extract
+clauses/tables, index/retrieve document evidence, decide entitlement or calculate payments.
+Existing API Chunk/Citation, service pending and B/C routing remain unchanged.
+See [A-1 commands, actual sources and proposed B/C boundaries](docs/OFFICIAL_DOCUMENTS_A1.md).
 ### 1.2 판정 기준 문서 (제안, 미구현)
 
 보조금24 API는 "어떤 제도가 있나"를 알려 주지만, 자격 판정의 세부 기준은 담당 공무원이 보는 고시·업무처리기준·사업안내 지침에 있습니다. 이 문서를 함께 검색해 '확인 필요' 조건과 후속 질문("부모님과 따로 살면 같은 가구인가요?")에 근거 조항과 쪽 번호로 답합니다.
@@ -96,7 +105,7 @@ Code changes do not repair old documents automatically. No production backfill o
 | 근거 선별 | 조각을 서비스 단위로 묶어 3~5개 제도로 제한 | `src/generate/evidence.py` | C |
 | ⑥ 생성 | gpt-4o-mini → 답변 + 출처 | `src/generate/generator.py`, `citation.py` | C |
 
-구조도와 다른 점: 입력이 PDF가 아닌 API이고 정형 지원조건이 함께 들어옵니다 / 검색 앞에 조건 추출과 정형 필터가 있습니다 / 검색과 생성 사이에 근거 선별이 있습니다.
+구조도와 다른 점: 현재 검색 입력은 API이며 정형 지원조건이 함께 들어옵니다 / 검색 앞에 조건 추출과 정형 필터가 있습니다 / 검색과 생성 사이에 근거 선별이 있습니다. A-1 공식 원본 카탈로그는 이 검색 경로와 분리되어 있습니다.
 
 **데이터 흐름**
 - 오프라인(기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
@@ -684,9 +693,8 @@ def test_예시(fake_search, fake_conditions):
 | `eval/sweep.py` | 구현됨 (B). Hybrid 매개변수 격자 탐색, 후보 캐시. 가짜 임베딩 색인으로 테스트(`tests/test_sweep.py`). 실제 색인 결과는 사용자가 실행해 확인 |
 | `eval/label_helper.py` | 구현됨 (B). 질문 정답 채우기 도구(검색·전국/지역 구분·기한 경고·대화형·후속 질문·검증). 가짜 데이터로 테스트(`tests/test_label_helper.py`). 실제 API 응답으로는 미확인 (`fields` 명령으로 필드 확인 필요) |
 | `tests/ingest/` | A 전용 mock HTTP·임시 DB·가짜 소비자·CLI 테스트. 미구현은 실패 처리 |
-| 기존 B/C 테스트 | 구현 전(또는 OPENAI_API_KEY 없음) skip. A 테스트와 구분해 해석 |
-| 그 외 B/C | 스켈레톤 (`NotImplementedError`) |
-| 판정 기준 문서 (`ingest/guides`, `index/guide_store`, `generate/guide_evidence`) | C `guide_evidence` 구현 (B 검색 전에는 화면 그대로), A·B 진행 중 |
+| 기존 B/C 테스트 | 오프라인 fake embedding/LLM 응답으로 검증. 실제 모델 검사는 명시적 opt-in 필요 |
+| 기존 B/C | 색인·검색·전체 서비스 근거 확장·생성·인용 구현. A-1 문서 검색/인용 확장은 아직 미구현 |
 
 ### A 2차 수정의 운영 규칙
 

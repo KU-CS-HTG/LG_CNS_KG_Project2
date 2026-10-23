@@ -7,3 +7,5 @@ chromadb
 rank_bm25
 openai
 streamlit
+# A-1: original PDF structure/page-count validation only; no text extraction/OCR.
+pypdf>=6.21.2,<7

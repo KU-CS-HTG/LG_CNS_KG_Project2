@@ -1,0 +1,584 @@
+{
+  "format_version": 1,
+  "research_date": "2026-10-23",
+  "verification_boundary": "Official posting evidence checked by AI; no human approval. Original artifacts/versions arise only after successful acquisition.",
+  "sources": [
+    {
+      "source_id": "housing-guide-2026",
+      "logical_identity": "molit:program-guide:housing-benefit",
+      "publication_identity": "MOLIT-policyTarget-1065:published-edition",
+      "posting_url": "https://www.molit.go.kr/USR/policyTarget/dtl.jsp?idx=1065",
+      "attachment_url": "https://www.molit.go.kr/portal/common/download/DownloadMltm2.jsp?FilePath=/upload/portal/DextUpload/202605/20260508_152611_047.pdf&FileName=2026년 주거급여 사업안내.pdf",
+      "allowed_hosts": [
+        "www.molit.go.kr"
+      ],
+      "original_filename": "2026년 주거급여 사업안내.pdf",
+      "expected_format": "pdf",
+      "attachment_evidence": {
+        "url": "https://www.molit.go.kr/USR/policyTarget/dtl.jsp?idx=1065",
+        "quote": "2026년 주거급여 사업안내.pdf",
+        "location": "official posting attachment link",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "a7591902920a2d746fd5b05ce18e52ad418af69f3d7f5294ca6a38a7a3e31738"
+      },
+      "facts": {
+        "title": "2026년 주거급여 사업안내",
+        "publisher": "국토교통부",
+        "document_type": "program_guide",
+        "edition_year": 2026,
+        "notice_identifier": null,
+        "publication_state": "final",
+        "identity_evidence": {
+          "url": "https://www.molit.go.kr/USR/policyTarget/dtl.jsp?idx=1065",
+          "quote": "2026년 주거급여 사업안내 / 국토교통부",
+          "location": "official posting body",
+          "verification": "official_evidence_verified",
+          "verified_by": "AI_source_check",
+          "checked_on": "2026-10-23",
+          "review_status": "human_review_pending",
+          "posting_snapshot_sha256": "a7591902920a2d746fd5b05ce18e52ad418af69f3d7f5294ca6a38a7a3e31738"
+        },
+        "posting_date": {
+          "value": "2026-05-08",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.molit.go.kr/USR/policyTarget/dtl.jsp?idx=1065",
+            "quote": "등록일 2026-05-08",
+            "location": "posting metadata",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "a7591902920a2d746fd5b05ce18e52ad418af69f3d7f5294ca6a38a7a3e31738"
+          }
+        },
+        "issuance_date": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "Issuance date not independently established from this posting."
+        },
+        "effective_start": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "Edition year and posting date do not establish an effective start."
+        },
+        "effective_end": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "No verified effective-end evidence; not perpetual validity."
+        },
+        "topic_scope": [
+          "주거급여"
+        ],
+        "location_assessment": "not_assessed_A2",
+        "currency_review": "bounded posting/law-list search only; exhaustive amendment review pending",
+        "unresolved": [
+          "2026-07-16 implementation-notice amendment postdates this guide; impact on detailed rules not assessed."
+        ]
+      }
+    },
+    {
+      "source_id": "common-guide-2026",
+      "logical_identity": "mohw:program-guide:national-basic-livelihood",
+      "publication_identity": "MOHW-board0009-1489764:published-edition",
+      "posting_url": "https://www.mohw.go.kr/board.es?act=view&bid=0009&list_no=1489764&mid=a10402000000",
+      "attachment_url": "https://www.mohw.go.kr/boardDownload.es?bid=0009&list_no=1489764&seq=1",
+      "allowed_hosts": [
+        "www.mohw.go.kr"
+      ],
+      "original_filename": "★2026년 국민기초생활보장 사업안내(홈페이지).pdf",
+      "expected_format": "pdf",
+      "attachment_evidence": {
+        "url": "https://www.mohw.go.kr/board.es?act=view&bid=0009&list_no=1489764&mid=a10402000000",
+        "quote": "★2026년 국민기초생활보장 사업안내(홈페이지).pdf",
+        "location": "official posting attachment link",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "5ee0080702146f8fc7595cfcacccf77709d2dfd3f69527d7a7495b02d6dff713"
+      },
+      "facts": {
+        "title": "2026년 국민기초생활보장사업안내",
+        "publisher": "보건복지부",
+        "document_type": "program_guide",
+        "edition_year": 2026,
+        "notice_identifier": null,
+        "publication_state": "final",
+        "identity_evidence": {
+          "url": "https://www.mohw.go.kr/board.es?act=view&bid=0009&list_no=1489764&mid=a10402000000",
+          "quote": "2026년 국민기초생활보장사업안내 / 보건복지부",
+          "location": "official posting body",
+          "verification": "official_evidence_verified",
+          "verified_by": "AI_source_check",
+          "checked_on": "2026-10-23",
+          "review_status": "human_review_pending",
+          "posting_snapshot_sha256": "5ee0080702146f8fc7595cfcacccf77709d2dfd3f69527d7a7495b02d6dff713"
+        },
+        "posting_date": {
+          "value": "2026-03-24",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.mohw.go.kr/board.es?act=view&bid=0009&list_no=1489764&mid=a10402000000",
+            "quote": "작성일 2026-03-24",
+            "location": "posting metadata",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "5ee0080702146f8fc7595cfcacccf77709d2dfd3f69527d7a7495b02d6dff713"
+          }
+        },
+        "issuance_date": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "Issuance date not independently established from this posting."
+        },
+        "effective_start": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "Edition year and posting date do not establish an effective start."
+        },
+        "effective_end": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "No verified effective-end evidence; not perpetual validity."
+        },
+        "topic_scope": [
+          "보장가구 구성",
+          "소득인정액 산정"
+        ],
+        "location_assessment": "not_assessed_A2",
+        "currency_review": "bounded posting/law-list search only; exhaustive amendment review pending",
+        "unresolved": [
+          "Whole original requested; household/income topics only, no page ranges assessed."
+        ]
+      }
+    },
+    {
+      "source_id": "housing-selection-2026",
+      "logical_identity": "molit:notice:housing-selection-minimum",
+      "publication_identity": "MOLIT-notice-2025-506:enactment",
+      "posting_url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18653",
+      "attachment_url": "https://www.molit.go.kr/LCMS/DWN.jsp?fold=law&fileName=2026%EB%85%84_%EC%A3%BC%EA%B1%B0%EA%B8%89%EC%97%AC_%EC%84%A0%EC%A0%95%EA%B8%B0%EC%A4%80_%EB%B0%8F_%EC%B5%9C%EC%A0%80%EB%B3%B4%EC%9E%A5%EC%88%98%EC%A4%80%28%EC%A0%9C%EC%A0%95%EB%AC%B8%29.pdf",
+      "allowed_hosts": [
+        "www.molit.go.kr"
+      ],
+      "original_filename": "2026년_주거급여_선정기준_및_최저보장수준(제정문).pdf",
+      "expected_format": "pdf",
+      "attachment_evidence": {
+        "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18653",
+        "quote": "2026년_주거급여_선정기준_및_최저보장수준(제정문).pdf",
+        "location": "official posting attachment link",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "32080ffc74b2831588a4795908bcf83eef64de9280030e58c26bd2f4d3580806"
+      },
+      "facts": {
+        "title": "2026년 주거급여 선정기준 및 최저보장수준",
+        "publisher": "국토교통부",
+        "document_type": "notice",
+        "edition_year": 2026,
+        "notice_identifier": "국토교통부고시 제2025-506호",
+        "publication_state": "final",
+        "identity_evidence": {
+          "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18653",
+          "quote": "2026년 주거급여 선정기준 및 최저보장수준 / 국토교통부고시 제2025-506호",
+          "location": "official posting body",
+          "verification": "official_evidence_verified",
+          "verified_by": "AI_source_check",
+          "checked_on": "2026-10-23",
+          "review_status": "human_review_pending",
+          "posting_snapshot_sha256": "32080ffc74b2831588a4795908bcf83eef64de9280030e58c26bd2f4d3580806"
+        },
+        "posting_date": {
+          "value": "2025-09-22",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18653",
+            "quote": "등록일 2025-09-22",
+            "location": "posting metadata",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "32080ffc74b2831588a4795908bcf83eef64de9280030e58c26bd2f4d3580806"
+          }
+        },
+        "issuance_date": {
+          "value": "2025-09-15",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.law.go.kr/conAdmrulByLsPop.do?lsiSeq=201184",
+            "quote": "국토교통부고시 제2025-506호, 2025. 9. 15., 제정",
+            "location": "official rule-list header",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "47607d942fcbc12ce56247eedf35e7a5ec097226c24bfab7f58f13d6900046ef"
+          }
+        },
+        "effective_start": {
+          "value": "2026-01-01",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.law.go.kr/conAdmrulByLsPop.do?lsiSeq=201184",
+            "quote": "[시행 2026. 1. 1.] [국토교통부고시 제2025-506호, 2025. 9. 15., 제정]",
+            "location": "official rule-list header",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "47607d942fcbc12ce56247eedf35e7a5ec097226c24bfab7f58f13d6900046ef"
+          }
+        },
+        "effective_end": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "No verified effective-end evidence; not perpetual validity."
+        },
+        "topic_scope": [
+          "주거급여"
+        ],
+        "location_assessment": "not_assessed_A2",
+        "currency_review": "bounded posting/law-list search only; exhaustive amendment review pending",
+        "unresolved": []
+      }
+    },
+    {
+      "source_id": "housing-implementation-amendment-2026",
+      "logical_identity": "molit:notice:housing-implementation",
+      "publication_identity": "MOLIT-notice-2026-379:partial-amendment",
+      "posting_url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18912",
+      "attachment_url": "https://www.molit.go.kr/LCMS/DWN.jsp?fold=law&fileName=%EC%A3%BC%EA%B1%B0%EA%B8%89%EC%97%AC_%EC%8B%A4%EC%8B%9C%EC%97%90_%EA%B4%80%ED%95%9C_%EA%B3%A0%EC%8B%9C_%EC%9D%BC%EB%B6%80%EA%B0%9C%EC%A0%95%EA%B3%A0%EC%8B%9C%EC%95%88%281%29.pdf",
+      "allowed_hosts": [
+        "www.molit.go.kr"
+      ],
+      "original_filename": "주거급여_실시에_관한_고시_일부개정고시안(1).pdf",
+      "expected_format": "pdf",
+      "attachment_evidence": {
+        "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18912",
+        "quote": "주거급여_실시에_관한_고시_일부개정고시안(1).pdf",
+        "location": "official posting attachment link",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "0337c3d9985a1d404351a0cfb901fea863ac2fcc25ab66a7c1a81a02a4be7882"
+      },
+      "facts": {
+        "title": "주거급여 실시에 관한 고시 일부개정",
+        "publisher": "국토교통부",
+        "document_type": "partial_amendment",
+        "edition_year": null,
+        "notice_identifier": "국토교통부고시 제2026-379호",
+        "publication_state": "final",
+        "identity_evidence": {
+          "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18912",
+          "quote": "주거급여 실시에 관한 고시 일부개정 / 국토교통부고시 제2026-379호",
+          "location": "official posting body",
+          "verification": "official_evidence_verified",
+          "verified_by": "AI_source_check",
+          "checked_on": "2026-10-23",
+          "review_status": "human_review_pending",
+          "posting_snapshot_sha256": "0337c3d9985a1d404351a0cfb901fea863ac2fcc25ab66a7c1a81a02a4be7882"
+        },
+        "posting_date": {
+          "value": "2026-07-16",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18912",
+            "quote": "등록일 2026-07-16",
+            "location": "posting metadata",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "0337c3d9985a1d404351a0cfb901fea863ac2fcc25ab66a7c1a81a02a4be7882"
+          }
+        },
+        "issuance_date": {
+          "value": "2026-07-16",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18912",
+            "quote": "2026년 7월 16일 국토교통부장관",
+            "location": "official posting body",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "0337c3d9985a1d404351a0cfb901fea863ac2fcc25ab66a7c1a81a02a4be7882"
+          }
+        },
+        "effective_start": {
+          "value": "2026-07-16",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.law.go.kr/conAdmrulByLsPop.do?lsiSeq=201184",
+            "quote": "[시행 2026. 7. 16.] [국토교통부고시 제2026-379호, 2026. 7. 16., 일부개정]",
+            "location": "official rule-list header",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "47607d942fcbc12ce56247eedf35e7a5ec097226c24bfab7f58f13d6900046ef"
+          }
+        },
+        "effective_end": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "No verified effective-end evidence; not perpetual validity."
+        },
+        "topic_scope": [
+          "주거급여"
+        ],
+        "location_assessment": "not_assessed_A2",
+        "currency_review": "bounded posting/law-list search only; exhaustive amendment review pending",
+        "unresolved": [
+          "Selected artifact is a partial amendment, not a consolidated full guide; amended locations/impact deferred to A2."
+        ]
+      }
+    },
+    {
+      "source_id": "housing-selection-2027",
+      "logical_identity": "molit:notice:housing-selection-minimum",
+      "publication_identity": "MOLIT-notice-2026-455:posted-future-text",
+      "posting_url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18946",
+      "attachment_url": "https://www.molit.go.kr/LCMS/DWN.jsp?fold=law&fileName=%28%EC%A0%9C%EC%A0%95%EB%AC%B8%29_2027%EB%85%84_%EC%A3%BC%EA%B1%B0%EA%B8%89%EC%97%AC_%EC%84%A0%EC%A0%95%EA%B8%B0%EC%A4%80_%EB%B0%8F_%EC%B5%9C%EC%A0%80%EB%B3%B4%EC%9E%A5%EC%88%98%EC%A4%80.pdf",
+      "allowed_hosts": [
+        "www.molit.go.kr"
+      ],
+      "original_filename": "(제정문)_2027년_주거급여_선정기준_및_최저보장수준.pdf",
+      "expected_format": "pdf",
+      "attachment_evidence": {
+        "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18946",
+        "quote": "(제정문)_2027년_주거급여_선정기준_및_최저보장수준.pdf",
+        "location": "official posting attachment link",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "dbe64555fb339fb2a5e2da7e08d8195c0fc6cb6d564b5426dbe0e3c830963859"
+      },
+      "facts": {
+        "title": "2027년 주거급여 선정기준 및 최저보장수준",
+        "publisher": "국토교통부",
+        "document_type": "notice",
+        "edition_year": 2027,
+        "notice_identifier": "국토교통부고시 제2026-455호",
+        "publication_state": "unknown",
+        "identity_evidence": {
+          "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18946",
+          "quote": "2027년 주거급여 선정기준 및 최저보장수준 / 국토교통부고시 제2026-455호",
+          "location": "official posting body",
+          "verification": "official_evidence_verified",
+          "verified_by": "AI_source_check",
+          "checked_on": "2026-10-23",
+          "review_status": "human_review_pending",
+          "posting_snapshot_sha256": "dbe64555fb339fb2a5e2da7e08d8195c0fc6cb6d564b5426dbe0e3c830963859"
+        },
+        "posting_date": {
+          "value": "2026-08-31",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18946",
+            "quote": "등록일 2026-08-31",
+            "location": "posting metadata",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "dbe64555fb339fb2a5e2da7e08d8195c0fc6cb6d564b5426dbe0e3c830963859"
+          }
+        },
+        "issuance_date": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "Issuance date not independently established from this posting."
+        },
+        "effective_start": {
+          "value": "2027-01-01",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18946",
+            "quote": "이 고시는 2027년 1월 1일부터 시행한다.",
+            "location": "posting addendum",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "dbe64555fb339fb2a5e2da7e08d8195c0fc6cb6d564b5426dbe0e3c830963859"
+          }
+        },
+        "effective_end": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "No verified effective-end evidence; not perpetual validity."
+        },
+        "topic_scope": [
+          "주거급여"
+        ],
+        "location_assessment": "not_assessed_A2",
+        "currency_review": "bounded posting/law-list search only; exhaustive amendment review pending",
+        "unresolved": [
+          "Official posting/number/future start verified. Body says 제정고시안; finality needs gazette/rule confirmation before authoritative use."
+        ]
+      }
+    },
+    {
+      "source_id": "housing-selection-2026-incheon",
+      "logical_identity": "molit:notice:housing-selection-minimum",
+      "publication_identity": "MOLIT-notice-2025-506:enactment",
+      "posting_url": "https://www.incheon.go.kr/housing/hou050300/3036478",
+      "attachment_url": "https://www.incheon.go.kr/comm/getFile?srvcId=BBSTY1&upperNo=3036478&fileTy=ATTACH&fileNo=1",
+      "allowed_hosts": [
+        "www.incheon.go.kr"
+      ],
+      "original_filename": "2026년 주거급여 선정기준 및 최저보장수준(국토교통부고시)(제2025-506호).pdf",
+      "expected_format": "pdf",
+      "attachment_evidence": {
+        "url": "https://www.incheon.go.kr/housing/hou050300/3036478",
+        "quote": "2026년 주거급여 선정기준 및 최저보장수준(국토교통부고시)(제2025-506호).pdf",
+        "location": "official redistribution posting attachment link",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "8aa4c5f5c74d3eb70b8ab561698c46c22933b749612d97047aa62b5d4d11cc0c"
+      },
+      "facts": {
+        "title": "2026년 주거급여 선정기준 및 최저보장수준",
+        "publisher": "국토교통부",
+        "document_type": "notice",
+        "edition_year": 2026,
+        "notice_identifier": "국토교통부고시 제2025-506호",
+        "publication_state": "final",
+        "identity_evidence": {
+          "url": "https://www.law.go.kr/conAdmrulByLsPop.do?lsiSeq=201184",
+          "quote": "2026년 주거급여 선정기준 및 최저보장수준 / 국토교통부고시 제2025-506호",
+          "location": "official rule-list header",
+          "verification": "official_evidence_verified",
+          "verified_by": "AI_source_check",
+          "checked_on": "2026-10-23",
+          "review_status": "human_review_pending",
+          "posting_snapshot_sha256": "47607d942fcbc12ce56247eedf35e7a5ec097226c24bfab7f58f13d6900046ef"
+        },
+        "posting_date": {
+          "value": "2025-09-23",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.incheon.go.kr/housing/hou050300/3036478",
+            "quote": "작성일 2025-09-23",
+            "location": "redistribution posting metadata",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "8aa4c5f5c74d3eb70b8ab561698c46c22933b749612d97047aa62b5d4d11cc0c"
+          }
+        },
+        "issuance_date": {
+          "value": "2025-09-15",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.law.go.kr/conAdmrulByLsPop.do?lsiSeq=201184",
+            "quote": "국토교통부고시 제2025-506호, 2025. 9. 15., 제정",
+            "location": "official rule-list header",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "47607d942fcbc12ce56247eedf35e7a5ec097226c24bfab7f58f13d6900046ef"
+          }
+        },
+        "effective_start": {
+          "value": "2026-01-01",
+          "precision": "day",
+          "evidence": {
+            "url": "https://www.law.go.kr/conAdmrulByLsPop.do?lsiSeq=201184",
+            "quote": "[시행 2026. 1. 1.] [국토교통부고시 제2025-506호, 2025. 9. 15., 제정]",
+            "location": "official rule-list header",
+            "verification": "official_evidence_verified",
+            "verified_by": "AI_source_check",
+            "checked_on": "2026-10-23",
+            "review_status": "human_review_pending",
+            "posting_snapshot_sha256": "47607d942fcbc12ce56247eedf35e7a5ec097226c24bfab7f58f13d6900046ef"
+          }
+        },
+        "effective_end": {
+          "value": null,
+          "precision": null,
+          "unresolved_reason": "No verified effective-end evidence; not perpetual validity."
+        },
+        "topic_scope": [
+          "주거급여"
+        ],
+        "location_assessment": "not_assessed_A2",
+        "currency_review": "bounded posting/law-list search only; exhaustive amendment review pending",
+        "unresolved": [
+          "Official Incheon redistribution of the national MOLIT notice; not an Incheon-only benefit.",
+          "MOLIT LCMS attachment produced a redirect loop on 2026-10-23; both source observations remain separate."
+        ]
+      },
+      "source_role": "official_redistribution",
+      "posting_publisher": "인천광역시"
+    }
+  ],
+  "relations": [
+    {
+      "from_identity": "molit:program-guide:housing-benefit",
+      "to_identity": "mohw:program-guide:national-basic-livelihood",
+      "kind": "refers-to",
+      "scope": "보장가구 구성 및 소득인정액 산정; topic dependency only; no page ranges assessed",
+      "evidence": {
+        "url": "https://www.molit.go.kr/USR/policyTarget/dtl.jsp?idx=1065",
+        "quote": "보장가구 구성, 소득인정액 산정 등 기초생활보장법령 관련 내용은 국민기초생활보장 사업안내(보건복지부)를 참조",
+        "location": "posting dependency statement",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "a7591902920a2d746fd5b05ce18e52ad418af69f3d7f5294ca6a38a7a3e31738"
+      }
+    },
+    {
+      "from_identity": "molit:notice:housing-selection-minimum",
+      "to_identity": "molit:notice:housing-implementation",
+      "kind": "refers-to",
+      "scope": "Minimum guarantee provisions cite implementation notice; not wholesale inheritance of every rule",
+      "evidence": {
+        "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18653",
+        "quote": "주거급여 실시에 관한 고시 제4조제1항",
+        "location": "posting minimum-guarantee reference",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "32080ffc74b2831588a4795908bcf83eef64de9280030e58c26bd2f4d3580806"
+      }
+    },
+    {
+      "from_identity": "molit:notice:housing-implementation",
+      "to_identity": "molit:notice:housing-implementation",
+      "kind": "amends",
+      "scope": "Only amended provisions of the same logical rule; prior target version/locations unresolved; no whole-guide supersession",
+      "evidence": {
+        "url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18912",
+        "quote": "주거급여 실시에 관한 고시 일부를 다음과 같이 개정하여 고시합니다.",
+        "location": "posting amendment statement",
+        "verification": "official_evidence_verified",
+        "verified_by": "AI_source_check",
+        "checked_on": "2026-10-23",
+        "review_status": "human_review_pending",
+        "posting_snapshot_sha256": "0337c3d9985a1d404351a0cfb901fea863ac2fcc25ab66a7c1a81a02a4be7882"
+      }
+    }
+  ]
+}
