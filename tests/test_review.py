@@ -433,3 +433,13 @@ def test_session_candidate_limit_keeps_best_ranked_and_all_judged(store, q):
     state = store.state()
     got = session.candidates_for(state, q, _hits("S1", "S2", "S3"), SERVICES, today=TODAY, reviewer="taegyu", limit=2)
     assert sorted(c["service_id"] for c in got) == ["S1", "S2", "S4"]          # 검색 상위 2개 + 이미 판정한 S4
+
+
+def test_session_no_answer_requires_three_distinct_checks_and_can_be_cleared(store, q):
+    from src.review import session
+    with pytest.raises(schema.ValidationError):
+        session.set_no_answer(store, "taegyu", q, ["a", "a", " b ", ""])
+    session.set_no_answer(store, "taegyu", q, ["청년 해외주식 보전", "해외 투자 손실 지원", "투자 손실 보전 제도"], "없음")
+    assert store.state().questions[q]["status"] == "no_answer"
+    session.clear_no_answer(store, "taegyu", q)
+    assert store.state().questions[q]["status"] == "active"
