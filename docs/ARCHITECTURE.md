@@ -22,6 +22,8 @@
 
 구조도 대비 달라진 점: ① 입력이 PDF가 아닌 API이고 정형 지원조건이 함께 들어온다 / 검색 앞에 조건 추출과 정형 필터가 붙는다 / 검색과 생성 사이에 근거 선별이 있다.
 
+판정 기준 문서(제안)는 구조도의 "문서(PDF) → ① 로드" 경로를 그대로 따르는 두 번째 입력이다: 고시·업무처리기준 PDF → 조항 분할(`ingest/guides.py`, A) → 문서 전용 색인(`index/guide_store.py`, B) → '확인 필요' 근거 연결(`generate/guide_evidence.py`, C). 보조금24 경로와 분리되어 있다.
+
 ## 2. 디렉터리 구조
 
 ```
@@ -31,10 +33,12 @@ src/
   index/     embedder, embed_cache, embed_shard, vector_store  # B: ③ 임베딩(분담 계산 포함), ④ 벡터 저장소
   retrieve/  hybrid, filters, baseline                  # B: ⑤ 검색, 정형 필터, 비교 실험용 Baseline
   generate/  condition_extractor, evidence, generator, citation   # C
+  # 판정 기준 문서(제안): ingest/guides(A) · index/guide_store(B) · generate/guide_evidence(C)
 app/         main.py                                    # C: UI
 eval/        metrics, answer_eval, run_eval, label_helper, questions.jsonl, results/
 tests/       pytest. fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
+data/guides/ 판정 기준 문서 원본 PDF (커밋 금지, 제안)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ```
 
@@ -89,6 +93,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
+| 판정 기준 문서: 별도 타입 `GuideChunk`·별도 색인·`search_guides`, `Citation.kind`·`page` 선택 필드 (제안) | 3.2 참고. 기존 `Chunk`(4개 항목 검증·서비스당 1개 결과)와 handoff 계약을 바꾸지 않으려고 분리했다. `Citation` 추가 필드는 기본값이 있어 기존 코드와 호환된다. |
 
 ### 3.0 기획서 8.3 기록용 (벡터 저장소)
 
@@ -123,11 +128,26 @@ See [raw reprocessing and commands](INGEST_A.md#historical-raw-reprocessing-원�
 `pipeline --full` still collects APIs and requeues active chunks; it cannot recover
 discarded sections by itself. No evaluation labels are read by the classifier or changed.
 
+### 3.2 판정 기준 문서 (제안, 미구현)
+
+보조금24 API는 "어떤 제도가 있나"(요약)만 준다. 소득에 무엇이 포함되는지, 따로 사는 부모가 같은 가구인지 같은 판정 세부는 공무원이 보는 고시·업무처리기준·사업안내 지침에 있다. 이 문서는 수백 쪽이라 LLM 입력에 통째로 넣을 수 없고 SQL로 거를 수도 없어, 질문마다 해당 조항을 찾아오는 검색이 필요하다. 발표 피드백("생성형 AI가 쉽게 접근할 수 없는 데이터 활용", "AI보다 나은 점을 예시로 증명")에 대한 대응이다.
+
+| 결정 | 이유 |
+|---|---|
+| 공식 기관 원본만, 원본은 `data/guides/`(커밋 금지), 목록은 `ingest/guide_sources.json` | 블로그·요약글은 같은 제도의 금액이 서로 달랐다(조사 결과). 출처·연도·공공누리 유형을 목록에 남겨 재현·검증한다. |
+| 별도 타입 `GuideChunk`, 별도 색인 | 기존 `Chunk`는 4개 항목만 허용하고 검색이 서비스당 1개로 줄인다. 문서 조각을 섞으면 handoff 검증·평가 지표가 깨진다. 분리하면 기존 테스트·평가에 영향이 없고 이 기능만 끌 수 있다. |
+| 조항·소제목 단위 분할, 쪽 번호 유지, "문서명 > 소제목" 접두 | 기존 "구조 기반 분할 + 서비스명 접두"와 같은 이유(조건 희석 방지, 출처 유지). 쪽 번호는 사용자가 원문을 직접 확인하게 한다. |
+| `scope`(전국/지역)와 `service_ids` 연결, 연결은 사람이 문서를 읽고 지정 | 지자체가 게시한 문서에는 그 지역에만 해당하는 내용이 섞인다. 연결을 검색 결과로 정하면 순환 평가가 된다(정답 지정 규칙과 같음). |
+| API 값 우선, 판정 문서는 해석·설명용, 자격 단정 금지 | API는 매일, 문서는 연 1회 갱신된다. 금액·기한이 다르면 API 값을 보이고 담당 기관 확인을 안내한다. |
+| 새 파일 위주(`guides`·`guide_store`·`guide_evidence`), 공유 파일은 계약 커밋 한 번 | 담당자 단위 디렉터리 원칙 유지. A·B 기존 파일은 수정하지 않는다. |
+
 ## 4. 데이터 흐름
 
 오프라인(문서 변경 시, 기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
 
 온라인(질문마다): 질문 → `condition_extractor`(조건 → `Filters`) → `retrieve.hybrid.search`(필터 + Vector + BM25, 중복 제거, 필요 시 필터 완화) → `evidence.select_evidence` → `generator.generate_answer` + `citation` → `Answer`
+
+판정 기준 문서(제안): 오프라인 `data/guides/*.pdf` → `ingest.guides`(`GuideChunk`) → `index.guide_store` / 온라인 `Recommendation.needs_check`·후속 질문 → `guide_store.search_guides` → `generate.guide_evidence` → `Citation(kind="guide", page)`
 
 ## 5. 기획서 7.1 검색 난점의 대응 위치
 
@@ -139,6 +159,7 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 | 종료된 사업 혼재 | `Metadata.deadline`, `filters.is_expired`, `store.mark_closed` |
 | 수치 조건(중위소득 n% 등) 비교 약함 | 정형 필터 + `Recommendation.needs_check`('확인 필요') |
 | 표·첨부·이미지 | 수집 제외, 상세 링크로 대체 (`client`) |
+| 판정 세부(소득 산정·가구 범위 등)가 API 요약에 없음 | (제안) 판정 기준 문서 `guide_store.search_guides` + '확인 필요' 근거 |
 
 ## 6. 구현 현황
 
@@ -150,6 +171,7 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 | `tests/ingest/` | A 전용 합성 HTTP·임시 DB·가짜 소비자·CLI 검증. A NotImplementedError는 실패 처리, 공용 훅/fixtures 보존 |
 | Existing B/C tests | Implemented offline regression coverage; the opt-in actual-model test is skipped by default. This is not search/answer quality evaluation. |
 | `ingest/handoff*.py`, `locking.py` | Stored snapshot → B apply → persistent/Vector/BM25 verification → exact ack; real Chroma/fake embeddings, subprocess locks and C evidence expansion tested. |
+| 판정 기준 문서 (`ingest/guides`, `index/guide_store`, `generate/guide_evidence`) | 제안 단계, 미구현 |
 
 ### 6.1 A 구현과 팀 결정 경계
 
@@ -250,3 +272,5 @@ auxiliary-output failure cannot advance or rewind authoritative DB progress.
 - 2026-10-21: `policy.py`, bounded `reprocess.py` and compact read-only `coverage.py` expand personal/household scope. Historical replay validates one acquisition run, defers older/unknown observations, preserves exact stored-event handoff and never closes missing IDs. B codec/region fallback/ranking and C contracts remain unchanged.
 
 - 2026-10-22: Canonical region/provenance, selected metadata reconciliation, Korean full-date grammar and transaction-bound segmented raw replay/resume. Preserve batch verification, expanded scope, ranking and evidence contracts; inspect local index read-only without claiming a historical build revision.
+
+- 2026-10-23 (제안): 판정 기준 문서 경로 추가 계획. `GuideChunk`, `search_guides`, `Citation.kind`·`page`, `data/guides/`, `ingest/guide_sources.json`, 파일 수정 규칙(담당 밖·공유 파일은 수정 전 알림, AI 포함). 팀 합의 전이며 코드는 아직 없다. 합의 후 기획서 8.3에 기록.
