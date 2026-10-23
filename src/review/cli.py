@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 
 from src.common import config
-from src.review import legacy
+from src.review import intake, legacy
 from src.review.export import export_eval
 from src.review.queue import build_queue
 from src.review.store import DEFAULT_ROOT, ReviewStore
@@ -52,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--questions", default=str(config.EVAL_DIR / "questions.jsonl"))
     p.add_argument("--reviewer", default="legacy")
     p.add_argument("--db", default=str(config.DB_PATH))
+    p = sub.add_parser("import-questions", help="새 질문 일괄 등록 (csv 또는 jsonl). 이미 있는 질문은 건너뜀")
+    p.add_argument("file")
+    p.add_argument("--reviewer", required=True, help="등록하는 사람 (reviews/events/<이름>.jsonl)")
+    p.add_argument("--dry-run", action="store_true", help="쓰지 않고 결과만 미리 보기")
     sub.add_parser("validate", help="모든 이벤트 파일 검증 (오류가 있으면 종료 코드 1)")
     sub.add_parser("stats", help="질문·판정·사유 통계, 열린 메모, 활성 지침")
     p = sub.add_parser("agreement", help="두 검수자의 일치율과 kappa")
@@ -77,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     state = store.state()
+    if args.cmd == "import-questions":
+        report = intake.import_questions(store, args.file, args.reviewer, state=state, dry_run=args.dry_run)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if report["invalid"] else 0
     if args.cmd == "validate":
         for err in state.errors:
             print(f"! {err['file']}:{err['line']}: {err['error']}")

@@ -57,6 +57,7 @@ reviews/
 ## 명령
 ```powershell
 python -m src.review import-legacy            # eval/questions.jsonl의 질문·정답을 이벤트로 이전 (다시 실행해도 중복 없음, 기존 질문은 모두 dev)
+python -m src.review import-questions q.csv --reviewer taegyu [--dry-run]   # 새 질문 일괄 등록 (csv/jsonl)
 python -m src.review validate                 # 모든 이벤트 파일 검증 (오류가 있으면 종료 코드 1)
 python -m src.review stats                    # 질문·판정·사유 통계, 열린 메모, 활성 지침
 python -m src.review agreement taegyu minkyu  # 두 검수자의 일치율과 kappa
@@ -64,6 +65,10 @@ python -m src.review export --split dev --out reviews/exports/dev_v1.jsonl --tod
 python -m src.review queue --n 30             # 검수 대기열 (색인 필요)
 ```
 `--db`는 A의 SQLite(`data/services.db`)이고 읽기 전용으로만 연다.
+
+`import-questions`: 열은 `질문`(필수)·`범주`·`주제`·`나이`·`지역`·`분야`·`상황`·`태그`(`;` 구분)·`기대답변`·`출처`(기본 team)·`split` (영문 열 이름도 가능, 엑셀 csv의 BOM 허용). 나이·지역·분야·상황은 `gold_filters`가 된다. 정규화한 문장이 이미 있으면 건너뛰고(재실행해도 중복 없음), 형식 오류는 행 번호와 함께 모아 보여 주며 나머지는 계속 처리한다(오류가 있으면 종료 코드 1). 먼저 `--dry-run`으로 개수·dev/test 배정을 확인한다.
+
+시험지 평가: `python -m eval.run_eval --questions reviews/exports/dev_v1.jsonl --experiment hybrid_filter`. `relevance`가 있는 시험지는 Hit/Recall/MRR에 더해 Precision@K, nDCG@K(good=2, partial=1), bad_rate@K(상위 K 중 '틀림' 판정 비율), unjudged_rate@K(아직 판정 없는 비율)를 출력한다. unjudged가 높으면 정답 목록이 불완전해 지표가 낮게 나온 것일 수 있으니 `queue`로 먼저 채운다.
 
 ## 앱(C)에서 쓰는 법
 ```python
@@ -79,5 +84,5 @@ store.add_memo("taegyu", run_id, "omission", "신청 기한이 본문에 없음"
 
 ## 한계
 - 검수는 화면에 보인 후보만 판단한다. 검색이 놓친 제도는 판정되지 않으므로, 후보를 넓게 보여 주고 `independent_search`로 직접 찾은 후보를 더한다. `judged_coverage_at_10`으로 범위를 확인한다.
-- 정답이 5개를 넘을 수 있으므로 Recall@5는 구조적으로 낮아진다. Precision@K, nDCG@K는 `run_eval` 확장으로 다룬다(미구현).
+- 정답이 5개를 넘을 수 있으므로 Recall@5는 구조적으로 낮아진다. Precision@K·nDCG@K·bad/unjudged 비율은 `eval/run_eval.py`가 함께 출력한다(위 '명령' 참고).
 - 기한 해석은 `eval/label_helper.deadline_status`를 쓴다. A(`parse_deadline`)와 C(`generator._period_expired`)에도 같은 일을 하는 코드가 있어 결과가 다를 수 있다(통합 과제).
