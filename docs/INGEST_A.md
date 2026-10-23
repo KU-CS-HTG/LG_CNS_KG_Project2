@@ -5,6 +5,16 @@ The prior second pass recorded three offline corrections and a small isolated li
 The 2026-10-20 handoff pass adds real Chroma/BM25 integration using fake embeddings.
 No new live API, actual-model or production-data validation is claimed.
 
+## Official decision documents A-1 (2026-10-23)
+
+The separate A-owned `official_documents` CLI registers checked official sources, collects
+explicit bounded originals, stores exact-byte identities/attempts, inspects publication versus
+effectivity and records scoped service links/audit. Catalog DB, original directory and
+diagnostics directory are explicit, isolated and ignored. It never calls API ingestion,
+service pending/ack, embedding, document extraction or B/C production routing.
+The existing metadata/deadline/replay/handoff behavior below is preserved.
+See [A-1 source registry, tested commands, runtime observations and proposed B/C contract](OFFICIAL_DOCUMENTS_A1.md).
+
 ## API 확인 수준과 필드 매핑
 
 공식 출처: [공공데이터포털 제공기관 페이지](https://www.data.go.kr/data/15113968/openapi.do).

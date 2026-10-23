@@ -11,7 +11,7 @@
 
 | 단계 | 구조도 | 코드 | 담당 |
 |---|---|---|---|
-| 오프라인 | 문서(PDF) → ① 로드 | `src/ingest/client.py`, `store.py` (우리 데이터는 PDF가 아니라 보조금24 API → DB) | A |
+| 오프라인 | 문서(PDF) → ① 로드 | `src/ingest/client.py`, `store.py` (현재 검색 데이터는 보조금24 API → DB; A-1 원본 카탈로그는 별도) | A |
 | | ② 분할 | `src/ingest/chunker.py` | A |
 | | ③ 임베딩 | `src/index/embedder.py` | B |
 | | ④ 벡터 저장소 | `src/index/vector_store.py` | B |
@@ -20,7 +20,7 @@
 | | (근거 선별) | `src/generate/evidence.py` | C |
 | | ⑥ 생성 LLM → 답변 + 출처 | `src/generate/generator.py`, `citation.py` | C |
 
-구조도 대비 달라진 점: ① 입력이 PDF가 아닌 API이고 정형 지원조건이 함께 들어온다 / 검색 앞에 조건 추출과 정형 필터가 붙는다 / 검색과 생성 사이에 근거 선별이 있다.
+구조도 대비 달라진 점: ① 현재 검색 입력은 API이고 정형 지원조건이 함께 들어온다 / 검색 앞에 조건 추출과 정형 필터가 붙는다 / 검색과 생성 사이에 근거 선별이 있다. A-1 공식 원본 카탈로그는 아직 검색 경로에 연결하지 않는다.
 
 판정 기준 문서(제안)는 구조도의 "문서(PDF) → ① 로드" 경로를 그대로 따르는 두 번째 입력이다: 고시·업무처리기준 PDF → 조항 분할(`ingest/guides.py`, A) → 문서 전용 색인(`index/guide_store.py`, B) → '확인 필요' 근거 연결(`generate/guide_evidence.py`, C). 보조금24 경로와 분리되어 있다.
 
@@ -38,7 +38,7 @@ app/         main.py                                    # C: UI
 eval/        metrics, answer_eval, rag_compare, run_eval, label_helper, questions.jsonl, guide_questions.jsonl, demo_questions.jsonl, results/
 tests/       pytest. fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
-data/guides/ 판정 기준 문서 원본 PDF (커밋 금지, 제안)
+data/official_documents/  A-1 isolated catalogs/originals/diagnostics (커밋 금지)
 docs/        사전기획서.docx, ARCHITECTURE.md, images/
 ```
 
@@ -235,7 +235,26 @@ and diagnostics/correction. Shared B codec/filters and minimal C provenance read
 additively. Ingest-state UUID/cursor writes share the existing service/event/run transaction;
 auxiliary-output failure cannot advance or rewind authoritative DB progress.
 
+### 6.5 Official decision documents — A-1
+
+`document_catalog`, `document_acquire`, `official_documents` and the small checked source
+registry implement separate catalog/original/diagnostic paths. Logical document, exact-byte
+published version, artifact, retrieval attempt and topic-specific service link are distinct.
+Source observations/failures and auditable metadata corrections retain history. As-of inspection
+keeps publication/finality separate from inclusive verified effective intervals, exposing
+unknown dates, future rules, competing versions and scoped amendment review.
+
+The existing API service replacement boundary would delete API chunks if document-only chunks
+were submitted under the same service_id. Therefore A-1 does not change shared types, B/C or
+the service queue, and does not write a document index. A separate collection, version-scoped
+replacement, document queue/association, bounded related-clause expansion and DocumentCitation
+are proposed for A-2/A-3 and still require team agreement. pypdf adds structure/page-count
+validation only. Product direction, actual source evidence, limitations and detailed-condition
+evaluation plan: [OFFICIAL_DOCUMENTS_A1.md](OFFICIAL_DOCUMENTS_A1.md).
+
 ## 7. 변경 이력
+
+- 2026-10-23: A-1 isolated official document/source catalog, bounded originals, content-addressed versions, temporal inspection, auditable service/topic links and B/C proposal. No document extraction/index/routing changes or evaluation-label edits.
 
 - 2026-10-20: Implement stored-event handoff consumer, exact verification/ack, OS synchronization and one DB/index/model association; document dry-run/application/replay and test real Chroma/BM25 plus C evidence expansion with fake embeddings. Record the decision in planning §8.3; preserve B/C/shared contracts.
 
