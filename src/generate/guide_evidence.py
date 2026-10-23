@@ -95,7 +95,8 @@ def answer_guide_question(question: str, recs: list[Recommendation], region: str
     검색 1번, find_guides와 같은 검증(지역·관련도·원문 일부·중복). 답 문장은 고정 문구만 쓰고 조항 원문을 보여 준다:
     LLM이 조항을 풀어 쓰면 '해당됩니다'처럼 자격을 단정하거나 조건을 바꿔 쓸 수 있어서다 (CLAUDE.md 판정 문서 규칙)."""
     ids = list(dict.fromkeys(r.service_id for r in recs if r.service_id))
-    hits = _search(question, ids or None, region, k)
+    terms = _doc_terms(question)
+    hits = _search(" ".join([question, *terms]), ids or None, region, k)
     cits = _verified(hits, _keywords(question), region, k)
     if not cits:
         return GuideAnswer(text=NO_GUIDE_ANSWER, no_evidence=True)
@@ -166,7 +167,21 @@ def _keywords(text: str) -> list[str]:
     nouns = _kiwi_nouns(text)
     words = (list(dict.fromkeys(w for w in nouns if len(w) >= 2 and w not in _STOPWORDS))
              if nouns is not None else _regex_keywords(text))
-    return list(dict.fromkeys(words + _ages(text)))
+    return list(dict.fromkeys(words + [_squash(t) for t in _doc_terms(text)] + _ages(text)))
+
+
+# 질문 말 -> 판정 문서 말 (질문에 그 표현이 있을 때만 검색어·핵심 낱말에 덧붙인다. 문서 말은 PDF에 있는 것만).
+# '일한 경험'은 Kiwi가 '일'(한 글자)을 버려 '경험'만 남고, 문서는 '취업 경험'이라 정답 쪽(국민취업지원제도
+# 업무매뉴얼 Ⅰ유형 요건)이 검색에서 밀렸다. '취업' 한 낱말은 매뉴얼 거의 모든 쪽에 있어 붙은 말 그대로 쓴다
+_DOC_TERMS = (
+    (re.compile(r"일한\s*(?:경험|적)|일해\s*본"), "취업경험"),
+    (re.compile(r"따로\s*(?:살|사)"), "주거를 달리"),
+    (re.compile(r"아르바이트|알바"), "근로소득"),
+)
+
+
+def _doc_terms(text: str) -> list[str]:
+    return [term for pattern, term in _DOC_TERMS if pattern.search(text or "")]
 
 
 # 질문의 나이 ('30살', '25 살', '19세') -> 판정 문서의 표기 '30세'. 숫자는 명사가 아니라 빠졌고

@@ -162,14 +162,23 @@ def test_card_hides_guide_button_without_guide_store(monkeypatch):
 
 def test_follow_up_keywords_drop_question_endings(monkeypatch):
     monkeypatch.setattr(guide_evidence, "_kiwi_nouns", lambda text: None)   # Kiwi가 없는 PC (정규식 방식)
-    assert guide_evidence._keywords("부모님과 따로 살면 같은 가구예요?") == ["부모님", "따로", "가구"]
+    assert guide_evidence._keywords("부모님과 따로 살면 같은 가구예요?") == ["부모님", "따로", "가구", "주거를달리"]
 
 
 def test_kiwi_keywords_keep_nouns_only():
     pytest.importorskip("kiwipiepy")                                        # requirements.txt 밖 (설치된 PC에서만)
-    assert guide_evidence._keywords("부모님과 따로 사는 25살인데 주거급여를 따로 받을 수 있나요?") == ["부모", "주거급여", "25세"]
+    assert guide_evidence._keywords("부모님과 따로 사는 25살인데 주거급여를 따로 받을 수 있나요?") == ["부모", "주거급여", "주거를달리", "25세"]
     # 나이는 판정 문서 표기('30세')로 바꿔 넣는다 (숫자는 명사가 아니라 빠졌었다)
     assert guide_evidence._keywords("30살이 넘으면 부모님 가구에서 빠지나요?") == ["부모", "가구", "30세"]
+
+
+def test_doc_terms_bridge_question_words_to_document_words(fake_guides):
+    # 질문 말 -> 문서 말: 그 표현이 있을 때만 검색어·핵심 낱말에 덧붙인다
+    assert "취업경험" in guide_evidence._keywords("일한 경험이 없어도 구직촉진수당을 받을 수 있나요?")
+    assert "근로소득" in guide_evidence._keywords("대학생이 알바로 번 돈도 소득에 들어가나요?")
+    assert guide_evidence._doc_terms("자동차가 있으면 재산으로 계산되나요?") == []
+    guide_evidence.answer_guide_question("자동차가 있으면 재산으로 계산되나요?", [])
+    assert fake_guides.calls[-1]["query"] == "자동차가 있으면 재산으로 계산되나요?"    # 해당 없으면 질문 그대로
 
 
 def test_age_keyword_picks_line_but_does_not_count_for_relevance():
@@ -192,7 +201,7 @@ def test_guide_question_answers_with_original_clauses_only(fake_guides):
             Recommendation("이름만", "기관", "", "", "")]                     # service_id 없는 카드는 빼고 찾는다
     fake_guides.results = [gchunk("basic#p52-1", 52, TEXT_FAMILY), gchunk("basic#p60-1", 60, TEXT_UNRELATED)]
     ans = guide_evidence.answer_guide_question("부모님과 따로 살면 같은 가구예요?", recs, region="서울")
-    assert fake_guides.calls == [{"query": "부모님과 따로 살면 같은 가구예요?", "service_ids": ["SVC1", "SVC2"],
+    assert fake_guides.calls == [{"query": "부모님과 따로 살면 같은 가구예요? 주거를 달리", "service_ids": ["SVC1", "SVC2"],
                                   "region": "서울", "k": guide_evidence.GUIDE_K}]
     assert not ans.no_evidence and [c.page for c in ans.citations] == [52]       # 관련 없는 조항은 뺀다
     assert "따로 살더라도" in ans.citations[0].quote
