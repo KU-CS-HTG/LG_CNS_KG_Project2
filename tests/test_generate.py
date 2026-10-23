@@ -303,6 +303,14 @@ def test_group_only_program_not_in_question_goes_later():
     assert not generator._other_group("월세가 부담돼요", "주거급여 (맞춤형 급여)")
 
 
+def test_change_notice_goes_later_unless_the_question_asks_about_changes():
+    notice = "(변경·중지·연장 등 )부산광역시 평생함께 청년모두가 주거비 지원"
+    assert generator._change_notice("부산 33살 직장인 주거 지원", notice)
+    assert generator._change_notice("월세 지원 있나요", "청년월세 지원사업 변경신청(세종시 거주)")
+    assert not generator._change_notice("청년월세 받다가 이사했어요", "청년월세 지원사업 변경신청(세종시 거주)")
+    assert not generator._change_notice("외국인 주소 신고", "외국인 체류지변경신고 절차 간소화")   # 실제 서비스
+
+
 def test_services_missing_from_llm_verdict_are_dropped(monkeypatch):
     ev = evidence.select_evidence(CASES["sr1"]["results"])
     _fake_llm(monkeypatch, {"services": []})                      # 판정은 왔지만 관련 있는 제도가 없음

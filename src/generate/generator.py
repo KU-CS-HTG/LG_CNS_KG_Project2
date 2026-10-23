@@ -275,7 +275,8 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         # 신분(중고등 신입생·보훈대상)이 맞지 않는다는 판정은 코드로 확인할 수 없어 빼지 않지만 맨 앞 카드가 되지 않게
         # 뒤로 보낸다. 질문에 없는 특정 대상 전용 제도도 같다: 졸업 후 미취업 질문에 '장애인 취업성공패키지'가
         # 1번 카드였다 (평가 q02, 판정은 장애 여부를 말하지 않아 '확인 필요'로 맞게 냈고 검색 순위가 1위였다)
-        later = unverified or _other_group(question, chunks[0].service_name)
+        later = (unverified or _other_group(question, chunks[0].service_name)
+                 or _change_notice(question, chunks[0].service_name))
         # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
         # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
         # (전주·세종·강원)가 앞자리를 차지했다 -> 뒤로 보낸 제도 맨 뒤, 지역 없는 질문의 지자체 제도는 전국 제도 뒤,
@@ -299,6 +300,17 @@ def _is_local(chunks: list[Chunk]) -> bool:
 _GROUP_WORDS = {"장애": ("장애",), "보훈": ("보훈", "유공"), "국가유공": ("보훈", "유공"), "북한이탈": ("북한", "탈북"),
                 "탈북": ("북한", "탈북"), "한부모": ("한부모", "미혼모", "미혼부"), "다문화": ("다문화", "이민", "외국"),
                 "결혼이민": ("다문화", "이민", "외국"), "어르신": ("어르신", "노인", "65세"), "노인": ("어르신", "노인", "65세")}
+
+
+# 이미 선정된 사람의 변경 신청 안내 ('(변경·중지·연장 등) 부산 평생함께 청년 주거비', '청년월세 지원사업 변경신청').
+# 새로 신청하려는 질문에는 제도가 아니라 사후 절차라 근거 자리를 차지하지 않게 뒤로 보낸다 (q29: 5자리 중 2번째)
+_CHANGE_NOTICE_RE = re.compile(r"변경\s*신청|변경·중지|중지·연장")
+_ASKS_CHANGE_RE = re.compile(r"변경|이사|전입|중지|연장|해지|바뀌")
+
+
+def _change_notice(question: str, service_name: str) -> bool:
+    """제도 이름이 변경 신청 안내인데 질문은 변경을 묻지 않는가."""
+    return bool(_CHANGE_NOTICE_RE.search(service_name or "")) and not _ASKS_CHANGE_RE.search(question or "")
 
 
 def _other_group(question: str, service_name: str) -> bool:
