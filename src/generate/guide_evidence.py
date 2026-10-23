@@ -164,9 +164,19 @@ def _keywords(text: str) -> list[str]:
     평가 질문 12개 중 3개에서 근거 문구를 엉뚱한 줄 중심으로 잘랐다). Kiwi는 requirements.txt에 없어
     (팀 합의 전) 설치된 PC에서만 쓰고, 없으면 예전 방식으로 동작한다."""
     nouns = _kiwi_nouns(text)
-    if nouns is not None:
-        return list(dict.fromkeys(w for w in nouns if len(w) >= 2 and w not in _STOPWORDS))
-    return _regex_keywords(text)
+    words = (list(dict.fromkeys(w for w in nouns if len(w) >= 2 and w not in _STOPWORDS))
+             if nouns is not None else _regex_keywords(text))
+    return list(dict.fromkeys(words + _ages(text)))
+
+
+# 질문의 나이 ('30살', '25 살', '19세') -> 판정 문서의 표기 '30세'. 숫자는 명사가 아니라 빠졌고
+# '살'과 '세'가 달라 나이 기준 조항('30세 미만의 미혼자녀')이 관련도 확인에서 걸리지 않았다
+_AGE_RE = re.compile(r"(?<!\d)(\d{1,3})\s*(?:살|세)")
+_AGE_WORD_RE = re.compile(r"\d{1,3}세")
+
+
+def _ages(text: str) -> list[str]:
+    return [f"{n}세" for n in _AGE_RE.findall(text)]
 
 
 _KIWI_NOUN_TAGS = ("NNG", "NNP", "SL", "XR")   # 일반·고유 명사, 외국어, 어근
@@ -240,10 +250,14 @@ def _squash(s: str) -> str:
 
 def _excerpt(text: str, keywords: list[str]) -> str:
     """조각에서 핵심 낱말이 가장 많이 든 줄을 중심으로 MAX_GUIDE_QUOTE_CHARS 이내의 연속된 원문을 자른다.
-    핵심 낱말이 MIN_KEYWORD_HITS개(낱말 수가 더 적으면 전부)보다 적게 들어 있으면 관련 없는 조각으로 보고 ''."""
+    핵심 낱말이 MIN_KEYWORD_HITS개(낱말 수가 더 적으면 전부)보다 적게 들어 있으면 관련 없는 조각으로 보고 ''.
+    나이('30세')는 자를 줄을 고를 때만 쓰고 관련도 기준에는 세지 않는다 (문서 곳곳에 나와 '가구'+'30세'만
+    맞은 재산 차감 쪽이 걸렸다). 낱말이 나이뿐이면 나이로 센다."""
     body = _squash(text)
     found = [w for w in keywords if _has(w, body)]
-    if not keywords or len(found) < min(MIN_KEYWORD_HITS, len(keywords)):
+    topic = [w for w in keywords if not _AGE_WORD_RE.fullmatch(w)] or keywords
+    topic_found = [w for w in found if w in topic]
+    if not keywords or len(topic_found) < min(MIN_KEYWORD_HITS, len(topic)):
         return ""
     lines = [m for m in re.finditer(r"[^\n]+", text) if m.group().strip()]
     if not lines:

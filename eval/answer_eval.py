@@ -255,14 +255,17 @@ def guide_score(q: dict, cits: list, hits: list, text: str = "", region: str | N
     - 정답 일치: 정답(쪽, 정답 문구)과 같은 쪽이고 그 근거가 나온 조각 원문에 정답 문구가 모두 있다
       (doc_id가 정답에 있으면 문서도 같아야 한다. 문서 목록 guide_sources.json이 생기기 전에는 쪽·문구로만 본다)
     - quote_accuracy: 보인 문구가 검색된 조각 원문의 일부인 비율 (요약·바꿔 쓰기 없음)
-    - phrase_in_quote: 정답 근거에서 보인 문구 자체에 정답 문구가 들어 있는가 (잘라 낸 위치 점검)"""
+    - phrase_in_quote: 정답 근거에서 보인 문구 자체에 정답 문구가 들어 있는가 (잘라 낸 위치 점검)
+    - 정답에 "alt": true인 쪽은 같은 내용이 적힌 다른 쪽(추가 정답): guide_hit에는 맞은 것으로 세고,
+      guide_recall은 원래 정답 수만 분모로 해서 추가 정답은 분자에만 더한다 (1을 넘지 않음)"""
     from src.generate import guide_evidence
 
     def source(c):                          # 근거 문구가 나온 검색 조각
         return next((h for h in hits if h.page == c.page and _squash(c.quote) in _squash(h.text)), None)
 
     matched, in_quote = 0, 0
-    for e in q.get("expected") or []:
+    expected = q.get("expected") or []
+    for e in expected:
         phrases = [_squash(p) for p in e.get("phrases") or []]
         for c in cits:
             h = source(c)
@@ -271,7 +274,7 @@ def guide_score(q: dict, cits: list, hits: list, text: str = "", region: str | N
                 matched += 1
                 in_quote += all(p in _squash(c.quote) for p in phrases)
                 break
-    n_exp = len(q.get("expected") or [])
+    n_exp = sum(1 for e in expected if not e.get("alt"))
     row = {"shown": len(cits), "pages": [c.page for c in cits],
            "quote_accuracy": (sum(1 for c in cits if source(c)) / len(cits)) if cits else 1.0,
            "assertive": bool(_ASSERTIVE_RE.search(text or "")),
@@ -279,7 +282,7 @@ def guide_score(q: dict, cits: list, hits: list, text: str = "", region: str | N
     if q.get("expect_no_guide"):
         row["no_guide_correct"] = 1.0 if not cits else 0.0
     if n_exp:
-        row.update(guide_hit=1.0 if matched else 0.0, guide_recall=matched / n_exp,
+        row.update(guide_hit=1.0 if matched else 0.0, guide_recall=min(matched / n_exp, 1.0),
                    phrase_in_quote=(in_quote / matched) if matched else 0.0)
     return row
 

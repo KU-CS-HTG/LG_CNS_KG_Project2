@@ -167,7 +167,18 @@ def test_follow_up_keywords_drop_question_endings(monkeypatch):
 
 def test_kiwi_keywords_keep_nouns_only():
     pytest.importorskip("kiwipiepy")                                        # requirements.txt 밖 (설치된 PC에서만)
-    assert guide_evidence._keywords("부모님과 따로 사는 25살인데 주거급여를 따로 받을 수 있나요?") == ["부모", "주거급여"]
+    assert guide_evidence._keywords("부모님과 따로 사는 25살인데 주거급여를 따로 받을 수 있나요?") == ["부모", "주거급여", "25세"]
+    # 나이는 판정 문서 표기('30세')로 바꿔 넣는다 (숫자는 명사가 아니라 빠졌었다)
+    assert guide_evidence._keywords("30살이 넘으면 부모님 가구에서 빠지나요?") == ["부모", "가구", "30세"]
+
+
+def test_age_keyword_picks_line_but_does_not_count_for_relevance():
+    kws = ["부모", "가구", "30세"]
+    unrelated = "재산 차감 순서\n근로무능력자로만 구성된 가구의 재산가액\n30세 이상 등록장애인"
+    assert guide_evidence._excerpt(unrelated, kws) == ""             # 주제 낱말은 '가구' 하나뿐
+    related = "가구 구성 원칙\n부모와 주거를 달리하는 30세 미만 미혼자녀는 부모 가구에 포함"
+    assert "30세 미만" in guide_evidence._excerpt(related, kws)
+    assert guide_evidence._excerpt("만 30세 미만 청년", ["30세"]) != ""   # 낱말이 나이뿐이면 나이로 센다
     assert guide_evidence._keywords("자동차가 있으면 재산으로 계산되나요?") == ["자동차", "재산", "계산"]
     # 제도 이름은 쪼개지 않는다 ('청년도약계좌' -> '청년 + 도 + 약계좌'였다), 어디에나 나오는 '동안'은 뺀다
     assert guide_evidence._keywords("청년도약계좌는 몇 년 동안 넣어야 하나요?") == ["청년도약계좌"]
@@ -256,6 +267,18 @@ def test_guide_score_counts_hits_quotes_and_assertions():
     assert answer_eval.guide_score(GQ_FOLLOW, [wrong_page], [hit])["guide_hit"] == 0.0
     assert answer_eval.guide_score(GQ_NONE, [], [])["no_guide_correct"] == 1.0
     assert answer_eval.guide_score(GQ_NONE, [good], [hit])["no_guide_correct"] == 0.0
+
+
+def test_guide_score_alt_page_counts_as_hit_not_recall_denominator():
+    from eval import answer_eval
+    hit = gchunk("basic#p52-1", 52, TEXT_FAMILY)
+    good = Citation("문서", "보건복지부", "다만 주민등록상 따로 살더라도 생계·주거를 같이하는 부모는 가구원에 포함할 수 있다.",
+                    "", kind="guide", page=52)
+    q = {**GQ_FOLLOW, "expected": [{"file": "basic.pdf", "page": 99, "phrases": ["가구원"]},
+                                   {"file": "basic.pdf", "page": 52, "phrases": ["가구원에 포함"], "alt": True}]}
+    row = answer_eval.guide_score(q, [good], [hit])
+    assert row["guide_hit"] == 1.0 and row["guide_recall"] == 1.0     # 원래 정답 1곳 기준, 1을 넘지 않음
+    assert answer_eval.guide_score(q, [], [])["guide_recall"] == 0.0
 
 
 def test_guide_evaluate_runs_without_llm(fake_guides):
