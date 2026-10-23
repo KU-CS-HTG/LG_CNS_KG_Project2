@@ -303,6 +303,34 @@ def test_group_only_program_not_in_question_goes_later():
     assert not generator._other_group("월세가 부담돼요", "주거급여 (맞춤형 급여)")
 
 
+def test_new_enrollment_closed_is_shown_first_in_needs_check_and_goes_later(monkeypatch, sample_chunks):
+    # 신청방법에 "'24년부터 신규지원 중단"이 있는 청년내일채움공제가 안내됐다 (q10 Faithfulness)
+    from dataclasses import replace
+    base = sample_chunks[0]
+    def svc(sid, how):
+        return [replace(base, service_id=sid, service_name=sid, section="신청방법", text=f"{sid}\n{how}")]
+    ev = {"closed": svc("closed", "○ 신청방법: 고용24\n* '24년부터 신규지원 중단"), "open": svc("open", "온라인 신청")}
+    monkeypatch.setattr(generator, "_application_period", lambda sid: "")
+    assert generator._new_closed("closed", ev["closed"]) == "'24년부터 신규지원 중단"
+    assert generator._new_closed("open", ev["open"]) == ""
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {"services": [
+        {"service_id": sid, "applicable": "확인 필요"} for sid in ev if f"id={sid}]" in u]}
+        if s == generator.SYSTEM_PROMPT else {})
+    recs = generator._generate("적금 있나요?", ev, [], None).recommendations
+    assert [r.service_name for r in recs] == ["open", "closed"]
+    assert recs[1].needs_check[0] == "신규 신청 — '24년부터 신규지원 중단 (원문 확인)"
+
+
+def test_help_phrase_is_not_paired_as_eligibility(sample_chunks):
+    # '보증금을 빌려주거나 보증해 주는 제도' 조건이 대상 '무주택세대구성원'에 해당된다는 이유가 나왔다 (q22)
+    from dataclasses import replace
+    q = "월세 계약을 해야 하는데 보증금이 부족해요. 보증금을 빌려주거나 보증해 주는 제도가 있나요?"
+    ch = [replace(sample_chunks[0], section="지원대상", text="장기전세\n무주택세대구성원")]
+    pair = [{"said": "보증금을 빌려주거나 보증해 주는 제도", "condition": "무주택세대구성원"}]
+    assert generator._grounded_matches(q, ch, pair)[0] == ["보증금을 빌려주거나 보증해 주는 제도"]   # 예전 동작
+    assert generator._grounded_matches(q, ch, pair, ["보증금을 빌려주거나 보증해 주는 제도"]) == ([], [])
+
+
 def test_change_notice_goes_later_unless_the_question_asks_about_changes():
     notice = "(변경·중지·연장 등 )부산광역시 평생함께 청년모두가 주거비 지원"
     assert generator._change_notice("부산 33살 직장인 주거 지원", notice)

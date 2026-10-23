@@ -275,17 +275,34 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         # 신분(중고등 신입생·보훈대상)이 맞지 않는다는 판정은 코드로 확인할 수 없어 빼지 않지만 맨 앞 카드가 되지 않게
         # 뒤로 보낸다. 질문에 없는 특정 대상 전용 제도도 같다: 졸업 후 미취업 질문에 '장애인 취업성공패키지'가
         # 1번 카드였다 (평가 q02, 판정은 장애 여부를 말하지 않아 '확인 필요'로 맞게 냈고 검색 순위가 1위였다)
-        later = (unverified or _other_group(question, chunks[0].service_name)
+        closed = _new_closed(sid, chunks)
+        later = (unverified or bool(closed) or _other_group(question, chunks[0].service_name)
                  or _change_notice(question, chunks[0].service_name))
         # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
         # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
         # (전주·세종·강원)가 앞자리를 차지했다 -> 뒤로 보낸 제도 맨 뒤, 지역 없는 질문의 지자체 제도는 전국 제도 뒤,
         # 판정 '가능'을 '확인 필요' 앞. 같은 조건 안에서는 검색 순서 (CLAUDE.md B 계약: 지역 없는 질문은 지자체 제도를 뒤로)
         key = (later, no_region and _is_local(chunks), applicable != LIKELY, rank)
-        ranked.append((key, _to_recommendation(
-            question, chunks, gen, _met_asked(chunks, needs, asked) if gen.get("meets_need") is True else None,
-            checklists.get(sid))))
+        rec = _to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
+                                 if gen.get("meets_need") is True else None, checklists.get(sid), asked)
+        if closed:
+            rec.needs_check.insert(0, f"{NEW_CLOSED_ITEM} — {closed} (원문 확인)")
+        ranked.append((key, rec))
     return [r for _, r in sorted(ranked, key=lambda kr: kr[0])]
+
+
+NEW_CLOSED_ITEM = "신규 신청"
+# 신청방법·신청기한 원문의 신규 모집 중단 구절 ('* '24년부터 신규지원 중단', '2017년 이후 출생아 신규가입 불가').
+# 제도 전체가 끝났는지 일부 대상만 끝났는지('제대군인 신규 신청 불가', '주거임차비의 경우 신규 신청 불가')는 코드로
+# 가를 수 없어 빼지 않고, 카드 순서를 뒤로 보내고 확인 필요 맨 앞에 원문 구절을 보인다 (q10 청년내일채움공제)
+_NEW_CLOSED_RE = re.compile(r"[^\n.·○※*]{0,25}신규\s*(?:지원|가입|신청|모집|접수)?\s*(?:이\s*)?(?:중단|불가|종료)")
+
+
+def _new_closed(sid: str, chunks: list[Chunk]) -> str:
+    """신청방법·신청기한 원문에 신규 모집 중단 구절이 있으면 그 구절(원문 그대로), 없으면 ''."""
+    texts = [citation._body_text(c) for c in chunks if c.section == "신청방법"] + [_application_period(sid)]
+    m = next((m for t in texts if t for m in [_NEW_CLOSED_RE.search(t)] if m), None)
+    return " ".join(m.group().split()).strip(" -:,") if m else ""
 
 
 def _is_local(chunks: list[Chunk]) -> bool:
@@ -432,16 +449,17 @@ def _build_prompt(question: str, evidence: dict[str, list[Chunk]], needs: list[s
 
 
 def _to_recommendation(question: str, chunks: list[Chunk], gen: dict, asked: list[str] | None = None,
-                       checklist: list[dict] | None = None) -> Recommendation:
+                       checklist: list[dict] | None = None, help_: list[str] | None = None) -> Recommendation:
     """LLM 출력이 없거나 빠진 항목은 조각 원문으로 채운다.
 
     asked: 이 제도가 도와준다고 판정된(meets_need) '찾는 것' 구절. 나이·거주지 짝이 없을 때 일반 문구 대신 쓴다
     (실제 데이터: 나이·지역 없이 '면접 비용 지원'만 물으면 모든 카드의 이유가 같은 일반 문구였다).
     checklist: 자격 조건만 따로 뽑은 결과(_extract_checklists). 있으면 확인 필요 조건(needs_check)으로 쓰고,
-    없으면 답변 생성의 needs_check를 쓴다. 어느 쪽이든 기준 구절은 원문에 있는 것만 남긴다."""
+    없으면 답변 생성의 needs_check를 쓴다. 어느 쪽이든 기준 구절은 원문에 있는 것만 남긴다.
+    help_: 질문의 '찾는 도움' 구절 전체 (자격 조건 짝에서 빼는 데 쓴다)."""
     meta = _merged_meta(chunks)
     raw = _sections(chunks)
-    llm_pairs = _grounded_matches(question, chunks, gen.get("matches"))
+    llm_pairs = _grounded_matches(question, chunks, gen.get("matches"), help_)
     code_pairs = _code_matches(question, chunks)
     said, conds = _merge_pairs(code_pairs, llm_pairs)
     if said:
@@ -550,7 +568,8 @@ def _render(recs: list[Recommendation], situation: str, follow_up: str) -> str:
     return "\n\n".join(parts)
 
 
-def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list[str], list[str]]:
+def _grounded_matches(question: str, chunks: list[Chunk], matches,
+                      help_: list[str] | None = None) -> tuple[list[str], list[str]]:
     """LLM이 준 (질문 구절, 근거 구절) 중 질문 원문에 실제로 있는 구절만 남긴다 (나이 검증과 같은 원리).
     LLM이 제도의 대상 조건을 사용자가 말한 것처럼 옮겨 적는 일을 막는다."""
     squash = lambda s: "".join(s.split())  # noqa: E731
@@ -571,6 +590,9 @@ def _grounded_matches(question: str, chunks: list[Chunk], matches) -> tuple[list
         # (근거에 없는 나이 조건과 짝지은 '27살'이 이유에 혼자 남던 문제)
         if not (s and c and len(squash(s)) <= MAX_SAID_CHARS and squash(s) in q and squash(c) in body):
             continue
+        if any(h and (squash(s) in squash(h) or squash(h) in squash(s)) for h in help_ or []):
+            continue                      # 찾는 도움 구절은 자격 조건이 아니다 ('보증금을 빌려주거나 보증해 주는 제도'
+            #                               조건이 대상 '무주택세대구성원'에 해당, 평가 q22 Faithfulness)
         if s not in said:
             said.append(s)
         if c not in conds:
