@@ -22,7 +22,7 @@ import streamlit as st  # noqa: E402
 from streamlit import runtime  # noqa: E402
 
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import generator, guide_evidence  # noqa: E402
+from src.generate import generator, guide_evidence, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -115,6 +115,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .guide-title { font-size:.84rem; font-weight:700; color:var(--accent); margin-bottom:.3rem; }
 .guide-doc { font-size:.8rem; font-weight:600; opacity:.85; margin-top:.35rem; }
 .guide-sub { font-size:.76rem; opacity:.7; line-height:1.45; margin-top:.4rem; }
+.calc-hint { font-size:.76rem; line-height:1.45; margin:-.5rem 0 .6rem 1.9rem; padding:.3rem .55rem; border-radius:8px; }
+.calc-hint.in { background:rgba(34,160,90,.10); }
+.calc-hint.over { background:rgba(230,140,30,.12); }
+.calc-big { font-size:1.35rem; font-weight:700; }
+.calc-table { font-size:.76rem; width:100%; border-collapse:collapse; margin:.3rem 0; }
+.calc-table td { padding:.12rem .2rem; border-bottom:1px solid rgba(128,128,128,.18); }
+.calc-table td:last-child { text-align:right; }
 details.src { border-top:1px dashed var(--line); padding-top:.55rem; }
 details.src summary { cursor:pointer; font-size:.85rem; font-weight:600; opacity:.75; list-style:none; }
 details.src summary::-webkit-details-marker { display:none; }
@@ -388,6 +395,45 @@ def _card_guides(r: Recommendation, key: str, region: str | None) -> None:
     st.markdown(_guides_html(found), unsafe_allow_html=True)
 
 
+def _income() -> tuple[int, int] | None:
+    """사이드바 계산기에 입력한 (가구원 수, 월 소득 원). 소득을 넣지 않았으면 None."""
+    household = st.session_state.get("calc_household")
+    man = st.session_state.get("calc_income_man")
+    if not household or not man:
+        return None
+    return int(household), int(man * 10_000)
+
+
+def _calc_hint(item: str) -> str:
+    """'중위소득 N% 이하' 항목 아래 계산기 비교 (참고용). 체크는 사용자가 한다: 제도마다 소득을 보는 방법이 달라서."""
+    entered = _income()
+    c = income_calc.check(item, *entered) if entered else None
+    if c is None:
+        return ""
+    word = "미만" if c.strict else "이하"
+    verdict = "기준 안쪽이에요" if c.within else "기준을 넘어요"
+    return (f'<div class="calc-hint {"in" if c.within else "over"}">🧮 입력하신 소득은 중위소득 약 <b>{c.mine:g}%</b> · '
+            f'이 기준({c.limit:g}% {word}, {entered[0]}인 가구 월 {_e(income_calc.won(c.limit_amount))})의 {verdict} '
+            f'<span style="opacity:.7">(참고용)</span></div>')
+
+
+def _income_calculator() -> None:
+    """사이드바 소득 기준 계산기: 가구원 수·월 소득 -> 기준 중위소득 대비 %와 자주 쓰는 기준 금액.
+    입력하면 카드의 '중위소득 N% 이하' 조건 아래에 비교가 함께 보인다 (_calc_hint)."""
+    with st.expander("🧮 소득 기준 계산기"):
+        st.caption(f"{income_calc.SOURCE}과 비교해요. 카드의 '중위소득 ○% 이하' 조건 옆에도 결과가 보여요.")
+        household = st.selectbox("가구원 수", list(range(1, income_calc.MAX_HOUSEHOLD + 1)), key="calc_household",
+                                 format_func=lambda n: f"{n}인 가구")
+        man = st.number_input("가구 월 소득 (만원, 세전)", min_value=0, max_value=100_000, step=10, key="calc_income_man")
+        if man:
+            pct = income_calc.percent(household, int(man * 10_000))
+            st.markdown(f'기준 중위소득의 약 <span class="calc-big">{pct:g}%</span>', unsafe_allow_html=True)
+        rows = "".join(f"<tr><td>중위소득 {p}%</td><td>월 {_e(income_calc.won(income_calc.amount(household, p)))}</td></tr>"
+                       for p in income_calc.COMMON_PERCENTS)
+        st.markdown(f'<table class="calc-table">{rows}</table>', unsafe_allow_html=True)
+        st.caption(income_calc.NOTICE)
+
+
 def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> None:
     """제도 카드 1장. 확인이 필요한 조건은 자격 체크리스트로 보여 준다 (사용자가 스스로 해당 여부를 체크).
 
@@ -406,6 +452,9 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
                             unsafe_allow_html=True)
                 for k, item in zip(keys, r.needs_check):
                     st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
+                    hint = _calc_hint(item)
+                    if hint:
+                        st.markdown(hint, unsafe_allow_html=True)
         _card_guides(r, key, region)
         st.markdown(_card_sources(r), unsafe_allow_html=True)
 
@@ -470,6 +519,7 @@ def _sidebar() -> None:
                     '<div class="legend"><span class="badge ok">✓ 체크한 조건 모두 충족</span>'
                     '<div>체크리스트를 모두 체크했어요 (스스로 확인한 결과예요)</div></div>',
                     unsafe_allow_html=True)
+        _income_calculator()
         st.markdown("**잘 물어보는 팁**")
         st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요. "
                    "답변 아래 '이어서 질문하기'로 소득 같은 정보를 덧붙일 수 있어요.")
