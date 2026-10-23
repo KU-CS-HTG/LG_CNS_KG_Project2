@@ -21,8 +21,8 @@ from src.review import schema, session  # noqa: E402
 from src.review.cli import hybrid_search_fn, load_services  # noqa: E402
 from src.review.store import ReviewStore  # noqa: E402
 
-DEFAULT_CANDIDATES = 10      # 질문당 후보 수 기본값 (화면 왼쪽 슬라이더로 바꾼다)
-MAX_CANDIDATES = 30
+DEFAULT_CANDIDATES = 5      # 질문당 후보 수 기본값 (화면 왼쪽 슬라이더로 바꾼다)
+MAX_CANDIDATES = 5
 FIELDS = [("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"),
           ("신청방법", "how_to_apply"), ("신청기한", "application_period")]
 MARK = {"good": "🟢", "partial": "🟡", "bad": "🔴", "unsure": "⚪"}
