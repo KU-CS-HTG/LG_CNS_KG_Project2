@@ -6,6 +6,7 @@
 - 출처: 공공데이터포털 "행정안전부_대한민국 공공서비스(혜택) 정보"(보조금24) REST API (general personal/household support included; `ingest.policy.inclusion_decision` / `personal-household-v1`. Youth matching remains a tag, not the dataset gate)
 - 서비스 1건 = 서비스명, 지원대상, 선정기준, 지원내용, 신청방법, 신청기한, 소관기관, 상세 링크 + 지원조건(정형)
 - 원본 응답은 `data/raw/`에 저장하고 커밋하지 않는다. API 키는 `.env`에만 둔다(커밋 금지).
+- 판정 기준 문서(제안, 미구현): 공무원 판정용 고시·업무처리기준·사업안내 지침 PDF. 공식 기관 원본만 쓰고(블로그·요약 금지), 원본은 `data/guides/`에 두고 커밋하지 않는다. 문서 목록(`doc_id`·`file`·문서명·발행 기관·연도·출처·공공누리 유형·적용 범위(전국/지역)·연결 `service_id`·`sha256` 파일 지문)은 `src/ingest/guide_sources.json`(커밋)에 둔다. 연결 `service_id`는 사람이 문서를 읽고 정한다. PDF는 공유 드라이브 zip으로 나누고 각자 `data/guides/`에 풀며, 파싱 전에 `sha256`으로 같은 파일인지 확인한다(다르면 중단).
 
 ## 파이프라인 (RAG 구조도 기준)
 오프라인 색인 — 문서가 바뀔 때만 다시 실행
@@ -19,6 +20,10 @@
 6. ⑤ 검색: Hybrid(Vector + BM25), Top-5, 중복 제거
 7. 근거 선별 → ⑥ 생성(gpt-4o-mini) → 답변 + 출처
 
+판정 기준 문서 경로(제안) — 기존 보조금24 경로와 분리, 기존 `Chunk`·`search`·handoff는 바꾸지 않는다
+- 오프라인: PDF → 조항·소제목 단위 분할(쪽 번호 유지, "문서명 > 소제목" 접두) → 문서 전용 색인
+- 온라인: 추천 카드의 '확인 필요' 항목·후속 질문 → `guide_store.search_guides` → 판정 근거(문서명·쪽)
+
 ## 담당 영역 (담당자 이름은 팀에서 채울 것)
 | 담당 | 단계 | 디렉터리 |
 |---|---|---|
@@ -27,6 +32,7 @@
 | C (생성·서비스) 담당자: | 조건 추출, 근거 선별, ⑥ 생성, 인용 형식, UI, 답변 평가 | `src/generate/`, `app/`, `eval/answer_eval.py` |
 - 테스트(`tests/`)는 각자 자기 모듈의 `test_*.py`를 관리하고, 샘플 데이터(`tests/fixtures/`)는 A의 실제 조각이 나오면 A·B가, B의 실제 검색 결과가 나오면 B·C가 함께 실제 데이터로 보강한다. C는 다른 모듈 함수를 모듈 속성(`hybrid.search(...)`)으로 호출한다(테스트에서 가짜로 바꿔 끼우기 위함).
 - 평가 질문 세트(`eval/questions.jsonl`)와 8.3 기술 선택 기록은 전원이 함께 작성한다. 정답(`relevant_service_ids`)은 **데이터를 읽고 사람이 정하며**(검색 결과를 베끼지 않는다), `eval/label_helper.py`로 채우고 기준은 `docs/LABELING.md`를 따른다(질문당 5개 이내, 지역 없는 질문은 전국 단위 제도, 지역 제도는 `followup` 문항).
+- 판정 기준 문서(제안): A `src/ingest/guides.py`·`guide_sources.json` / B `src/index/guide_store.py` / C `src/generate/guide_evidence.py`. 각자 새 파일로 만들고 A·B 기존 파일은 고치지 않는다. 평가 질문은 `eval/guide_questions.jsonl`(기존 `questions.jsonl`과 분리).
 
 ## 모듈 간 인터페이스 (제안 — 팀 합의 후 확정, 바꿀 때는 이 파일부터 고친다)
 - A → B: 조각 단위 레코드 `{chunk_id, service_id, service_name, section, text, metadata, detail_url}`
@@ -41,6 +47,10 @@
 - `storage.StoragePaths`를 전달해 config 전역 변경 없이 실행별 DB/raw를 선택한다. fixture/validation의 운영 DB·raw·sidecar·lock 경로 및 resolved 별칭은 쓰기 전에 거부한다. `run_fixture()`와 CLI에 같은 격리를 적용한다. HTMLParser는 표 셀/행 경계를 보존하며 정제 변경은 다음 관측 시 한 번의 해시/전체 조각 갱신을 유발할 수 있다.
 - 격리 live 표본은 세 엔드포인트 3건씩 확인했으나 전체 종료·빈 스냅샷·실제 연령/지역 어댑터는 미검증이다. JA0110/JA0111 기본 라벨은 OAS에서 확인했어도 신청자/부양자 의미 등을 자동 추정하지 않는다.
 - Supported handoff uses one worker per target index, holding index→source-DB OS locks through apply/verify/ack. `pipeline._execute`, `store.upsert_services` and public `store.apply_run` share the source lock; the pipeline calls `_apply_run_locked` only while holding it. Competing processes fail immediately. Stale-ack protection alone does not synchronize arbitrary direct B writers. provenance 품질은 `store.get_record(service_id)`로 조회하고 후보 보류·C 표시 방침은 합의한다.
+- 판정 기준 문서(계약 확정 2026-10-23, 타입은 `src/common/schema.py`. 구현은 진행 중):
+  - A → B: `GuideChunk{chunk_id, doc_id, doc_title, publisher, year, page, heading, text, scope, service_ids, source_url}`. `scope`는 "전국" 또는 지역명, `service_ids`가 비면 공통 기준 문서.
+  - B → C: `guide_store.search_guides(query, service_ids=None, region=None, k=3) -> list[GuideChunk]`. Vector+BM25(RRF), `service_ids`가 있으면 그 제도의 문서와 공통 기준 문서만, 전국 문서는 항상 통과·지역 문서는 지역이 맞을 때만, 없으면 `[]`.
+  - C 출력: `Citation`에 선택 필드 `kind`("service" 기본, "guide")·`page`(guide일 때 쪽 번호), `Recommendation`에 선택 필드 `service_id`(기본 "", 카드에서 `search_guides`의 `service_ids`로 쓴다). 기존 필드·기본값은 그대로다.
 
 ## Dataset inclusion and historical replay (2026-10-21)
 
@@ -53,6 +63,9 @@ Historical observations never become fresh or authorize disappearance. Older/unk
 observations defer; an API-disappeared record needs a new observation. Run source/index
 inspection with `python -m src.ingest.coverage`; exact commands and limits: `docs/INGEST_A.md`.
 No abandoned readiness/packaging/telemetry subsystem is part of this scope change.
+
+## 검수 저장소 (B, `src/review/`, `reviews/`)
+질문별 제도 판정(good/partial/bad/unsure)·답변 메모·제도별 주석·지침을 **추가만 하는 이벤트**로 `reviews/events/<검수자>.jsonl`에 쌓는다(사람마다 파일이 달라 git 충돌 없음). 판정은 `(질문, 제도, 제도 내용 버전)` 단위이고 버전은 서비스명·지원대상·선정기준·지원내용·신청방법·신청기한의 해시라, 데이터가 바뀌면 바뀐 것만 다시 검수한다. 기한이 지난 제도는 내보내기·대기열에서 자동 제외한다(판정은 보존). `export`가 `eval`용 시험지(dev/test 8:2, 기존 36문항은 dev, test는 덮어쓰기 금지)를 만들며 `relevant_service_ids`를 손으로 채우지 않는다. 앱 검수 모드(C)는 `ReviewStore.add_*`로 쓴다. 실사용 질문은 쓰지 않는다. 필드·규칙: `docs/REVIEW_STORE.md`. 검수 화면은 `python -m app.review_mode`(`app/review_mode.py` + `src/review/session.py`, `app/main.py`와 독립). `import-questions`로 csv/jsonl의 새 질문을 일괄 등록하고(중복 건너뜀), `eval.run_eval`은 `relevance`가 있는 시험지에서 Precision@K·nDCG@K·bad_rate·unjudged_rate도 출력한다.
 
 ## Metadata/replay corrections (2026-10-22)
 
@@ -85,6 +98,9 @@ Commands, verified sources, unresolved currency and A-2/A-3 evaluation plan:
 - 모든 답변에 서비스명·소관기관·근거 문구·상세 링크를 붙이고, "최종 신청 자격은 담당 기관에서 확인" 안내를 넣는다.
 - 신청기한이 지난 제도는 후보에서 제외한다. 정형 필터는 하드가 아니라 소프트로 적용하고, 결과가 없으면 필터를 풀어 다시 검색한다.
 - 사용자에게 보이는 문구는 한국어로 작성한다.
+- 판정 기준 문서는 해석·설명용이다. 금액·기한·신청 기간은 API 값을 쓰고, 문서와 다르면 API 값과 "담당 기관 확인"을 함께 표시한다.
+- 판정 문서 근거가 있어도 자격을 단정하지 않는다("해당될 수 있음" + 근거 조항 + 최종 확인 안내). 판정 근거에는 문서명·발행 기관·연도·쪽·근거 문구를 붙인다.
+- 사용자 지역과 다른 지역 문서는 근거로 쓰지 않는다. 개정 예고(행정예고) 내용은 "개정 예고"로 구분해 확정처럼 말하지 않는다.
 
 ## 평가 (사전기획서 9장)
 - 검색: Hit Rate@K, Recall@K, MRR / 답변: Answer Correctness, Faithfulness, Citation Accuracy
@@ -95,6 +111,8 @@ Commands, verified sources, unresolved currency and A-2/A-3 evaluation plan:
 - 변경 전에 `docs/사전기획서.docx`의 해당 절을 확인하고, 설계가 바뀌면 기획서(8.3)에도 기록한다.
 - 새 라이브러리를 추가하면 `requirements.txt`를 함께 갱신한다.
 - **문서 동기화(자동)**: 디렉터리·모듈·함수 시그니처·데이터 계약(`src/common/schema.py`)·담당 영역·명령을 바꾸는 작업을 하면, 같은 커밋에서 `README.md`(팀 안내), `docs/ARCHITECTURE.md`(구조와 이유·변경 이력)와 이 파일의 해당 절을 함께 갱신한다. 문서만 빠진 커밋을 만들지 않는다.
+- 새 기능은 새 파일로 만들고 다른 담당의 파일은 최대한 고치지 않는다. 고쳐야 하면 고치기 전에 담당자에게 알리고 승인받는다(팀 채팅 양식: 파일·요청자·담당·이유·변경 내용). 담당자가 직접 고치는 것을 우선하고, 커밋 메시지에 `[B파일]`처럼 표시하고 승인 여부를 적는다.
+- **AI 작업 규칙**: AI(Claude 등)가 사용자의 담당 디렉터리 밖 파일이나 공유 파일(`src/common/`, `requirements.txt`, `.gitignore`, `tests/conftest.py`, `eval/questions.jsonl`, README·ARCHITECTURE·CLAUDE.md)을 고쳐야 하면, 고치기 전에 사용자에게 파일·이유·변경 내용을 알리고 승인을 기다린다.
 
 ## 자주 쓰는 명령
 ```
@@ -107,13 +125,20 @@ python -m pytest tests/ingest -q -ra   # A: mock HTTP·임시 SQLite, 미구현 
 python -m src.ingest.handoff --dry-run # inspect pending; no index/model initialization
 python -m src.ingest.handoff --apply   # cached model only, apply→verify→exact ack; stops on first failure (--verify-every 100: 100건씩 묶어 검증·확인, 대량 이벤트용)
 python -m src.index.embed_shard run --shard 0/3 --out data/embed_shards/part0.npz   # B: 임베딩 계산 분담 (merge·coverage 하위 명령, 주 PC는 EMBEDDING_CACHE=data/embed_shards 로 handoff --apply)
+python -m src.index.vector_store --backfill-region --dry-run   # B: 이미 색인된 조각의 비어 있는 region을 기관명으로 채우기 (--dry-run 없이 실행하면 적용, 임베딩은 그대로)
 python -m src.index.vector_store       # legacy direct B CLI; bypasses consumer locking/ack
 python -m app.main                     # C: 앱 실행
+python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
+python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
+python -m app.review_mode              # B: 검수 화면 (후보 판정·답변 메모 -> reviews/events/)
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
 python -m eval.label_helper review                 # Claude 1차 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
+python -m src.review stats            # B: 검수 저장소 (reviews/, 사람별 이벤트 파일). import-legacy·import-questions·validate·agreement·export·queue 하위 명령, 설계는 docs/REVIEW_STORE.md
 python -m eval.sweep                  # B: Hybrid 가중치·RRF_K·FIELD_BOOST·지역 감점(--local-penalty) 격자 탐색 (색인 필요, 검색 결과는 질문별 캐시)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요 (baseline은 A의 SQLite `data/services.db` 필요)
+python -m src.ingest.guides --dir data/guides   # A: 판정 기준 문서 PDF 파싱·분할 (제안)
+python -m src.index.guide_store                 # B: 판정 기준 문서 색인 (제안)
 ```
 Handoff settings: `--db-path`, `--index-dir`, `--model`; `--validation` requires explicit isolated paths and rejects live destinations/aliases before writes. Fixture/validation source runs require validation mode. One source DB ↔ one target/model is recorded in `<db>.handoff.json` and `<index>/handoff_manifest.json`; changing an association is not an automatic migration. Existing nonempty unbound indexes require `--adopt-existing`; verify the selected model is the original model, since an old collection slug alone cannot prove its identity. Model dimension/max sequence length/cosine settings must agree. Worker-only config changes and offline Hugging Face flags prevent caller cache/config leakage and model downloads. Raw data, DB/Chroma files, manifests and locks stay out of Git.
 

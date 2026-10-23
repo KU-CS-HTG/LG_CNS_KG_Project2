@@ -22,6 +22,8 @@
 
 구조도 대비 달라진 점: ① 현재 검색 입력은 API이고 정형 지원조건이 함께 들어온다 / 검색 앞에 조건 추출과 정형 필터가 붙는다 / 검색과 생성 사이에 근거 선별이 있다. A-1 공식 원본 카탈로그는 아직 검색 경로에 연결하지 않는다.
 
+판정 기준 문서(제안)는 구조도의 "문서(PDF) → ① 로드" 경로를 그대로 따르는 두 번째 입력이다: 고시·업무처리기준 PDF → 조항 분할(`ingest/guides.py`, A) → 문서 전용 색인(`index/guide_store.py`, B) → '확인 필요' 근거 연결(`generate/guide_evidence.py`, C). 보조금24 경로와 분리되어 있다.
+
 ## 2. 디렉터리 구조
 
 ```
@@ -30,9 +32,10 @@ src/
   ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
   index/     embedder, embed_cache, embed_shard, vector_store  # B: ③ 임베딩(분담 계산 포함), ④ 벡터 저장소
   retrieve/  hybrid, filters, baseline                  # B: ⑤ 검색, 정형 필터, 비교 실험용 Baseline
-  generate/  condition_extractor, evidence, generator, citation   # C
+  generate/  condition_extractor, evidence, generator, citation, guide_evidence, income_calc   # C
+  # 판정 기준 문서(제안): ingest/guides(A) · index/guide_store(B) · generate/guide_evidence(C)
 app/         main.py                                    # C: UI
-eval/        metrics, answer_eval, run_eval, label_helper, questions.jsonl, results/
+eval/        metrics, answer_eval, rag_compare, run_eval, label_helper, questions.jsonl, guide_questions.jsonl, demo_questions.jsonl, results/
 tests/       pytest. fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
 data/official_documents/  A-1 isolated catalogs/originals/diagnostics (커밋 금지)
@@ -90,6 +93,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, images/
 | `test_embedder` | 실제 모델 없이 가짜 모델로 순서·정규화·배치·접두를 검증. 의미 검증(월세 질문이 월세 조각에 더 가까운가)은 `RUN_REAL_EMBEDDING=1`일 때만 실제 모델로 실행. |
 | `test_filters`, `test_metrics`, `test_retrieval`, `test_fixtures` | B 코드(필터 규칙, 지표 계산, 색인·검색 종단)와 샘플 데이터가 데이터 계약을 지키는지 확인. 필터·지표 테스트는 참조 구현으로 통과를 확인했다. |
 | `data/raw/`, `.env`는 `.gitignore` | 원본 응답과 API 키는 커밋 금지. `.env.example`로 필요한 키만 공유. |
+| 판정 기준 문서: 별도 타입 `GuideChunk`·별도 색인·`search_guides`, `Citation.kind`·`page`·`Recommendation.service_id` 선택 필드 (계약 확정 2026-10-23) | 3.2 참고. 기존 `Chunk`(4개 항목 검증·서비스당 1개 결과)와 handoff 계약을 바꾸지 않으려고 분리했다. 추가 필드는 모두 기본값이 있어 기존 코드와 호환된다. `service_id`는 카드를 펼쳤을 때 그 제도의 판정 문서만 찾으려고 넣었다. |
 
 ### 3.0 기획서 8.3 기록용 (벡터 저장소)
 
@@ -124,11 +128,27 @@ See [raw reprocessing and commands](INGEST_A.md#historical-raw-reprocessing-원�
 `pipeline --full` still collects APIs and requeues active chunks; it cannot recover
 discarded sections by itself. No evaluation labels are read by the classifier or changed.
 
+### 3.2 판정 기준 문서 (제안, 미구현)
+
+보조금24 API는 "어떤 제도가 있나"(요약)만 준다. 소득에 무엇이 포함되는지, 따로 사는 부모가 같은 가구인지 같은 판정 세부는 공무원이 보는 고시·업무처리기준·사업안내 지침에 있다. 이 문서는 수백 쪽이라 LLM 입력에 통째로 넣을 수 없고 SQL로 거를 수도 없어, 질문마다 해당 조항을 찾아오는 검색이 필요하다. 발표 피드백("생성형 AI가 쉽게 접근할 수 없는 데이터 활용", "AI보다 나은 점을 예시로 증명")에 대한 대응이다.
+
+| 결정 | 이유 |
+|---|---|
+| 공식 기관 원본만, 원본은 `data/guides/`(커밋 금지), 목록은 `ingest/guide_sources.json` | 블로그·요약글은 같은 제도의 금액이 서로 달랐다(조사 결과). 출처·연도·공공누리 유형을 목록에 남겨 재현·검증한다. |
+| PDF는 git 밖(공유 드라이브 zip), git에는 목록과 `sha256` 파일 지문만 | 6개 약 39MB의 PDF를 커밋하면 저장소 이력에 영구히 남고 문서를 바꿀 때마다 커진다(`data/raw`와 같은 원칙). 대신 지문으로 팀원마다 같은 파일을 쓰는지 확인해, 같은 질문에 사람마다 다른 근거가 나오지 않게 한다. |
+| 별도 타입 `GuideChunk`, 별도 색인 | 기존 `Chunk`는 4개 항목만 허용하고 검색이 서비스당 1개로 줄인다. 문서 조각을 섞으면 handoff 검증·평가 지표가 깨진다. 분리하면 기존 테스트·평가에 영향이 없고 이 기능만 끌 수 있다. |
+| 조항·소제목 단위 분할, 쪽 번호 유지, "문서명 > 소제목" 접두 | 기존 "구조 기반 분할 + 서비스명 접두"와 같은 이유(조건 희석 방지, 출처 유지). 쪽 번호는 사용자가 원문을 직접 확인하게 한다. |
+| `scope`(전국/지역)와 `service_ids` 연결, 연결은 사람이 문서를 읽고 지정 | 지자체가 게시한 문서에는 그 지역에만 해당하는 내용이 섞인다. 연결을 검색 결과로 정하면 순환 평가가 된다(정답 지정 규칙과 같음). |
+| API 값 우선, 판정 문서는 해석·설명용, 자격 단정 금지 | API는 매일, 문서는 연 1회 갱신된다. 금액·기한이 다르면 API 값을 보이고 담당 기관 확인을 안내한다. |
+| 새 파일 위주(`guides`·`guide_store`·`guide_evidence`), 공유 파일은 계약 커밋 한 번 | 담당자 단위 디렉터리 원칙 유지. A·B 기존 파일은 수정하지 않는다. |
+
 ## 4. 데이터 흐름
 
 오프라인(문서 변경 시, 기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
 
 온라인(질문마다): 질문 → `condition_extractor`(조건 → `Filters`) → `retrieve.hybrid.search`(필터 + Vector + BM25, 중복 제거, 필요 시 필터 완화) → `evidence.select_evidence` → `generator.generate_answer` + `citation` → `Answer`
+
+판정 기준 문서(제안): 오프라인 `data/guides/*.pdf` → `ingest.guides`(`GuideChunk`) → `index.guide_store` / 온라인 `Recommendation.needs_check`·후속 질문 → `guide_store.search_guides` → `generate.guide_evidence` → `Citation(kind="guide", page)`
 
 ## 5. 기획서 7.1 검색 난점의 대응 위치
 
@@ -140,6 +160,7 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 | 종료된 사업 혼재 | `Metadata.deadline`, `filters.is_expired`, `store.mark_closed` |
 | 수치 조건(중위소득 n% 등) 비교 약함 | 정형 필터 + `Recommendation.needs_check`('확인 필요') |
 | 표·첨부·이미지 | 수집 제외, 상세 링크로 대체 (`client`) |
+| 판정 세부(소득 산정·가구 범위 등)가 API 요약에 없음 | (제안) 판정 기준 문서 `guide_store.search_guides` + '확인 필요' 근거 |
 
 ## 6. 구현 현황
 
@@ -151,6 +172,8 @@ discarded sections by itself. No evaluation labels are read by the classifier or
 | `tests/ingest/` | A 전용 합성 HTTP·임시 DB·가짜 소비자·CLI 검증. A NotImplementedError는 실패 처리, 공용 훅/fixtures 보존 |
 | Existing B/C tests | Implemented offline regression coverage; the opt-in actual-model test is skipped by default. This is not search/answer quality evaluation. |
 | `ingest/handoff*.py`, `locking.py` | Stored snapshot → B apply → persistent/Vector/BM25 verification → exact ack; real Chroma/fake embeddings, subprocess locks and C evidence expansion tested. |
+| 판정 기준 문서 (`ingest/guides`, `index/guide_store`, `generate/guide_evidence`) | C `guide_evidence` 구현 (B 검색 전에는 화면 그대로), A·B 진행 중 |
+| `generate/income_calc.py`, `eval/rag_compare.py` | C 구현: 소득 기준 계산기(2026년 기준 중위소득 공식 표), 일반 LLM 비교·시연 후보 도구 |
 
 ### 6.1 A 구현과 팀 결정 경계
 
@@ -257,6 +280,11 @@ evaluation plan: [OFFICIAL_DOCUMENTS_A1.md](OFFICIAL_DOCUMENTS_A1.md).
 - `eval/questions.jsonl`을 청년 상황형 질문 초안 34문항(정답은 비움, `topic` 필드 추가)으로 교체. 질문 세트 구성·정답 지정 절차를 README 7장에 기록, `test_run_eval`에 질문 세트 구성 점검 추가.
 - 관심 분야를 필터에서 가산점으로 변경(B·C 합의): `vector_store.build_where`와 `filters.apply_filters`에서 field 조건 제거, `filters.relax`는 지역→연령만 풀고 field·situation은 유지(`filters_used`에 그대로 남아 완화 안내에는 지역·연령만 나옴), `filters.field_matches`와 `hybrid.boost_by_field` 추가, `config.FIELD_BOOST`, `schema.Filters` 설명 갱신. 관련 테스트 수정·추가(분야가 달라도 제도가 남는 회귀 테스트 포함). C 코드는 변경 없음.
 - `handoff --verify-every N`(A·B 합의, B가 구현): 이벤트 N건을 적용한 뒤 한 번만 검증하고 정확한 토큰 N개를 확인한다. 서비스마다 전체 코퍼스를 읽고 다시 토큰화하는 검증과 매번 전체 대기열(`read_pending`)을 파싱하는 재확인이 이벤트 수 × 코퍼스 크기로 늘어 조각 3만 개 규모에서 병목이었다. 묶음당 한 번: 대기열 재확인, 전후 스냅샷, 무관 서비스 불변 확인, BM25 멤버십·단어 빈도. 이벤트당: 정확한 조각 스냅샷, 모든 조각의 Vector 가시성, 짧은 BM25 질의(서비스명 줄) 한 번. 기본값 1은 기존 동작 그대로. 실패·중단 시 묶음 전체가 대기열에 남아 같은 명령으로 재적용(최대 N건 재작업). 이전 BM25 검증은 조각 전체를 질의로 써서 질의 토큰 수 × 코퍼스 크기로 느렸다. 테스트 추가(`tests/ingest/test_handoff.py`).
+- 검수 저장소(`src/review/`, `reviews/`, 설계 `docs/REVIEW_STORE.md`): 질문별 제도 판정·답변 메모·주석·지침을 추가만 하는 이벤트로 `reviews/events/<검수자>.jsonl`에 쌓고, `export`로 `eval`용 시험지를 만든다. 이유: 데이터가 늘 때마다 `questions.jsonl`의 `relevant_service_ids`를 손으로 다시 검수하기 어렵고(질문 36개 검수에서 정답이 좁은 문항이 여럿 나옴), 앱의 검수 모드가 판정·피드백을 바로 기록하도록 하기 위해서다. 판정을 `(질문, 제도, 내용 버전)` 단위로 저장해 제도가 바뀌면 바뀐 것만 대기열에 올리고, 사람마다 파일을 나눠 git 병합 충돌을 없앴다. 판정은 4단계(unsure는 점수 제외), 사람 판정이 claude 1차 판정을 대체, 충돌은 조정자(B)가 결정, 기한 지난 제도는 판정과 별개로 자동 제외한다. 팀 합의: 실사용 질문 미사용, dev:test 8:2(기존 36문항은 이미 튜닝에 써서 모두 dev, test는 동결). 테스트 `tests/test_review.py`.
+- 검수 화면(`app/review_mode.py` 새 파일, 로직 `src/review/session.py`): Streamlit에서 질문별 후보 제도를 판정(좋음/부분/나쁨/보류+사유·메모)하고 시스템 답변에 메모를 남겨 `ReviewStore`에 쓴다. 후보는 hybrid_filter·vector·bm25 합집합을 순위순으로 슬라이더 수만큼 보여 주되 순서를 섞고 검색 출처는 가린다(위치·출처 편향 방지). `app/main.py`는 고치지 않았고 `render()` 호출로 붙일 수 있다. 질문 목록 순서는 고정(저장해도 선택이 바뀌지 않게). 로직은 화면 없이 `tests/test_review.py`에서 검증.
+- 검수 저장소 확장(`src/review/intake.py`, `eval/metrics.py`, `eval/run_eval.py`): `import-questions`로 csv/jsonl의 새 질문을 일괄 등록(정규화 문장 중복은 건너뜀, 재실행 안전). 시험지의 정답이 5개를 넘을 수 있어 Recall@5가 구조적으로 낮아지므로 Precision@K, 등급 반영 nDCG@K, 상위 K 중 '틀림' 비율(bad_rate)과 미판정 비율(unjudged_rate)을 추가했다. `relevance`가 있는 시험지에서만 판정 비율을 출력하고, 기존 지표·JSON 키는 그대로다.
+- `vector_store._get_all()`: Chroma(SQLite)는 한 번에 가져오는 id가 약 3만 개를 넘으면 "too many SQL variables"로 실패한다. 조각이 3만 개를 넘은 색인에서 `--backfill-region`이 이 오류로 실패해 발견했고, 전체 조회(BM25 코퍼스 재구성, 필터 where 결과, handoff 검증용 문서 스냅샷)를 5,000개씩 나눠 가져오도록 바꿨다. 결과는 한 번에 가져온 것과 같고(테스트), `handoff_index._documents`의 한 줄이 포함된다(A 영역, 기능 변화 없음).
+- `vector_store.backfill_region()`과 `python -m src.index.vector_store --backfill-region [--dry-run]`: 색인 시 지역 보충이 들어가기 전에 색인된 조각(변경이 없어 다시 색인되지 않음)의 비어 있는 `region`을 소관기관명으로 채운다. 임베딩·문서는 건드리지 않고 여러 번 실행해도 결과가 같다. 이유: 새 정책으로 재색인해도 기존 서비스는 이벤트가 없어 지역이 비어 있어, 지역 필터(예: 경기)가 다른 지역(충남·경남·대전) 제도를 걸러 내지 못했다. handoff와 동시에 실행하지 않는다.
 - 임베딩 계산 분담(`index/embed_shard.py`, `index/embed_cache.py`): 조각이 약 3만 개로 늘어 한 PC로 오래 걸려, 임베딩만 여러 PC가 나눠 계산한다. `embed_shard run --shard k/N`이 DB를 읽기 전용으로 열어 `service_id` 해시 구간의 조각 텍스트를 계산해 `.npz`(텍스트 해시 → 벡터, 모델·max_seq_length·차원 기록)로 저장(이어하기 가능, 원자적 저장), `merge`/`coverage`로 취합·확인한다. `config.EMBEDDING_CACHE`(환경변수)가 가리키는 파일·폴더를 `embedder.embed_texts`가 먼저 조회하고 없는 텍스트만 모델로 계산하므로 `handoff`·`vector_store`·검증 코드는 그대로다(passage만 대상, 질문은 모델로 계산). 이유: 한 DB는 소비자 하나·색인 하나라는 A의 잠금·ack 구조를 건드리지 않고 병렬화할 수 있는 부분은 임베딩 계산뿐이기 때문. 다른 모델·길이의 파일은 불러올 때 거부, 같은 텍스트의 벡터가 크게 다르면 병합 시 오류. 서비스마다 하는 BM25 전체 검증은 이 방식으로 줄지 않는다(A 영역, 별도 개선 필요).
 - 색인 시 지역 보충: A의 지역 어댑터가 없어 실데이터의 `region`이 비어 지역 필터가 작동하지 않았다. `vector_store._to_store_metadata`가 `metadata.region`이 없으면 소관기관명으로 시·도를 추정해(`filters.agency_region`) 저장한다. A가 값을 주면 그것이 우선, 시·도를 알 수 없는 시·군·구와 중앙기관은 비워 두어(통과) 소프트 필터를 유지한다. 이미 색인된 서비스는 다시 색인해야 반영된다(재색인 전에 이 변경을 받을 것). 핸드오프 검증은 같은 함수를 쓰므로 영향 없음.
 - 지역 감점: `config.LOCAL_PENALTY`(B·C 합의로 기본 1.0, eval.sweep에서 Hit@5 0.467→0.667·MRR 0.336→0.497), `hybrid.penalize_local`, `filters.is_local`(metadata.region이 있으면 그것, 없으면 소관기관명으로 지자체 추정). 질문에 지역이 없을 때(hybrid_filter)만 지자체 제도 점수에서 값을 빼 전국 제도를 앞세운다. 거르지는 않는다. `eval.sweep --local-penalty`로 효과를 측정하며, C와 합의함(지역을 모르면 전국 위주로 답하고 지역을 되묻는 흐름, 앱은 아직 지역을 받지 않음). `HYBRID_WEIGHTS`도 (1.0, 1.0)→(1.0, 0.2)로 변경(BM25 가중치를 낮출수록 MRR 상승). 이유: A의 지역 어댑터가 아직 region을 채우지 않아(INGEST_A.md) 기존 지역 필터가 실데이터에서 작동하지 않으므로 기관명으로 추정한다.
@@ -270,3 +298,8 @@ evaluation plan: [OFFICIAL_DOCUMENTS_A1.md](OFFICIAL_DOCUMENTS_A1.md).
 - 2026-10-21: `policy.py`, bounded `reprocess.py` and compact read-only `coverage.py` expand personal/household scope. Historical replay validates one acquisition run, defers older/unknown observations, preserves exact stored-event handoff and never closes missing IDs. B codec/region fallback/ranking and C contracts remain unchanged.
 
 - 2026-10-22: Canonical region/provenance, selected metadata reconciliation, Korean full-date grammar and transaction-bound segmented raw replay/resume. Preserve batch verification, expanded scope, ranking and evidence contracts; inspect local index read-only without claiming a historical build revision.
+
+- 2026-10-23 (제안): 판정 기준 문서 경로 추가 계획. `GuideChunk`, `search_guides`, `Citation.kind`·`page`, `data/guides/`, `ingest/guide_sources.json`, 파일 수정 규칙(담당 밖·공유 파일은 수정 전 알림, AI 포함). 팀 합의 전이며 코드는 아직 없다. 합의 후 기획서 8.3에 기록.
+- 2026-10-23: 판정 기준 문서 PDF 배포 방식 확정(공유 드라이브 zip → `data/guides/`, `.gitignore` 추가), `guide_sources.json`에 `sha256` 파일 지문 추가. 받은 6개 PDF는 모두 텍스트 추출 가능, 주거급여 고시본은 표가 이미지라 금액표는 제정문을 쓴다.
+- 2026-10-23: 판정 기준 문서 계약을 `src/common/schema.py`에 반영(`GuideChunk`, `Citation.kind`·`page`, `Recommendation.service_id`, 모두 선택 필드·기본값). 팀 승인. 구현(A `guides`, B `guide_store`, C `guide_evidence`)은 진행 중.
+- 2026-10-23: C 판정은 제도마다 따로 묻고 동시에 돌린다(`generator._judge`). 5개를 한 번에 물으면 뒤쪽 제도를 '정보 부족 -> 관련 없음'으로 넘겼다(평가 q29). 구 단위 제도는 분야 값이 달라도 찾는 도움 낱말이 원문에 있으면 남긴다. 소득 기준 계산기(`income_calc`, 참고용·체크 대신 안 함)와 일반 LLM 비교 도구(`eval/rag_compare.py`, 근거 없음 문항은 보류/단정으로 채점) 추가.

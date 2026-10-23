@@ -60,6 +60,26 @@ publication/effectivity evidence, audit and scoped service links. It does not ye
 clauses/tables, index/retrieve document evidence, decide entitlement or calculate payments.
 Existing API Chunk/Citation, service pending and B/C routing remain unchanged.
 See [A-1 commands, actual sources and proposed B/C boundaries](docs/OFFICIAL_DOCUMENTS_A1.md).
+### 1.2 판정 기준 문서 (제안, 미구현)
+
+보조금24 API는 "어떤 제도가 있나"를 알려 주지만, 자격 판정의 세부 기준은 담당 공무원이 보는 고시·업무처리기준·사업안내 지침에 있습니다. 이 문서를 함께 검색해 '확인 필요' 조건과 후속 질문("부모님과 따로 살면 같은 가구인가요?")에 근거 조항과 쪽 번호로 답합니다.
+
+| 구분 | 문서 | 발행 기관 | 게시 위치 |
+|---|---|---|---|
+| 필수 | 2026년 국민기초생활보장사업 안내 | 보건복지부 | 공공데이터포털 파일데이터, 보건복지부 사전정보공표 |
+| 필수 | 2026년 주거급여 사업안내 | 국토교통부 | 국토교통부 정책Q&A |
+| 필수 | 2026년 주거급여 선정기준 및 최저보장수준 (고시 제2025-506호) + 제정문 | 국토교통부 | 고시 원본 (지자체 자료실 첨부본은 원본과 대조). 고시본은 표가 이미지라 금액표는 제정문(텍스트)을 쓴다 |
+| 필수 | 국민취업지원제도 업무매뉴얼 (2026년 1월) | 고용노동부 | 고용노동부 정책자료실 |
+| 선택 | 국민취업지원제도 운영규정 (고시 제2026-35호) | 고용노동부 | 국가법령정보센터 행정규칙 |
+| 선택 | 2026년 기준 중위소득 (보도자료·고시) | 보건복지부 | 보건복지부 보도자료 |
+
+- 발표 범위는 필수 4개, 일정이 되면 선택 2개까지입니다. 공식 PDF를 찾지 못한 제도(예: 버팀목 전세자금대출)는 넣지 않습니다.
+
+- 공식 기관 원본만 씁니다(블로그·요약 금지). 원본 PDF는 `data/guides/`에 두고 **커밋하지 않습니다**(`.gitignore`). 문서 목록은 `src/ingest/guide_sources.json`에 있습니다.
+- **PDF 받는 방법**: 팀 공유 드라이브의 `RAG 프로젝트 pdf 파일.zip`을 받아 `data/guides/` 바로 아래에 풉니다(하위 폴더 없이, 파일 이름은 바꾸지 않음). 한글 파일 이름이 깨지지 않도록 윈도우 탐색기의 "압축 풀기"를 권장합니다. 문서를 바꾸거나 추가할 때는 A에게 알리고 새 zip과 문서 목록을 함께 갱신합니다.
+- **같은 파일인지 확인**: 문서 목록의 `sha256`(파일 지문)과 내 파일의 지문이 같아야 합니다. PowerShell `Get-FileHash data\guides\*.pdf -Algorithm SHA256`으로 비교합니다(파싱 스크립트가 시작할 때 자동 확인하도록 구현 예정).
+- 금액·기한은 API 값이 우선이고, 판정 문서는 해석·설명용입니다. 자격을 확정하지 않습니다.
+- 지역 문서는 그 지역 사용자에게만 근거로 씁니다.
 
 ## 2. 전체 구조 — 색인과 질의응답
 
@@ -90,6 +110,8 @@ See [A-1 commands, actual sources and proposed B/C boundaries](docs/OFFICIAL_DOC
 **데이터 흐름**
 - 오프라인(기본 1일 1회 증분): `ingest.client` → `ingest.store`(정제·DB·변경 감지) → `ingest.chunker`(`Chunk`) → `index.embedder` → `index.vector_store`
 - 온라인(질문마다): 질문 → `condition_extractor`(`Filters`) → `retrieve.hybrid.search`(필터 + Vector + BM25, 중복 제거, 필요 시 필터 완화) → `evidence.select_evidence` → `generator.generate_answer` + `citation` → `Answer`
+
+판정 기준 문서는 별도 경로입니다(제안): PDF → 조항 분할(`src/ingest/guides.py`, A) → 문서 전용 색인·`search_guides`(`src/index/guide_store.py`, B) → '확인 필요' 근거 연결(`src/generate/guide_evidence.py`, C). 기존 보조금24 경로는 바뀌지 않습니다.
 
 ### 2.1 단계별 입출력 예시
 
@@ -356,6 +378,21 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 > 형식이나 보장 사항을 바꾸고 싶으면 `src/common/schema.py`와 이 절을 먼저 고치고 상대 담당자와 합의하세요.
 
+### 2.2.1 검수 저장소 — 판정·피드백을 쌓고 시험지를 만든다 (B, `src/review/`)
+
+사람이 질문마다 "이 제도가 정답인가"를 판정하고(`good` `partial` `bad` `unsure`) 답변에 메모를 남기면, 그 기록이 평가용 시험지(`eval` 형식), 검색 노이즈 분석, 생성 지침의 근거가 됩니다. 기록은 `reviews/events/<검수자>.jsonl`에 한 줄씩 추가만 하므로 사람마다 파일이 달라 git 충돌이 없고, 판정은 제도 내용의 해시(신청기한 포함)와 함께 저장되어 **제도가 바뀌면 바뀐 것만 다시 검수**합니다. 기한이 지난 제도는 판정과 무관하게 시험지에서 자동 제외됩니다.
+
+```powershell
+python -m app.review_mode                                  # 브라우저 검수 화면 (후보 판정·답변 메모, 후보 수는 왼쪽 슬라이더)
+python -m src.review import-questions q.csv --reviewer 이름 [--dry-run]   # 새 질문 일괄 등록 (csv/jsonl, 이미 있는 질문은 건너뜀)
+python -m src.review import-legacy                       # eval/questions.jsonl의 질문·정답을 이벤트로 이전 (기존 질문은 모두 dev)
+python -m src.review export --split dev --out reviews/exports/dev_v1.jsonl   # 판정 -> 시험지
+python -m src.review queue --n 30                        # 판정 없는 새 후보·내용이 바뀐 후보 (색인 필요)
+python -m src.review stats                               # 판정·사유 통계
+# 시험지 평가: python -m eval.run_eval --questions reviews/exports/dev_v1.jsonl  (Precision@K·nDCG@K·bad_rate·unjudged_rate도 출력)
+```
+필드, 합의 규칙(조정자는 B), 앱(C) 연동 방법은 [`docs/REVIEW_STORE.md`](docs/REVIEW_STORE.md)를 보세요.
+
 ### 2.3 증분 색인 인계
 
 ```powershell
@@ -399,11 +436,13 @@ src/
   ingest/    client, normalize, merge, storage, store, chunker, pipeline, locking, handoff* # A
   index/     embedder, embed_cache, embed_shard, vector_store          # B
   retrieve/  hybrid, filters, baseline                             # B
-  generate/  condition_extractor, evidence, generator, citation    # C
+  generate/  condition_extractor, evidence, generator, citation, guide_evidence, income_calc  # C
+  # 판정 기준 문서(제안): ingest/guides(A) · index/guide_store(B) · generate/guide_evidence(C)
 app/         main.py                                               # C: UI
-eval/        metrics, answer_eval, run_eval, label_helper(정답 채우기 도구), questions.jsonl, results/
+eval/        metrics, answer_eval, rag_compare(일반 LLM 비교), run_eval, label_helper(정답 채우기 도구), questions.jsonl, guide_questions.jsonl, demo_questions.jsonl, results/
 tests/       fixtures/(가상 샘플 조각·질의·검색 결과), conftest.py(fake_search 등), test_*.py
 data/raw/    원본 응답 (커밋 금지)
+data/guides/ 판정 기준 문서 원본 PDF (커밋 금지, 제안)
 docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기 안내), images/
 ```
 
@@ -424,6 +463,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 - **C → B**: `Filters` (나이·지역·분야·상황·기준일, 값이 없으면 키 생략). **거르는 것은 나이·지역·기준일**이고, 분야는 맞는 제도에 가산점만 주며 상황은 현재 검색에 쓰이지 않습니다
 - **B → C**: `search(query, filters, k=5, mode="hybrid_filter") -> list[Chunk]` (`mode`는 평가 실험용, 서비스는 기본값 사용)
 - **C → 사용자**: `Answer` = 답변 텍스트 + 제도별 `Recommendation`(해당 가능 이유, 지원내용, 신청방법·기한, 확인 필요 조건, 근거 목록[서비스명·소관기관·근거 문구·상세 링크]) + `no_evidence`
+- **판정 기준 문서 (계약 확정, 구현 중)**: A → B `GuideChunk{chunk_id, doc_id, doc_title, publisher, year, page, heading, text, scope, service_ids, source_url}` / B → C `search_guides(query, service_ids=None, region=None, k=3) -> list[GuideChunk]` / C → 사용자 `Citation(kind="guide", page=쪽)`, `Recommendation.service_id`(선택, 카드의 제도 ID)
 
 ## 5. 답변 생성 규칙
 
@@ -432,6 +472,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 - 모든 답변에 서비스명·소관기관·근거 문구·상세 링크를 붙이고, "최종 신청 자격은 담당 기관에서 확인" 안내를 넣습니다.
 - 신청기한이 지난 제도는 후보에서 제외합니다. 정형 필터는 하드가 아니라 소프트로 적용하고, 결과가 없으면 필터를 풀어 다시 검색합니다.
 - 사용자에게 보이는 문구는 한국어로 작성합니다.
+- 판정 기준 문서는 해석·설명용입니다. 금액·기한은 API 값을 쓰고, 다르면 "담당 기관 확인"을 함께 표시합니다. 판정 근거에는 문서명·발행 기관·연도·쪽·근거 문구를 붙입니다.
 
 ## 6. 설계 결정과 이유
 
@@ -451,6 +492,7 @@ docs/        사전기획서.docx, ARCHITECTURE.md, LABELING.md(정답 채우기
 | `evidence.py`(근거 선별), `Answer`에 `no_evidence` | 질문당 제도를 3~5개로 제한하고, 근거 없음 응답을 UI·평가가 구분해 쓴다. |
 | `app/`은 `answer_question()` 하나만 호출 | UI 교체와 백엔드 수정이 서로 영향을 주지 않는다. |
 | 평가 채점 단위는 `service_id` | 분할 방식이 바뀌어도 질문 세트를 재사용한다. |
+| 판정 기준 문서를 별도 타입·별도 색인으로 추가 (제안) | API 요약만으로는 "내가 실제로 받을 수 있나"에 답할 수 없다. 기존 `Chunk`·`search`·handoff 계약을 바꾸지 않고 옆에 붙여, 기존 테스트·평가에 영향이 없고 문제가 생기면 이 기능만 끌 수 있다. |
 
 검색 난점별 대응 위치(기획서 7.1)와 결정별 상세 근거는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)를 봅니다.
 
@@ -577,9 +619,13 @@ python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
 python -m src.ingest.handoff --dry-run # A→B: 저장된 미처리 이벤트 확인 (--apply로 반영·검증·확인 처리)
 python -m src.index.vector_store       # B: 기존 직접 색인 CLI (pending 확인 처리·소비자 잠금 없음)
 python -m app.main                     # C: 앱 실행
+python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
+python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
 python -m pytest -rs                   # 테스트
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all). all은 비교표까지 출력
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (docs/LABELING.md)
+python -m src.ingest.guides --dir data/guides   # A: 판정 기준 문서 파싱 (data/guides/에 PDF를 먼저 넣기, 제안)
+python -m src.index.guide_store                 # B: 판정 기준 문서 색인 (제안)
 ```
 
 모델 다운로드 시 나오는 `Warning: You are sending unauthenticated requests to the HF Hub` 경고는 무시해도 됩니다. 없애려면 `.env`에 `HF_TOKEN=<Hugging Face 토큰>`을 넣거나(다운로드도 빨라짐), 모델을 이미 받은 뒤라면 `HF_HUB_OFFLINE=1`을 넣으세요(`.env.example` 참고).
@@ -635,6 +681,8 @@ def test_예시(fake_search, fake_conditions):
 - 변경 전에 `docs/사전기획서.docx`의 해당 절을 확인하고, 설계가 바뀌면 기획서(8.3)에도 기록합니다.
 - 새 라이브러리를 추가하면 `requirements.txt`를 함께 갱신합니다.
 - **문서 동기화**: 디렉터리·모듈·함수 시그니처·데이터 계약·담당 영역·명령을 바꾸면 같은 커밋에서 `README.md`, `docs/ARCHITECTURE.md`, `CLAUDE.md`의 해당 부분을 함께 갱신합니다.
+- 새 기능은 새 파일로 만들고, 다른 담당의 파일을 고쳐야 하면 고치기 전에 담당자에게 알리고 승인받습니다. 커밋 메시지에 `[B파일]`처럼 표시합니다.
+- AI(Claude 등)로 작업할 때도 같습니다. 담당 밖 파일이나 공유 파일을 고치기 전에 AI가 사용자에게 먼저 알리도록 `CLAUDE.md`에 적어 두었습니다.
 
 ## 10. 구현 현황
 

@@ -22,6 +22,48 @@ def test_check_label_bolds_condition_name_and_escapes_markdown():
     assert app._check_label("재산 — 3억 4,500만원 이하*") == r"**재산** — 3억 4,500만원 이하\*"
 
 
+def test_scope_marks_local_and_national_agencies_only_when_sure():
+    assert "📍 서울 동대문구" in app._scope_html("서울특별시 동대문구")
+    assert "📍 충북 충주시" in app._scope_html("충청북도 충주시")
+    assert "📍 서울 지역" in app._scope_html("서울특별시")
+    assert "전국" in app._scope_html("보건복지부") and "전국" in app._scope_html("한국장학재단")
+    assert "전국" in app._scope_html("국세청")
+    assert app._scope_html("재단법인용산복지재단") == ""          # 이름만으로 지역을 알 수 없으면 표시하지 않는다
+    assert app._scope_html("(재)인천인재평생교육진흥원") == ""
+
+
+def test_days_left_only_for_open_applications_closing_soon():
+    from datetime import date
+    today = date(2026, 10, 22)
+    assert app._days_left("2026. 10. 1. ~ 2026. 10. 27.", today) == 5
+    assert app._days_left("2026년 10월 22일까지", today) == 0
+    assert app._days_left("2026. 10. 1. ~ 2026. 12. 31.", today) is None      # 아직 넉넉함
+    assert app._days_left("2026. 10. 25. ~ 2026. 10. 30.", today) is None     # 아직 접수 전
+    assert app._days_left("상시 신청", today) is None
+    assert app._days_left("2026. 10. 1. ~ 예산 소진 시까지", today) is None   # 끝이 열린 기간
+    assert "D-5" in app._deadline_html("2026. 10. 1. ~ 2026. 10. 27.", today)
+    assert "D-day" in app._deadline_html("2026년 10월 22일까지", today)
+    assert "마감" not in app._deadline_html("상시 신청", today)
+
+
+def test_ask_reports_progress_steps_in_order(monkeypatch):
+    from src.common.schema import Answer
+    from src.generate import generator
+
+    def fake_answer(question):
+        for step in (generator.STEP_CONDITIONS, generator.STEP_SEARCH, generator.STEP_GENERATE):
+            generator._progress(step)
+        return Answer(text="", no_evidence=True)
+    monkeypatch.setattr(app, "_search_ready", lambda: False)
+    monkeypatch.setattr(generator, "answer_question", fake_answer)
+    steps = []
+    app._ask("질문", steps.append)
+    assert steps == [generator.STEP_CONDITIONS, generator.STEP_SEARCH, generator.STEP_GENERATE]
+    assert set(steps) <= set(app.STEP_LABELS)
+    assert generator.PROGRESS.get() is None                       # 끝나면 알림을 풀어 다음 호출에 남지 않는다
+    generator._progress(generator.STEP_SEARCH)                     # 알림이 없으면 아무 일도 없다
+
+
 def _script():
     import streamlit as st
 
