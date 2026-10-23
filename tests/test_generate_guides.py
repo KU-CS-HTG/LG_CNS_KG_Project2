@@ -231,6 +231,44 @@ def test_merged_question_skips_guide_questions():
     assert app._merged_question(thread, "소득은 월 150만 원") == "서울 사는 27살 소득은 월 150만 원"
 
 
+GQ_FOLLOW = {"id": "g01", "mode": "followup", "question": "부모님과 따로 살면 같은 가구예요?", "service_ids": ["SVC1"],
+             "region": None, "expected": [{"file": "basic.pdf", "page": 52, "phrases": ["따로 살더라도"]}],
+             "expect_no_guide": False}
+GQ_NONE = {"id": "g12", "mode": "followup", "question": "청년도약계좌는 몇 년 동안 넣어야 하나요?", "service_ids": ["SVC1"],
+           "region": None, "expected": [], "expect_no_guide": True}
+
+
+def test_guide_score_counts_hits_quotes_and_assertions():
+    from eval import answer_eval
+    hit = gchunk("basic#p52-1", 52, TEXT_FAMILY)
+    good = Citation("문서", "보건복지부", "다만 주민등록상 따로 살더라도 생계·주거를 같이하는 부모는 가구원에 포함할 수 있다.",
+                    "", kind="guide", page=52)
+    made_up = Citation("문서", "보건복지부", "부모와 따로 살면 같은 가구입니다.", "", kind="guide", page=52)   # 원문에 없는 문구
+    row = answer_eval.guide_score(GQ_FOLLOW, [good], [hit], "관련 조항을 찾았어요.")
+    assert row["guide_hit"] == 1.0 and row["guide_recall"] == 1.0 and row["phrase_in_quote"] == 1.0
+    assert row["quote_accuracy"] == 1.0 and not row["assertive"] and row["region_leak"] == 0
+    bad = answer_eval.guide_score(GQ_FOLLOW, [made_up], [hit], "같은 가구에 해당됩니다.")
+    assert bad["guide_hit"] == 0.0 and bad["quote_accuracy"] == 0.0 and bad["assertive"]
+    wrong_page = Citation("문서", "보건복지부", good.quote, "", kind="guide", page=53)
+    assert answer_eval.guide_score(GQ_FOLLOW, [wrong_page], [hit])["guide_hit"] == 0.0
+    assert answer_eval.guide_score(GQ_NONE, [], [])["no_guide_correct"] == 1.0
+    assert answer_eval.guide_score(GQ_NONE, [good], [hit])["no_guide_correct"] == 0.0
+
+
+def test_guide_evaluate_runs_without_llm(fake_guides):
+    from eval import answer_eval
+    fake_guides.results = [gchunk("basic#p52-1", 52, TEXT_FAMILY)]
+    card = {"id": "g07", "mode": "card", "question": "생계급여 가구 기준", "service_ids": ["SVC1"],
+            "item": "가구 — 동일한 주민등록표상에 등재된 사람", "region": None,
+            "expected": [{"file": "basic.pdf", "page": 52, "phrases": ["동일한 주민등록표상에 등재된 사람"]}]}
+    result = answer_eval.guide_evaluate([GQ_FOLLOW, card])
+    assert result["counts"] == {"total": 2, "scored": 2, "errors": 0}
+    assert result["metrics"]["guide_hit"] == 1.0 and result["metrics"]["quote_accuracy"] == 1.0
+    assert [c["service_ids"] for c in fake_guides.calls] == [["SVC1"], ["SVC1"]]
+    assert guide_evidence._search.__name__ == "_search"                     # 채점용으로 바꿔 끼운 검색을 되돌렸다
+    assert "판정 기준 문서 근거 평가" in answer_eval.format_guide_report(result)
+
+
 def test_recommendation_carries_service_id(sample_chunks, monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "none.db")         # 신청기한 원문 조회는 하지 않게
     chunks = [c for c in sample_chunks if c.service_id == "SAMPLE001"]
