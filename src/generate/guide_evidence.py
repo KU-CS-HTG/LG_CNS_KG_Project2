@@ -120,11 +120,12 @@ def question_region(question: str) -> str | None:
 
 # --- 내부 -----------------------------------------------------------------------------
 def _verified(hits: list, keywords: list[str], region: str | None, k: int) -> list[Citation]:
-    """검색 결과를 코드로 검증해 Citation(kind="guide")으로: 다른 지역 문서·관련 없는 조각·같은 문서 같은 쪽은 뺀다."""
+    """검색 결과를 코드로 검증해 Citation(kind="guide")으로: 다른 지역 문서·제도 연혁·관련 없는 조각·같은 문서
+    같은 쪽은 뺀다."""
     out: list[Citation] = []
     seen: set[tuple[str, int]] = set()
     for g in hits:
-        if not isinstance(g, GuideChunk) or not _region_ok(g.scope, region):
+        if not isinstance(g, GuideChunk) or not _region_ok(g.scope, region) or _is_history(g):
             continue
         quote = _excerpt(g.text, keywords)
         key = (g.doc_id, g.page)
@@ -134,6 +135,13 @@ def _verified(hits: list, keywords: list[str], region: str | None, k: int) -> li
         out.append(Citation(service_name=_doc_label(g), agency=g.publisher, quote=quote,
                             detail_url=g.source_url, kind="guide", page=g.page))
     return out[:k]
+
+
+def _is_history(g: GuideChunk) -> bool:
+    """제도 연혁(지침 개정 이력표) 조각인가. 지난 해 금액·기준('근로소득공제 20만원+30% → 40만원+30%', 2018년)이
+    적혀 있어 지금 기준처럼 보이면 안 된다. 2026년 국민기초생활보장사업 안내 9장 연혁은 쪽마다 표 제목
+    '일 시 | 추 진 내 용'이 있다. 법령 쪽의 '[법률 …, 일부개정]'은 현재 법령 표시라 거르지 않는다."""
+    return "연혁" in (g.heading or "") or "일시추진내용" in _squash(g.text)
 
 
 def _search(query: str, service_ids: list[str] | None, region: str | None, k: int) -> list:

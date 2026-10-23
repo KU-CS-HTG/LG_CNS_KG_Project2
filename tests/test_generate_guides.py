@@ -181,6 +181,16 @@ def test_doc_terms_bridge_question_words_to_document_words(fake_guides):
     assert fake_guides.calls[-1]["query"] == "자동차가 있으면 재산으로 계산되나요?"    # 해당 없으면 질문 그대로
 
 
+def test_revision_history_chunks_are_not_evidence(fake_guides):
+    history = "일 시 추 진 내 용\n2018.01. 사업안내 일부 개정\n∙ 대학생 근로소득공제 확대(20만원+30% → 40만원+30%)"
+    law = "[시행 2023. 10. 19.] [법률 제19390호, 2023. 4. 18., 일부개정]\n대학생 근로소득공제 60만원"   # 현재 법령
+    fake_guides.results = [gchunk("basic#p539", 539, history),
+                           gchunk("basic#p527", 527, "대학생 근로소득공제", heading="안내 > Ⅸ. 제도 연혁"),
+                           gchunk("housing#p336", 336, law)]
+    cits = guide_evidence.find_guides("SVC1", "생계급여", ["소득 — 대학생 근로소득공제"])
+    assert [c.page for c in cits] == [336]
+
+
 def test_age_keyword_picks_line_but_does_not_count_for_relevance():
     kws = ["부모", "가구", "30세"]
     unrelated = "재산 차감 순서\n근로무능력자로만 구성된 가구의 재산가액\n30세 이상 등록장애인"
