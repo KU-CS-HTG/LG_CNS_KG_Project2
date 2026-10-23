@@ -65,7 +65,7 @@ inspection with `python -m src.ingest.coverage`; exact commands and limits: `doc
 No abandoned readiness/packaging/telemetry subsystem is part of this scope change.
 
 ## 검수 저장소 (B, `src/review/`, `reviews/`)
-질문별 제도 판정(good/partial/bad/unsure)·답변 메모·제도별 주석·지침을 **추가만 하는 이벤트**로 `reviews/events/<검수자>.jsonl`에 쌓는다(사람마다 파일이 달라 git 충돌 없음). 판정은 `(질문, 제도, 제도 내용 버전)` 단위이고 버전은 서비스명·지원대상·선정기준·지원내용·신청방법·신청기한의 해시라, 데이터가 바뀌면 바뀐 것만 다시 검수한다. 기한이 지난 제도는 내보내기·대기열에서 자동 제외한다(판정은 보존). `export`가 `eval`용 시험지(dev/test 8:2, 기존 36문항은 dev, test는 덮어쓰기 금지)를 만들며 `relevant_service_ids`를 손으로 채우지 않는다. 앱 검수 모드(C)는 `ReviewStore.add_*`로 쓴다. 실사용 질문은 쓰지 않는다. 필드·규칙: `docs/REVIEW_STORE.md`.
+질문별 제도 판정(good/partial/bad/unsure)·답변 메모·제도별 주석·지침을 **추가만 하는 이벤트**로 `reviews/events/<검수자>.jsonl`에 쌓는다(사람마다 파일이 달라 git 충돌 없음). 판정은 `(질문, 제도, 제도 내용 버전)` 단위이고 버전은 서비스명·지원대상·선정기준·지원내용·신청방법·신청기한의 해시라, 데이터가 바뀌면 바뀐 것만 다시 검수한다. 기한이 지난 제도는 내보내기·대기열에서 자동 제외한다(판정은 보존). `export`가 `eval`용 시험지(dev/test 8:2, 기존 36문항은 dev, test는 덮어쓰기 금지)를 만들며 `relevant_service_ids`를 손으로 채우지 않는다. 앱 검수 모드(C)는 `ReviewStore.add_*`로 쓴다. 실사용 질문은 쓰지 않는다. 필드·규칙: `docs/REVIEW_STORE.md`. `import-questions`로 csv/jsonl의 새 질문을 일괄 등록하고(중복 건너뜀), `eval.run_eval`은 `relevance`가 있는 시험지에서 Precision@K·nDCG@K·bad_rate·unjudged_rate도 출력한다.
 
 ## Metadata/replay corrections (2026-10-22)
 
@@ -119,7 +119,7 @@ python -m app.main                     # C: 앱 실행
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
 python -m eval.label_helper review                 # Claude 1차 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)
-python -m src.review stats            # B: 검수 저장소 (reviews/, 사람별 이벤트 파일). import-legacy·validate·agreement·export·queue 하위 명령, 설계는 docs/REVIEW_STORE.md
+python -m src.review stats            # B: 검수 저장소 (reviews/, 사람별 이벤트 파일). import-legacy·import-questions·validate·agreement·export·queue 하위 명령, 설계는 docs/REVIEW_STORE.md
 python -m eval.sweep                  # B: Hybrid 가중치·RRF_K·FIELD_BOOST·지역 감점(--local-penalty) 격자 탐색 (색인 필요, 검색 결과는 질문별 캐시)
 python -m eval.run_eval --experiment hybrid_filter --k 5   # 검색 평가 (baseline|vector|bm25|hybrid|hybrid_filter|all, all은 비교표 출력). 정답이 채워진 질문 세트와 색인 필요 (baseline은 A의 SQLite `data/services.db` 필요)
 python -m src.ingest.guides --dir data/guides   # A: 판정 기준 문서 PDF 파싱·분할 (제안)
