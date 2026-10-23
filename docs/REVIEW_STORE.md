@@ -82,7 +82,7 @@ python -m src.review queue --n 30             # 검수 대기열 (색인 필요)
 ```powershell
 python -m app.review_mode      # 브라우저에서 검수. 색인(Chroma)과 data/services.db 필요
 ```
-왼쪽에 검수자 이름(영문·숫자)을 넣고 dev/test 묶음과 기준일을 고른 뒤 질문을 선택한다. 후보(hybrid_filter·vector·bm25 합집합 상위 10)는 질문마다 고정된 순서로 섞여 보이고 어느 검색이 찾았는지는 가린다. 제도마다 좋음/부분/나쁨/보류 + 사유 + 메모를 저장하면 `judgment` 이벤트가, 첫 저장 때 후보 목록이 `run` 이벤트가 남는다. 이미 판정한 제도는 검색에 안 나와도 보이고, 기한이 지난 제도는 숨긴다. 아래쪽 '시스템 답변 검수'는 `generator.answer_question` 결과를 보고 빠진 내용·틀린 내용 메모(`answer_memo`)를 남긴다(OpenAI 키 필요). 로직은 `src/review/session.py`(테스트 포함), 화면은 `app/review_mode.py`이며 `app/main.py`는 고치지 않았다. 붙이려면 main에서 `review_mode.render()`를 호출하면 된다.
+왼쪽에 검수자 이름(영문·숫자)을 넣고 dev/test 묶음과 기준일을 고른 뒤 질문을 선택한다. 후보(hybrid_filter·vector·bm25 합집합을 순위 좋은 순으로 `질문당 후보 수`만큼, 왼쪽 슬라이더 3~30, 기본 10)는 질문마다 고정된 순서로 섞여 보이고 어느 검색이 찾았는지는 가린다. 제도마다 좋음/부분/나쁨/보류 + 사유 + 메모를 저장하면 `judgment` 이벤트가, 첫 저장 때 후보 목록이 `run` 이벤트가 남는다. 이미 판정한 제도는 검색에 안 나와도 보이고, 기한이 지난 제도는 숨긴다. 아래쪽 '시스템 답변 검수'는 `generator.answer_question` 결과를 보고 빠진 내용·틀린 내용 메모(`answer_memo`)를 남긴다(OpenAI 키 필요). 로직은 `src/review/session.py`(테스트 포함), 화면은 `app/review_mode.py`이며 `app/main.py`는 고치지 않았다. 붙이려면 main에서 `review_mode.render()`를 호출하면 된다.
 
 ## 앱(C)에서 쓰는 법
 ```python
