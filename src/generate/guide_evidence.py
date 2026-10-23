@@ -155,7 +155,53 @@ def _clean_items(items: list[str] | None) -> list[str]:
 
 
 def _keywords(text: str) -> list[str]:
-    """관련도 확인용 핵심 낱말 (2자 이상 한글, 조사·흔한 조건 낱말 제외)."""
+    """관련도 확인용 핵심 낱말 (2자 이상, 흔한 조건 낱말 제외). Kiwi(형태소 분석)가 있으면 명사만, 없으면 정규식.
+
+    정규식만 쓰면 질문의 동사·부사가 섞였다 ('살인데', '받을', '돈도', '계산되': 실제 PDF로 점검한 판정 문서
+    평가 질문 12개 중 3개에서 근거 문구를 엉뚱한 줄 중심으로 잘랐다). Kiwi는 requirements.txt에 없어
+    (팀 합의 전) 설치된 PC에서만 쓰고, 없으면 예전 방식으로 동작한다."""
+    nouns = _kiwi_nouns(text)
+    if nouns is not None:
+        return list(dict.fromkeys(w for w in nouns if len(w) >= 2 and w not in _STOPWORDS))
+    return _regex_keywords(text)
+
+
+_KIWI_NOUN_TAGS = ("NNG", "NNP", "SL", "XR")   # 일반·고유 명사, 외국어, 어근
+_kiwi = None
+
+
+def _kiwi_nouns(text: str) -> list[str] | None:
+    """Kiwi로 뽑은 명사. 띄어 쓰지 않고 이어진 명사는 이어 붙인다 ('주거급여' -> 주거+급여 -> '주거급여').
+    Kiwi가 없거나 실패하면 None (정규식으로 대신)."""
+    global _kiwi
+    try:
+        if _kiwi is None:
+            from kiwipiepy import Kiwi
+            _kiwi = Kiwi()
+        tokens = _kiwi.tokenize(text)
+    except Exception:  # 미설치(ImportError)·모델 오류
+        return None
+    out, cur, end = [], "", None
+    for t in tokens:
+        if t.tag not in _KIWI_NOUN_TAGS:
+            if cur:
+                out.append(cur)
+            cur, end = "", None
+            continue
+        if cur and t.start == end:        # 바로 앞 명사에 붙어 있다
+            cur += t.form
+        else:
+            if cur:
+                out.append(cur)
+            cur = t.form
+        end = t.start + t.len
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _regex_keywords(text: str) -> list[str]:
+    """정규식 방식 (Kiwi가 없을 때): 2자 이상 한글 낱말에서 조사·질문 끝말을 뗀다."""
     def strip(w: str) -> str:
         cut = _ENDING_RE.sub("", w)
         if cut != w and len(cut) < 2:
