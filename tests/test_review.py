@@ -342,3 +342,17 @@ def test_cli_import_validate_stats_export(tmp_path, capsys):
     assert cli.main([*base, "validate"]) == 1 and "legacy.jsonl:1" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.load_services(tmp_path / "없음.db")
+
+
+def test_same_instant_edits_keep_write_order(store, q):
+    """같은 시각(ts)에 쓴 이벤트는 쓴 순서로 정해진다 (이전에는 event_id 순이라 같은 초의 수정이 뒤바뀔 수 있었다)."""
+    for i in range(30):
+        qid = store.add_question("a", f"순서 시험 {i}")
+        stamp = "2026-10-23T09:00:00.000000Z"
+        first = schema.make_event("judgment", {"question_id": qid, "service_id": "S1", "service_version": ver("S1"), "label": "bad", "reason": "irrelevant"},
+                                  "a", ts=stamp)
+        second = schema.make_event("judgment", {"question_id": qid, "service_id": "S1", "service_version": ver("S1"), "label": "good"}, "a", ts=stamp)
+        store.append(first)
+        store.append(second)
+        assert consensus(store, qid)["label"] == "good"                                   # 나중에 쓴 판정이 이긴다
+    assert schema.now_iso().endswith("Z") and "." in schema.now_iso()                    # 마이크로초까지

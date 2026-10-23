@@ -6,8 +6,13 @@ from datetime import date
 from src.review import schema
 
 
+def _order(event: dict) -> tuple:
+    """시간순. ts가 같으면 읽은 순서(파일 안의 줄 순서)로, 그래도 같으면 event_id로 정한다."""
+    return (event["ts"], event.get("_seq", 0), event["event_id"])
+
+
 def _latest(events: list[dict]) -> dict:
-    return max(events, key=lambda e: (e["ts"], e["event_id"]))
+    return max(events, key=_order)
 
 
 class State:
@@ -22,11 +27,11 @@ class State:
             if e["type"] == "question":
                 by_q.setdefault(schema.question_id(e["data"]["text"]), []).append(e)
         for qid, evs in by_q.items():
-            first, last = min(evs, key=lambda e: (e["ts"], e["event_id"])), _latest(evs)
+            first, last = min(evs, key=_order), _latest(evs)
             data = dict(last["data"])
             data.setdefault("split", schema.default_split(qid))
             self.questions[qid] = {"question_id": qid, "created_by": first["reviewer"], "created_at": first["ts"], "status": "active", **data}
-        for e in sorted((e for e in self.events if e["type"] == "question_status"), key=lambda e: (e["ts"], e["event_id"])):
+        for e in sorted((e for e in self.events if e["type"] == "question_status"), key=_order):
             q = self.questions.get(e["data"]["question_id"])
             if q is not None:
                 q["status"] = e["data"]["status"]
@@ -34,7 +39,7 @@ class State:
 
         self.runs: dict[str, dict] = {}
         self.latest_run: dict[str, str] = {}
-        for e in sorted((e for e in self.events if e["type"] == "run"), key=lambda e: (e["ts"], e["event_id"])):
+        for e in sorted((e for e in self.events if e["type"] == "run"), key=_order):
             self.runs[e["data"]["run_id"]] = {**e["data"], "ts": e["ts"], "reviewer": e["reviewer"]}
             self.latest_run[e["data"]["question_id"]] = e["data"]["run_id"]
 

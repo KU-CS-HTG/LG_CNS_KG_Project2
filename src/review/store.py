@@ -116,6 +116,7 @@ class ReviewStore:
         """(이벤트 목록, 오류 목록). strict면 첫 오류에서 예외. 같은 event_id·client_event_id가 겹치면 가장 먼저 쓴 것만 남긴다."""
         events, errors = [], []
         seen_ids, seen_clients = set(), set()
+        sequence = 0
         for path in sorted(self.events_dir.glob("*.jsonl")) if self.events_dir.exists() else []:
             for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                 if not line.strip():
@@ -137,8 +138,10 @@ class ReviewStore:
                 seen_ids.add(event["event_id"])
                 if client:
                     seen_clients.add((event["reviewer"], client))
+                sequence += 1
+                event["_seq"] = sequence                 # 같은 ts일 때 먼저 쓴 것이 앞서도록 (파일에는 저장하지 않는 읽기용 값)
                 events.append(event)
-        events.sort(key=lambda e: (e["ts"], e["event_id"]))
+        events.sort(key=lambda e: (e["ts"], e["_seq"]))
         return events, errors
 
     def state(self, *, strict: bool = False) -> State:

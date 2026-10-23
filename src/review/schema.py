@@ -46,7 +46,7 @@ class ValidationError(ValueError):
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")   # 같은 초의 수정도 순서가 정해지게
 
 
 def normalize_text(text: str) -> str:
