@@ -125,7 +125,7 @@ def render() -> None:
     done = sum(1 for r in rows if r["mine"])
     st.progress(done / len(rows), text=f"내가 시작한 질문 {done} / {len(rows)}")
     options = {r["question_id"]: r for r in rows}
-    qid = st.selectbox("질문", list(options), format_func=lambda i: f"{'✅' if options[i]['mine'] else '⬜'} {options[i]['id']} · {options[i]['text'][:60]}")
+    qid = st.selectbox("질문", list(options), key="review_qid", format_func=lambda i: f"{'✅' if options[i]['mine'] else '⬜'} {options[i]['id']} · {options[i]['text'][:60]}")
     q = state.questions[qid]
     st.markdown(f"### {q['text']}")
     if q.get("gold_filters"):

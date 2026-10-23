@@ -34,7 +34,7 @@ def questions_overview(state: State, reviewer: str, split: str | None = None) ->
     rows = [{"question_id": qid, "id": q.get("legacy_id") or qid, "text": q["text"], "split": q["split"], "status": q["status"],
              "mine": mine.get(qid, 0)}
             for qid, q in state.questions.items() if q["status"] in ("active", "no_answer") and (split in (None, "all") or q["split"] == split)]
-    return sorted(rows, key=lambda r: (r["mine"] > 0, r["id"]))        # 아직 안 한 질문이 앞
+    return sorted(rows, key=lambda r: r["id"])        # 순서는 고정 (판정을 저장해도 선택한 질문이 다음 질문으로 바뀌지 않게)
 
 
 def candidates_for(state: State, qid: str, search_fn: SearchFn, services: dict[str, dict], *, today: date | str, reviewer: str,

@@ -70,6 +70,14 @@ python -m src.review queue --n 30             # 검수 대기열 (색인 필요)
 
 시험지 평가: `python -m eval.run_eval --questions reviews/exports/dev_v1.jsonl --experiment hybrid_filter`. `relevance`가 있는 시험지는 Hit/Recall/MRR에 더해 Precision@K, nDCG@K(good=2, partial=1), bad_rate@K(상위 K 중 '틀림' 판정 비율), unjudged_rate@K(아직 판정 없는 비율)를 출력한다. unjudged가 높으면 정답 목록이 불완전해 지표가 낮게 나온 것일 수 있으니 `queue`로 먼저 채운다.
 
+## 판정 기준: '좋음'은 어디까지인가
+판정은 "이 질문을 한 사람에게 이 제도가 **해당될 가능성이 있는가**"로 한다 (`docs/LABELING.md` §정답 기준과 같다).
+- **좋음**: 질문에 나온 상황(나이·지역·목적)에 맞는다. 질문에 없는 소득·가구·재산 같은 조건은 따지지 않는다 — 그것만 확인하면 해당 여부가 정해지고 추가 질문이 필요해도 좋음이다 (확인은 답변 단계의 "확인 필요"가 맡는다).
+- **나쁨**: 질문에 이미 나온 정보와 어긋난다. 사유는 `not_eligible`(나이·대상) 또는 `wrong_region`. 추가 질문으로 살아나지 않는다.
+- **부분**: 주제는 맞지만 대상·용도가 일부만 겹친다.
+- **보류**: 질문이 모호하면 `ambiguous_question`, 제도 원문을 봐야 하면 `needs_source_check`.
+- "추가 질문이 필요하다"는 이유만으로 좋음이 되지는 않는다. 질문과 실제로 겹치는 부분이 있어야 하며, 가능성이 아주 낮은 제도까지 넣으면 정답이 넓어져 Precision이 왜곡된다. 검수자끼리 기준이 갈리면 충돌로 잡히므로 팀이 같은 기준을 쓴다.
+
 ## 검수 화면 (`app/review_mode.py`)
 ```powershell
 python -m app.review_mode      # 브라우저에서 검수. 색인(Chroma)과 data/services.db 필요
