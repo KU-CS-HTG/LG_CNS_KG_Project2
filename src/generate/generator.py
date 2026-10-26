@@ -277,8 +277,12 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         # 뒤로 보낸다. 질문에 없는 특정 대상 전용 제도도 같다: 졸업 후 미취업 질문에 '장애인 취업성공패키지'가
         # 1번 카드였다 (평가 q02, 판정은 장애 여부를 말하지 않아 '확인 필요'로 맞게 냈고 검색 순위가 1위였다)
         closed = _new_closed(sid, chunks)
+        # 이번 회차가 끝난 반복 모집 제도('이번 신청 마감 · 다음 공고 확인')도 지금 신청할 수 있는 제도 뒤로
+        # (검수: q08 국가장학금 Ⅱ유형 2학기 9월 마감·'연1회(8월말~9월초)' 장학금이 앞자리에 나와 bad·기한 지남)
         later = (unverified or bool(closed) or _other_group(question, chunks[0].service_name)
-                 or _change_notice(question, chunks[0].service_name))
+                 or _change_notice(question, chunks[0].service_name)
+                 or _recurring_closed(_application_period(sid), date.today())
+                 or _unasked_job(question, needs, chunks[0].service_name))
         # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
         # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
         # (전주·세종·강원)가 앞자리를 차지했다 -> 뒤로 보낸 제도 맨 뒤, 지역 없는 질문의 지자체 제도는 전국 제도 뒤,
@@ -303,7 +307,8 @@ NEW_CLOSED_ITEM = "신규 신청"
 # 신청방법·신청기한 원문의 신규 모집 중단 구절 ('* '24년부터 신규지원 중단', '2017년 이후 출생아 신규가입 불가').
 # 제도 전체가 끝났는지 일부 대상만 끝났는지('제대군인 신규 신청 불가', '주거임차비의 경우 신규 신청 불가')는 코드로
 # 가를 수 없어 빼지 않고, 카드 순서를 뒤로 보내고 확인 필요 맨 앞에 원문 구절을 보인다 (q10 청년내일채움공제)
-_NEW_CLOSED_RE = re.compile(r"[^\n.·○※*]{0,25}신규\s*(?:지원|가입|신청|모집|접수)?\s*(?:이\s*)?(?:중단|불가|종료)")
+_NEW_CLOSED_RE = re.compile(r"[^\n.·○※*]{0,25}신규\s*(?:지원|가입|신청|모집|접수)?\s*(?:이\s*)?(?:중단|불가|종료)"
+                            r"|신규[^\n/※*]{0,20}?모집\s*(?:완료|마감)")   # '신규계약: (상) 1월 (하) 7월 -모집완료'
 
 
 def _new_closed(sid: str, chunks: list[Chunk]) -> str:
@@ -317,7 +322,8 @@ def _is_local(chunks: list[Chunk]) -> bool:
     """지자체 제도인가: 소관기관으로 시·도를 알 수 있거나(산하 기관 포함), 저장된 지역 값이 전국이 아닌 시·도."""
     meta = chunks[0].metadata if chunks else {}
     region = normalize_region(meta.get("region") or "")
-    return _agency_region(meta.get("agency") or "") is not None or region not in (None, "전국")
+    name = chunks[0].service_name if chunks else ""
+    return _agency_region(meta.get("agency") or "", name) is not None or region not in (None, "전국")
 
 
 # 특정 대상 전용 제도의 이름 낱말 -> 질문에 있으면 그 대상으로 보는 말. '저소득·수급자'는 주거급여처럼 넓은 제도에도
@@ -336,6 +342,18 @@ _ASKS_CHANGE_RE = re.compile(r"변경|이사|전입|중지|연장|해지|바뀌"
 def _change_notice(question: str, service_name: str) -> bool:
     """제도 이름이 변경 신청 안내인데 질문은 변경을 묻지 않는가."""
     return bool(_CHANGE_NOTICE_RE.search(service_name or "")) and not _ASKS_CHANGE_RE.search(question or "")
+
+
+# 사람을 뽑는 일자리 제도 이름. 원문의 '다자녀보육가구 우대'·'저소득층 우대'로 처지가 맞아 보여 일을 묻지 않은
+# '서울 중구 다자녀가구 혜택' 질문에 통계조사원 채용이 1·2번 카드였다 (우대는 혜택이 아니라 선발 가점)
+_JOB_NAME_RE = re.compile(r"일자리|조사원|채용|공공근로")
+_ASKS_JOB_RE = re.compile(r"일자리|취업|구직|일하|일을|근로|채용|알바|아르바이트|직장|재직|경력|면접|실직|퇴사|구직|생계")
+
+
+def _unasked_job(question: str, needs: list[str] | None, service_name: str) -> bool:
+    """일을 묻지 않은 질문에 나온 일자리 제도인가 (빼지 않고 뒤로 보낸다). 처지(needs의 '구직(…)')도 본다."""
+    asked_text = " ".join([question or "", *(needs or [])])
+    return bool(_JOB_NAME_RE.search(service_name or "")) and not _ASKS_JOB_RE.search(asked_text)
 
 
 def _other_group(question: str, service_name: str) -> bool:
@@ -904,11 +922,14 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     result = hybrid.search_with_info(question, filters, k=k)
     today = date.fromisoformat(filters.get("today") or date.today().isoformat())
     chunks = _drop_expired(result.chunks, today)
-    if not region:
+    if not region or districts:
         # 판정 후보(JUDGE_CANDIDATES)를 채우려고 더 큰 검색 결과를 뒤에 붙인다. 처음 검색의 순서는 그대로 둔다:
         # 처음부터 k를 키우면 B의 후보 수(k*5)가 늘어 상위 순위가 달라졌다 (면접 비용 질문에서 면접정장 제도들이
-        # 6위 밖으로 밀려 근거 없음, 평가 q03)
-        more = hybrid.search_with_info(question, filters, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
+        # 6위 밖으로 밀려 근거 없음, 평가 q03).
+        # 시·군·구까지 말했으면 더 크게 받는다: '서울 마포구 65세' 15개 중 12개가 다른 구 어르신 제도라 구 필터 뒤
+        # 3개만 남았다 (50개면 11개. 검색 시간은 k와 거의 상관없음, 0.8초)
+        more = hybrid.search_with_info(question, filters,
+                                       k=DISTRICT_CANDIDATES if districts else config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
     chunks, region_relaxed = _drop_other_regions(chunks, region)
@@ -931,6 +952,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
 
 JUDGE_CANDIDATES = 10         # 판정에 넘기는 후보 제도 수 (안내는 그중 통과한 앞 config.MAX_RECOMMENDATIONS개)
 REGION_CANDIDATE_FACTOR = 3   # 검색 후보 배수 (지역을 말했거나 기한 지난 제도가 빠졌을 때 5 -> 15개에서 5개를 고른다)
+DISTRICT_CANDIDATES = 50      # 시·군·구까지 말한 질문의 추가 검색 수, 지역 질문의 전국 후보 추가 검색 수
 MAX_LOCAL_SERVICES = 3        # 지역을 말했을 때 답변 5자리 중 그 지역 지자체 제도의 최대 수
 MIN_NATIONAL_SERVICES = 2     # 지역을 말했을 때 전국 제도(중앙부처·공공기관)에 남겨 두는 최소 자리
 
@@ -949,12 +971,17 @@ def _national_candidates(question: str, region: str, filters: dict, today: date)
     if not stripped or stripped == question.strip():
         return []
     nationwide = {k: v for k, v in filters.items() if k != "region"}
+    # 15개 순서를 먼저 두고 50개 결과에서 새로 나온 것을 뒤에 붙인다 (k를 키우면 B의 상위 순위가 바뀐다).
+    # '서울 마포구 65세 어르신'은 지역 낱말을 빼도 상위 15개 중 전국 제도가 2개뿐이었다 (나머지는 다른 지역 어르신 제도)
     try:
-        result = hybrid.search_with_info(stripped, nationwide, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
+        chunks = hybrid.search_with_info(stripped, nationwide, k=config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR).chunks
+        seen = {c.service_id for c in chunks}
+        chunks += [c for c in hybrid.search_with_info(stripped, nationwide, k=DISTRICT_CANDIDATES).chunks
+                   if c.service_id not in seen]
     except Exception as e:  # 전국 후보를 못 구해도 지역 질문 결과로 답한다
         log.warning("전국 제도 후보 검색 실패: %s", e)
         return []
-    return [c for c in _drop_expired(result.chunks, today) if _agency_region(c.metadata.get("agency") or "") is None]
+    return [c for c in _drop_expired(chunks, today) if _agency_region(c.metadata.get("agency") or "", c.service_name) is None]
 
 
 def _mix_national(chunks: list[Chunk], national: list[Chunk]) -> list[Chunk]:
@@ -968,7 +995,8 @@ def _mix_national(chunks: list[Chunk], national: list[Chunk]) -> list[Chunk]:
         if c.service_id not in by_service:
             order.append(c.service_id)
         by_service.setdefault(c.service_id, []).append(c)
-    is_local = {sid: _agency_region(by_service[sid][0].metadata.get("agency") or "") is not None for sid in order}
+    is_local = {sid: _agency_region(by_service[sid][0].metadata.get("agency") or "", by_service[sid][0].service_name) is not None
+                for sid in order}
     local = [s for s in order if is_local[s]]
     nat = list(dict.fromkeys([c.service_id for c in national] + [s for s in order if not is_local[s]]))
     slots = config.MAX_RECOMMENDATIONS
@@ -1068,7 +1096,27 @@ _RECURRING_PERIOD_RE = re.compile(r"학기|매\s*년|연\s*\d\s*회|연도\s*별
 
 def _recurring_closed(text: str, today: date) -> bool:
     """이번 신청은 끝났지만 다시 모집하는 제도인가 (국가장학금처럼 학기·해마다 반복). 빼지 않고 '다음 공고 확인'으로 안내한다."""
-    return _period_expired(text, today) and bool(_RECURRING_PERIOD_RE.search(" ".join((text or "").split())))
+    text = " ".join((text or "").split())
+    return (_period_expired(text, today) and bool(_RECURRING_PERIOD_RE.search(text))) or _annual_closed(text, today)
+
+
+# 연도 없이 해마다 같은 달에 받는 기간 ('매년 3월~5월', '연1회 신청(8월말~9월초)'). 활성 제도 471건이 이런 꼴이라
+# 연도가 없다는 이유로 올해 기간이 끝난 제도가 표시 없이 안내됐다 (검수: q08 '연1회 신청(8월말~9월초)' 장학금 bad·기한 지남)
+_ANNUAL_RE = re.compile(r"매\s*년|해\s*마다|연\s*1\s*회")
+_ANNUAL_OPEN_RE = re.compile(r"이후|별도|전\s*년|소진|예산")
+_MONTH_RE = re.compile(r"(?<!\d)(\d{1,2})\s*월")
+
+
+def _annual_closed(text: str, today: date) -> bool:
+    """연도 없는 해마다 기간에서 가장 늦은 달이 이번 달보다 앞인가 (올해 신청은 끝나고 다음 해에 다시 받는다).
+    연도가 적혀 있거나 끝이 열린 기간('6월 이후'·'재원소진 시까지')·전년도 공고는 판단하지 않는다."""
+    if (not _ANNUAL_RE.search(text) or re.search(r"20\d\d", text)
+            or _OPEN_PERIOD_RE.search(text) or _ANNUAL_OPEN_RE.search(text)):
+        return False
+    months = [int(m) for m in _MONTH_RE.findall(text) if 1 <= int(m) <= 12]
+    months += [12 if h == "하" else 6 for h in re.findall(r"(상|하)\s*반기", text)]      # 상반기 6월, 하반기 12월
+    months += [3 * int(q) for q in re.findall(r"([1-4])\s*분기", text)]
+    return bool(months) and max(months) < today.month
 
 
 def _period_expired(text: str, today: date) -> bool:
@@ -1095,7 +1143,7 @@ def _drop_other_regions(chunks: list[Chunk], region: str | None) -> tuple[list[C
     def supported_region(chunk):
         if chunk.metadata.get("region_provenance") == "explicit_eligibility":
             return normalize_region(chunk.metadata.get("region"))
-        return _agency_region(chunk.metadata.get("agency") or "")
+        return _agency_region(chunk.metadata.get("agency") or "", chunk.service_name)
     keep = [c for c in chunks if supported_region(c) in (None, "전국", region)]
     return (keep, False) if keep else (chunks, True)
 
@@ -1329,9 +1377,50 @@ def _find_districts(question: str, region: str | None = None) -> set[str]:
     return found
 
 
-def _agency_districts(agency: str) -> set[str]:
-    """소관기관의 시·군·구 ('서울특별시 동대문구' -> {'동대문구'}). 시·도 기관('서울특별시')·전국 기관은 빈 집합."""
-    return {p for p in (agency or "").split()[1:] if p in DISTRICTS}
+def _agency_districts(agency: str, service_name: str = "") -> set[str]:
+    """소관기관의 시·군·구 ('서울특별시 동대문구' -> {'동대문구'}). 시·도 기관('서울특별시')·전국 기관은 빈 집합.
+    붙여 쓴 산하 기관 이름은 앞부분의 시·군·구로 본다 ('용산구시설관리공단'·'서울특별시중구시설관리공단'): 띄어 쓴 낱말만
+    보다가 '서울 중구 다자녀' 질문에 용산구·송파구 시설관리공단 할인이 후보 10개 중 4개였다 (62곳·325개 제도).
+    같은 이름이 여러 시·도에 있는 구(울산 중구)는 시·도 필터(_drop_other_regions)가 먼저 거른다.
+    '시'를 뗀 시·군 이름 + 기관 이름('시흥도시공사', 제도 이름의 '(전주보훈요양원)')은 _short_place로 읽는다."""
+    parts = (agency or "").split()
+    found = {p for p in parts[1:] if p in DISTRICTS}
+    for p in parts:
+        rest = _REGION_PREFIX_RE.sub("", p)
+        name = next((d for d in _DISTRICTS_LONGEST_FIRST if rest.startswith(d) and len(rest) > len(d)), None)
+        if name:
+            found.add(name)
+    found |= {d for _, d in _short_places(agency, service_name) if d}
+    return found
+
+
+_REGION_PREFIX_RE = re.compile("^(?:" + "|".join(sorted(condition_extractor._REGION_ALIASES, key=len, reverse=True)) + ")")
+# 지자체 산하 기관·시설 이름의 끝 ('시흥도시공사', '천안복지재단', '전주보훈요양원')
+_ORG_SUFFIX_RE = re.compile(r"(?:도시공사|도시관리공사|도시관리공단|시설관리공단|시설공단|환경공단|문화재단|복지재단|체육회|"
+                            r"청소년재단|교육재단|장학재단|인재육성재단|보훈요양원|요양원|복지관|청소년수련관)$")
+_METRO_SHORT = ("부산", "대구", "인천", "광주", "대전", "울산", "세종")
+
+
+def _short_place(token: str) -> tuple[str, str | None] | None:
+    """'시'·'군'을 뗀 이름 + 기관 이름인 낱말의 (시·도, 시·군). '광주보훈요양원'처럼 광역시 이름이면 (광역시, None).
+    전국 기관(한국보훈복지의료공단)이 운영하는 지역 시설이 전국 제도로 보여 '서울 마포구 65세' 질문에 전주보훈요양원,
+    '시흥도시공사' 체육시설 감면이 나왔다 (44곳·160개 제도). 끝 글자를 뗀 구 이름('용산복지재단')은 '중'·'남'처럼
+    짧아 다른 말과 겹칠 수 있어 보지 않는다. 기관 이름이 뒤에 붙을 때만 읽어 '한국남동발전' 같은 오인을 막는다."""
+    t = _REGION_PREFIX_RE.sub("", re.sub(r"^(?:재단법인|사단법인|\(재\)|\(사\))", "", token))
+    m = _ORG_SUFFIX_RE.search(t)
+    if not m or len(t[:m.start()]) < 2:
+        return None
+    short = t[:m.start()]
+    if short in _METRO_SHORT:
+        return short, None
+    name = next((short + s for s in "시군" if len(DISTRICTS.get(short + s, ())) == 1), None)
+    return (DISTRICTS[name][0], name) if name else None
+
+
+def _short_places(agency: str, service_name: str = "") -> list[tuple[str, str | None]]:
+    """소관기관 낱말과 제도 이름 괄호 안 시설 이름('입소 이용서비스(전주보훈요양원)')에서 읽은 지역들."""
+    tokens = (agency or "").split() + ["".join(p.split()) for p in re.findall(r"\(([^)]+)\)", service_name or "")]
+    return [p for p in map(_short_place, tokens) if p]
 
 
 def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str | None = None,
@@ -1349,7 +1438,7 @@ def _drop_other_districts(chunks: list[Chunk], districts: set[str], field: str |
         return chunks
     keep = []
     for c in chunks:
-        own = _agency_districts(c.metadata.get("agency") or "")
+        own = _agency_districts(c.metadata.get("agency") or "", c.service_name)
         if own and not own & districts:
             continue                       # 다른 구의 제도
         if (own and field and not retrieve_filters.field_matches(c.metadata.get("field"), field)
@@ -1371,7 +1460,7 @@ def _service_mentions(c: Chunk, asked: list[str] | None) -> bool:
     return any(_asked_in(a, body) for a in asked)
 
 
-def _agency_region(agency: str) -> str | None:
+def _agency_region(agency: str, service_name: str = "") -> str | None:
     """지자체 소관기관의 시·도 짧은 이름 ('충청북도 충주시' -> '충북'). 전국 기관이면 None.
 
     지자체 산하 기관은 이름에 시·도가 없다 ('재단법인의왕시청소년재단', '고양시청소년재단'): 지역을 몰라 전국 제도로
@@ -1381,7 +1470,8 @@ def _agency_region(agency: str) -> str | None:
         found = condition_extractor._find_region(agency)
         if found:
             return found
-    return _district_region(agency)
+    regions = {r for r, _ in _short_places(agency, service_name)}
+    return _district_region(agency) or (regions.pop() if len(regions) == 1 else None)
 
 
 def _district_region(agency: str) -> str | None:
@@ -1393,6 +1483,7 @@ def _district_region(agency: str) -> str | None:
 
 
 _UNIQUE_DISTRICTS = sorted((d for d, rs in DISTRICTS.items() if len(rs) == 1), key=len, reverse=True)
+_DISTRICTS_LONGEST_FIRST = sorted(DISTRICTS, key=len, reverse=True)
 
 
 # B가 결과가 없을 때 푸는 조건 (CLAUDE.md: 지역 -> 연령. 관심 분야는 필터가 아니라 가산점이라 풀지 않는다)

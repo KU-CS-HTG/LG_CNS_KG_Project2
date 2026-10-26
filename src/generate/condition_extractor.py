@@ -101,6 +101,11 @@ _QUESTION_TAIL_RE = re.compile(
     r"있나요|있을까요|있는지|알려\s*주세요|알려\s*줘|궁금해요|어떻게\s*되나요)\??$")
 # 무엇인지 특정하지 않는 말.구절에서 이것들을 빼고 남는 것이 없으면 넓은 질문으로 본다 ('청년 지원', '받을 수 있는 지원')
 _GENERIC_HELP = ("받을수있는", "청년", "지원금", "지원", "혜택", "제도", "정책", "신청", "정부", "서비스")
+# 사용자가 누구인지(가구·신분)만 가리키는 구절. 프롬프트로 빼라고 해도 '다자녀가구'를 찾는 것으로 돌려줘
+# '다자녀가구에 도움이 될 수 있는 제도'로 다자녀 '우대' 통계조사원 채용이 1·2번 카드였다 ('서울 중구 다자녀가구 혜택').
+# 처지는 situation(양육 등)으로 따로 잡힌다. '이자'·'보증금'처럼 도움을 뜻하는 말과 겹치지 않는 끝말만 쓴다.
+_STATUS_ONLY_RE = re.compile(r"(?:가구|가정|가족|세대|부부|계층|저소득층|수급자|준비생|대학생|학생|직장인|어르신|노인|"
+                             r"장애인|임산부|구직자|실직자|청년)$")
 
 
 _client = None
@@ -211,7 +216,7 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
             for g in _GENERIC_HELP:
                 rest = rest.replace(g, "")
             if (words and len("".join(words)) <= 25 and all(w in q for w in words)
-                    and len(rest) >= 2 and h not in picked):
+                    and len(rest) >= 2 and h not in picked and not _STATUS_ONLY_RE.search("".join(words))):
                 picked.append(h)
         if picked:
             out["help"] = picked
