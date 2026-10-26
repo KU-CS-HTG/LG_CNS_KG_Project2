@@ -105,6 +105,14 @@ def test_build_link_table_from_raw(tmp_path):
         apply_links._cache = monkey
 
 
+def test_committed_link_table_is_shared():
+    # 대응표는 커밋한다 (원본이 없는 팀원 PC에서도 같은 링크). data/raw(커밋 안 함)에 두면 만든 PC에서만 링크가 나왔다
+    assert apply_links.LINKS_PATH.parent.name == "ingest" and apply_links.LINKS_PATH.exists()
+    table = json.loads(apply_links.LINKS_PATH.read_text(encoding="utf-8"))
+    assert table["161300000104"]["url"] == "https://korea-pass.kr"                 # K-패스
+    assert len(table) > 2000 and all(set(v) == {"url", "org"} for v in table.values())
+
+
 def test_apply_button_html():
     from app import card_apply
     r = Recommendation(service_name="국민취업지원제도", agency="고용노동부", reason="", benefit="", how_to_apply="",

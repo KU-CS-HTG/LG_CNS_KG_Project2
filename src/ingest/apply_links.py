@@ -2,8 +2,9 @@
 
 A의 정규화(normalize.py)는 이 두 필드를 저장하지 않아 DB·색인에 없다(2026-10-26 확인: 원본 10,964건 중 2,004건에
 URL이 있음). 수집 경로·DB·색인을 바꾸지 않으려고 이미 받아 둔 원본(data/raw/<실행ID>/serviceDetail-*.json)에서
-따로 뽑아 data/raw/apply_links.json(원본과 같이 커밋하지 않음)에 둔다. 원본이 없는 PC에서는 대응표가 없고,
-src/generate/apply_link.py가 신청방법 원문의 URL만으로 찾는다.
+따로 뽑아 src/ingest/apply_links.json에 둔다. 이 표는 원본 응답이 아니라 공개된 두 칸만 뽑은 파생 데이터라
+커밋한다(API 키·개인정보 없음): 원본이 없는 팀원 PC에서도 같은 신청 링크가 나온다. 예전에는 data/raw/(커밋 안 함)에
+두어 표를 만든 PC에서만 링크가 나왔다. 원본을 새로 받으면 다시 만들어 커밋한다.
 
     python -m src.ingest.apply_links            # 가장 최근 수집 실행의 원본으로 대응표를 만든다
     python -m src.ingest.apply_links --run <실행ID>
@@ -16,7 +17,7 @@ from pathlib import Path
 
 from src.common import config
 
-LINKS_PATH = config.RAW_DIR / "apply_links.json"
+LINKS_PATH = Path(__file__).with_name("apply_links.json")   # 커밋하는 대응표 (src/ingest/apply_links.json)
 URL_FIELD = "온라인신청사이트URL"
 ORG_FIELD = "접수기관명"
 ID_FIELD = "서비스ID"
@@ -47,7 +48,10 @@ def build(run_dir: Path) -> dict[str, dict]:
 
 def save(links: dict[str, dict], path: Path = LINKS_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(links, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    # 제도 하나가 한 줄이 되게 써서 다시 만들었을 때 git diff에 바뀐 제도만 보인다
+    body = ",\n".join(f" {json.dumps(sid, ensure_ascii=False)}: {json.dumps(links[sid], ensure_ascii=False, sort_keys=True)}"
+                      for sid in sorted(links))
+    path.write_text("{\n" + body + "\n}\n", encoding="utf-8")
 
 
 def load(path: Path = LINKS_PATH) -> dict[str, dict]:
