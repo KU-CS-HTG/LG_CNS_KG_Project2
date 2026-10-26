@@ -51,7 +51,7 @@
 - **주의**: "지금 신청하면 얼마를 받는다"를 단정하지 않는다. 소득·가구 같은 조건이 사용자 입력에 없으면 금액이 달라질 수 있으므로 "조건별 금액 + 해당 조건 확인" 형태로 보여 준다 (자격 불명확 시 단정 금지 규칙).
 - **완료 기준**: 청년도전지원사업·국민취업지원제도 카드에서 원문에 있는 금액(예: 월 50만 원)이 자세히 보기에 나온다. 원문에 없는 금액은 만들어 내지 않는다(근거 문구 연결).
 - **규모**: 중
-- **담당**: (이름)  **상태**: 대기  **브랜치**: `feat/w2-benefit-detail`
+- **담당**: danielkim-ai  **상태**: 진행 중  **브랜치**: `feat/w2-benefit-detail`
 - **고치는 파일(이것만)**: `src/generate/benefit_detail.py`(`extract` 구현), `app/card_benefit.py`(`render`에서 `r.benefit_detail`을 "자세히 보기"로), 새 테스트 `tests/test_benefit_detail.py`
 - **고치지 않는 파일**: `generator.py`, `schema.py`, `app/main.py`
 - **참고**: 전체 지원내용 조각은 `vector_store.get_service_chunks(service_id)`

@@ -1,12 +1,24 @@
-"""W2: 제도 카드의 '무엇을 받나요' 자세히 보기. 자리표시자: 아무것도 그리지 않는다 (docs/WORK_ITEMS.md W2).
+"""W2: display supplied support-content blocks; no retrieval or new citations.
 
-`app/main.py`의 `_card`가 카드 머리 바로 아래에서 호출한다. 구현 담당은 이 파일만 고친다 (main.py를 고치지 않는다).
-r.<필드>가 비어 있으면 아무것도 그리지 않아야 한다."""
+The parent card already renders benefit and citations. Empty details leave that
+screen intact. Plain text preserves source layout without interpreting HTML or
+Markdown, and card-scoped containers keep multiple expanders separate.
+"""
 from __future__ import annotations
+
+import streamlit as st
 
 from src.common.schema import Recommendation
 
 
 def render(r: Recommendation, key: str) -> None:
-    """key는 카드마다 다른 문자열이다. Streamlit 위젯 key를 만들 때 접두로 쓴다 (예: f"card_benefit_{key}")."""
+    """Add a collapsed, stateless detail area without repeating the summary."""
+    details = [block for block in r.benefit_detail if block.strip()]
+    if not details:
+        return None
+    with st.container(key=f"card_benefit_{key}"):
+        with st.expander("무엇을 받나요 — 자세히 보기", expanded=False):
+            st.caption("지원내용 원문 기준입니다. 개인 조건에 따라 지급액·지급 여부가 달라질 수 있으니 근거 원문을 함께 확인해 주세요.")
+            for block in details:
+                st.text(block)
     return None
