@@ -43,6 +43,7 @@
 - **고치는 파일(이것만)**: `src/generate/exclusion.py`(`exclude_in_use` 구현), `src/generate/condition_extractor.py`(이용 중 제도 항목 추가), 새 테스트 `tests/test_exclusion.py`
 - **고치지 않는 파일**: `generator.py`(호출 자리가 이미 있음), `schema.py`, `app/main.py`
 - **시작 전 읽기**: 최근 `generator.py`의 "찾는 도움" 구절 처리
+- **구현 메모(2차)**: 같은 제도는 이름·표기(코드 비교), 같은 종류의 도움은 핵심 혜택 종류(LLM이 정하고 코드가 비교)로만 뺀다. 특정 대상 전용 제도(장애인·북한이탈주민 등)는 질문에 그 대상이 없으면 뒤로 미루지 않고 뺀다. 선정 이유는 터미널에서 본다: `python -m src.generate.explain "질문"` 또는 `RAG_TRACE=1`로 앱 실행 (PowerShell: `$env:RAG_TRACE = "1"; python -m app.main`). 이 과정에서 W1 범위를 넘어 `generator.py`의 추적 호출과 특정 대상 거르기를 고쳤다.
 
 ### W2. "무엇을 받나요"에 금액·조건을 자세히
 - **문제**: 카드에는 "참여수당, 인센티브 제공"처럼 한 줄만 나와서 얼마를 받는지 알 수 없다.
