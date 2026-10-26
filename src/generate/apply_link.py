@@ -12,14 +12,11 @@ from __future__ import annotations
 
 import html
 import re
-from pathlib import Path
 from urllib.parse import quote
 
-from src.common import config
 from src.common.schema import Chunk
 from src.generate import citation
 from src.ingest import apply_links
-from src.ingest import store as ingest_store   # 신청방법 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
 
 # 'https://…', 'www.…', 'apply.jobaba.net'처럼 쓰인 주소. 한글·공백·괄호·쉼표 앞에서 끊는다.
 _URL_RE = re.compile(
@@ -137,7 +134,7 @@ def find(chunks: list[Chunk], how_to_apply: str) -> str:
     sid = chunks[0].service_id
     if sid in VERIFIED_PAGES:
         return VERIFIED_PAGES[sid]
-    texts = _how_texts(sid, chunks, how_to_apply)
+    texts = _how_texts(chunks, how_to_apply)
     url = normalize(str((apply_links.load().get(sid) or {}).get("url") or "")) or _url_in_texts(texts)
     if (not url or is_home(url) or _GOV24_HOST_RE.match(url)) and any(_GOV24_ONLINE_RE.search(t) for t in texts):
         detail = chunks[0].detail_url
@@ -220,20 +217,10 @@ def normalize(raw: str) -> str:
     return url if _HOST_RE.match(url) else ""
 
 
-def _how_texts(sid: str, chunks: list[Chunk], how_to_apply: str) -> list[str]:
-    """주소를 찾을 신청방법 글: 근거 조각의 신청방법 원문, 카드의 신청방법(LLM 요약일 수 있음), A 저장소의 원문."""
+def _how_texts(chunks: list[Chunk], how_to_apply: str) -> list[str]:
+    """주소를 찾을 신청방법 글: 근거 조각의 신청방법 원문, 카드의 신청방법(LLM 요약일 수 있음).
+    DB(A 저장소)는 조회하지 않는다: 근거 선별(evidence.select_evidence)이 이미 제도의 모든 항목 조각을 붙여 주고,
+    DB가 있는 PC에서만 링크가 더 나오면 컴퓨터마다 결과가 달라진다 (데이터 팩 설치 후 W2 '근거만 쓴다' 테스트와도 충돌)."""
     texts = [citation._body_text(c) for c in chunks if c.section == "신청방법"]
     texts.append(how_to_apply or "")
-    texts.append(_stored_how(sid))
     return [t for t in texts if t]
-
-
-def _stored_how(sid: str) -> str:
-    """A 저장소의 신청방법 원문. DB가 없으면 부르지 않는다 (get_record는 DB 파일이 없으면 새로 만든다)."""
-    if not Path(config.DB_PATH).exists():
-        return ""
-    try:
-        record = ingest_store.get_record(sid) or {}
-    except Exception:  # DB 잠김·형식 오류 등
-        return ""
-    return str((record.get("payload") or {}).get("how_to_apply") or "")

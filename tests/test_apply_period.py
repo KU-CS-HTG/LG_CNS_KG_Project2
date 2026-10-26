@@ -14,10 +14,9 @@ def _chunks(sid: str, how: str = "", name: str = "제도") -> list[Chunk]:
 
 @pytest.fixture
 def links(monkeypatch):
-    """원본 대응표와 A 저장소를 가짜로 바꾼다 (실제 data/raw·services.db를 읽지 않음)."""
+    """원본 대응표를 가짜로 바꾼다 (커밋된 src/ingest/apply_links.json을 읽지 않음)."""
     table: dict[str, dict] = {}
     monkeypatch.setattr(apply_links, "_cache", table)
-    monkeypatch.setattr(apply_link, "_stored_how", lambda sid: "")
     return table
 
 
@@ -58,9 +57,16 @@ def test_url_written_in_how_to_apply_text(links):
         == "https://apply.jobaba.net/main.do"                                # 카드의 신청방법 글에서도 찾는다
 
 
-def test_stored_how_to_apply_is_last_resort(monkeypatch, links):
-    monkeypatch.setattr(apply_link, "_stored_how", lambda sid: "한국장학재단 홈페이지(www.kosaf.go.kr) 신청")
-    assert apply_link.find(_chunks("Y", "방문 신청"), "방문 신청") == "https://www.kosaf.go.kr"
+def test_no_db_or_index_lookup(monkeypatch, links):
+    # DB(A 저장소)·색인을 조회하지 않는다: DB가 있는 PC에서만 링크가 더 나오면 컴퓨터마다 결과가 달라진다
+    def forbidden(*args, **kwargs):
+        pytest.fail("W3 must use supplied chunks and the committed link table only")
+    from src.index import vector_store
+    from src.ingest import store
+    monkeypatch.setattr(store, "get_record", forbidden)
+    monkeypatch.setattr(vector_store, "get_service_chunks", forbidden)
+    assert apply_link.find(_chunks("Y", "방문 신청"), "방문 신청") == ""
+    assert apply_link.find(_chunks("Y2", "한국장학재단 홈페이지(www.kosaf.go.kr) 신청"), "") == "https://www.kosaf.go.kr"
 
 
 def test_no_link_is_not_invented(links):
