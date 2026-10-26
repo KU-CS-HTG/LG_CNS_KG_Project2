@@ -52,6 +52,11 @@ CSS = """
 html, body, [class*="st-"], .stMarkdown, .stChatMessage, button, input, textarea {
   font-family: 'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif !important;
 }
+/* 위 규칙이 아이콘 글꼴까지 덮어쓰면 expander 화살표가 아이콘 대신 'arrow_right' 글자로 나와 제목을 가린다 -> 아이콘은 원래 글꼴로 되돌린다 */
+[data-testid="stIconMaterial"], [data-testid="stIconMaterial"] *, [data-testid="stExpanderIcon"], [data-testid="stExpanderIcon"] *,
+span[class*="material-symbols"], span[class*="material-icons"] {
+  font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+}
 :root {
   --accent: #4f6bed; --accent-soft: rgba(79,107,237,.10);
   --ok: #12a150; --ok-soft: rgba(18,161,80,.12);
