@@ -187,3 +187,37 @@ def test_group_program_is_kept_when_question_mentions_the_group():
 def test_explain_cli_prints_usage_without_question(capsys):
     from src.generate import explain
     assert explain.main([]) == 2 and "사용" in capsys.readouterr().err
+
+
+def test_find_report_separates_missing_from_filtered_from_low_rank(monkeypatch):
+    from src.generate import explain
+    from src.index import vector_store
+    from src.retrieve import hybrid
+
+    a, b = chunk("A", "K-패스"), chunk("B", "경기 교통비")
+    monkeypatch.setattr(vector_store, "_get_all", lambda inc, **k: {"metadatas": [
+        {"service_id": "A", "service_name": "K-패스"}, {"service_id": "B", "service_name": "경기 교통비"}]})
+    monkeypatch.setattr(vector_store, "build_where", lambda f: {"region": "경기"} if f else None)
+    monkeypatch.setattr(vector_store, "get_service_chunks", lambda sid: [a] if sid == "A" else [b])
+    # 필터 없으면 K-패스가 1위, 필터가 있으면 K-패스가 사라진다고 가정
+    monkeypatch.setattr(vector_store, "vector_search", lambda q, k, w=None: [(b, 1.0)] if w else [(a, 1.0), (b, 0.9)])
+    monkeypatch.setattr(vector_store, "bm25_search", lambda q, k, w=None: [(b, 1.0)] if w else [(b, 1.0)])
+    lines = explain.find_report("질문", "K패스", {"region": "경기"})
+    text = "\n".join(lines)
+    assert "A  K-패스" in text and "B  경기 교통비" not in text
+    assert "필터 없음: 벡터 1위" in text and "필터 적용: 벡터 1000조각 안에 없음" in text
+    monkeypatch.setattr(vector_store, "_get_all", lambda inc, **k: {"metadatas": []})
+    assert "색인에" in explain.find_report("질문", "없는제도", {})[0]
+
+
+def test_known_region_from_conditions_keeps_local_programs_in_search_order():
+    from src.generate import generator
+    local = chunk("L1", "경기도 교통비 지원")
+    local.metadata = {"agency": "경기도"}
+    evidence = {"L1": [local], "N1": [chunk("N1", "전국 교통비 환급")]}
+    out = {"services": [_judged("L1"), _judged("N1")]}
+    q = "교통비 지원이 있나요? 나는 수원에 살고 있어."
+    with_region = generator._recommendations(q, evidence, [], None, out, {}, "경기")
+    without = generator._recommendations(q, evidence, [], None, out, {})
+    assert [r.service_id for r in with_region] == ["L1", "N1"]      # 지역을 알면 지자체 제도도 검색 순서대로
+    assert [r.service_id for r in without] == ["N1", "L1"]          # 지역을 모르면 전국 제도가 먼저

@@ -159,7 +159,7 @@ def _needs_from(conditions: dict) -> list[str]:
 
 
 def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
-              asked: list[str] | None = None) -> Answer:
+              asked: list[str] | None = None, region: str | None = None) -> Answer:
     """asked = 질문에서 검증된 '찾는 것' 구절(conditions['help']). 나이·지역 짝이 없을 때 이유 문장에 쓴다."""
     if not evidence:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
@@ -168,13 +168,13 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         answer_job = pool.submit(_judge, question, evidence, needs)
         checklists = pool.submit(_extract_checklists, evidence).result()
         out = answer_job.result()
-    recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists), evidence)
+    recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
     if not recs and isinstance(out.get("services"), list) and _named_candidates(evidence, asked):
         # 후보가 있는데 판정에서 모두 빠졌으면 판정을 한 번 더 받는다. 같은 근거로도 판정이 흔들렸다
         # ('대학생 자취방 주거비' 질문: 같은 후보 5개로 6번 중 2번 근거 없음, 평가 q07).
         # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
         out = _judge(question, evidence, needs)
-        recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists), evidence)
+        recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     for r in recs[config.MAX_RECOMMENDATIONS:]:
@@ -243,7 +243,7 @@ def _services_for(out: dict, sid: str) -> list[dict]:
 
 
 def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: list[str], asked: list[str] | None,
-                     out: dict, checklists: dict) -> list[Recommendation]:
+                     out: dict, checklists: dict, region: str | None = None) -> list[Recommendation]:
     """판정(out)을 코드로 검증해 안내할 제도만 남긴다."""
     # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
     # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
@@ -258,7 +258,8 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
             by_id.setdefault(str(s.get("service_id")).strip(), s)
     ranked: list[tuple[tuple, Recommendation]] = []
     rescued_only = True                   # 통과한 제도가 모두 확인 안 된 '해당 없음'에서 살린 것뿐인가
-    no_region = condition_extractor._find_region(question) is None
+    # 시·도를 직접 말하지 않아도('수원에 살아요') 조건 추출이 지역을 알아냈으면 지역을 말한 질문이다 (지자체 제도를 뒤로 미루지 않는다)
+    no_region = region is None and condition_extractor._find_region(question) is None
     notes: dict[str, str] = {}            # 추적용: 제도별 선정 이유 한 줄 (trace가 꺼져 있어도 만든다. 비용은 문자열 몇 개)
     trace.title("제도별 판정과 거르기")
     named = _named_candidates(evidence, asked)
@@ -987,7 +988,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
     _progress(STEP_GENERATE)
-    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
+    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"), region)
     used = dict(result.filters_used)
     if region_relaxed:
         used.pop("region", None)
