@@ -172,6 +172,35 @@ def test_kiwi_keywords_keep_nouns_only():
     assert guide_evidence._keywords("30살이 넘으면 부모님 가구에서 빠지나요?") == ["부모", "가구", "30세"]
 
 
+def test_kiwi_keywords_keep_nouns_and_program_names(monkeypatch):
+    pytest.importorskip("kiwipiepy")
+    monkeypatch.setattr(guide_evidence, "_kiwi", None)
+
+    assert guide_evidence._keywords(
+        "자동차가 있으면 재산으로 계산되나요?"
+    ) == ["자동차", "재산", "계산"]
+
+    assert guide_evidence._keywords(
+        "청년도약계좌는 몇 년 동안 넣어야 하나요?"
+    ) == ["청년도약계좌"]
+
+    assert "청년" in guide_evidence._keywords(
+        "청년은 소득이 조금 높아도 참여할 수 있나요?"
+    )
+
+
+def test_keywords_without_kiwi_keep_question_topics(monkeypatch):
+    monkeypatch.setattr(guide_evidence, "_kiwi_nouns", lambda text: None)
+
+    keywords = guide_evidence._keywords(
+        "자동차가 있으면 재산으로 계산되나요?"
+    )
+    assert {"자동차", "재산"} <= set(keywords)
+    assert "청년" in guide_evidence._keywords(
+        "청년은 소득이 조금 높아도 참여할 수 있나요?"
+    )
+
+
 def test_doc_terms_bridge_question_words_to_document_words(fake_guides):
     # 질문 말 -> 문서 말: 그 표현이 있을 때만 검색어·핵심 낱말에 덧붙인다
     assert "취업경험" in guide_evidence._keywords("일한 경험이 없어도 구직촉진수당을 받을 수 있나요?")
@@ -193,15 +222,19 @@ def test_revision_history_chunks_are_not_evidence(fake_guides):
 
 def test_age_keyword_picks_line_but_does_not_count_for_relevance():
     kws = ["부모", "가구", "30세"]
-    unrelated = "재산 차감 순서\n근로무능력자로만 구성된 가구의 재산가액\n30세 이상 등록장애인"
-    assert guide_evidence._excerpt(unrelated, kws) == ""             # 주제 낱말은 '가구' 하나뿐
-    related = "가구 구성 원칙\n부모와 주거를 달리하는 30세 미만 미혼자녀는 부모 가구에 포함"
+    unrelated = (
+        "재산 차감 순서\n"
+        "근로무능력자로만 구성된 가구의 재산가액\n"
+        "30세 이상 등록장애인"
+    )
+    assert guide_evidence._excerpt(unrelated, kws) == ""
+
+    related = (
+        "가구 구성 원칙\n"
+        "부모와 주거를 달리하는 30세 미만 미혼자녀는 부모 가구에 포함"
+    )
     assert "30세 미만" in guide_evidence._excerpt(related, kws)
-    assert guide_evidence._excerpt("만 30세 미만 청년", ["30세"]) != ""   # 낱말이 나이뿐이면 나이로 센다
-    assert guide_evidence._keywords("자동차가 있으면 재산으로 계산되나요?") == ["자동차", "재산", "계산"]
-    # 제도 이름은 쪼개지 않는다 ('청년도약계좌' -> '청년 + 도 + 약계좌'였다), 어디에나 나오는 '동안'은 뺀다
-    assert guide_evidence._keywords("청년도약계좌는 몇 년 동안 넣어야 하나요?") == ["청년도약계좌"]
-    assert "청년" in guide_evidence._keywords("청년은 소득이 조금 높아도 참여할 수 있나요?")   # 청년 특례에선 핵심 낱말
+    assert guide_evidence._excerpt("만 30세 미만 청년", ["30세"]) != ""
 
 
 def test_guide_question_answers_with_original_clauses_only(fake_guides):
