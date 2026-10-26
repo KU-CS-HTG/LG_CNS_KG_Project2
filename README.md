@@ -384,6 +384,7 @@ B가 C에게 주는 것은 **질문 한 건에 대해 필터·검색·중복 제
 
 ```powershell
 python -m app.review_mode                                  # 브라우저 검수 화면 (후보 판정·답변 메모, 후보 수는 왼쪽 슬라이더)
+python -m src.generate.explain "질문"                       # 답변 선정 과정(제도를 고른·뺀 이유)을 터미널에 출력. 앱에서는 $env:RAG_TRACE = "1" 후 python -m app.main
 python -m src.review import-questions q.csv --reviewer 이름 [--dry-run]   # 새 질문 일괄 등록 (csv/jsonl, 이미 있는 질문은 건너뜀)
 python -m src.review import-legacy                       # eval/questions.jsonl의 질문·정답을 이벤트로 이전 (기존 질문은 모두 dev)
 python -m src.review export --split dev --out reviews/exports/dev_v1.jsonl   # 판정 -> 시험지
