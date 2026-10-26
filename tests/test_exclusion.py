@@ -243,3 +243,28 @@ def test_national_search_runs_even_when_no_place_word_can_be_removed(monkeypatch
     out = generator._national_candidates(q, "경기", {"region": "경기", "age": 30, "today": "2026-10-26"}, date(2026, 10, 26))
     assert [c.service_id for c in out] == ["K1"]
     assert seen and all("region" not in f and f.get("age") == 30 for _, f in seen)      # 지역 필터만 빼고 나이·기한은 그대로
+
+
+def test_check_report_flags_missing_index_hidden_kpass_and_missing_key(monkeypatch, tmp_path):
+    from src.catalog import store as cs
+    from src.common import config
+    from src.generate import explain
+    from src.index import vector_store
+
+    monkeypatch.setattr(config, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(vector_store, "count", lambda: 0)
+    monkeypatch.setattr(cs, "hidden_ids", lambda root=cs.ROOT: frozenset({"161300000104"}))
+    text = "\n".join(explain.check_report())
+    assert "없음 (조건 추출" in text and "비어 있음" in text and "K-패스가 숨김 처리" in text
+
+
+def test_explain_prints_the_error_instead_of_nothing(monkeypatch, capsys):
+    from src.generate import explain, generator
+
+    def boom(question):
+        raise RuntimeError("검색 색인 없음")
+
+    monkeypatch.setattr(generator, "_answer_with_evidence", boom)
+    assert explain.main(["아무 질문"]) == 1
+    err = capsys.readouterr().err
+    assert "[시작]" in err and "RuntimeError" in err and "--check" in err
