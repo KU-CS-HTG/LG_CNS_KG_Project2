@@ -131,6 +131,24 @@ def render() -> None:
         api = {}
     rows = effective.listing(api, overlay)
 
+    tab_edit, tab_add, tab_apply = st.tabs(["제도 목록·수정", "새 제도 추가", "색인에 반영"])
+    with tab_edit:
+        _list_and_detail(store, editor, api, overlay, rows)
+    with tab_add:
+        _add_form(store, editor)
+    with tab_apply:
+        _apply_tab(api, overlay)
+
+
+def pick_selected(selected_rows: list[int], view: list[dict], current: str | None) -> str | None:
+    """표에서 고른 줄(위치 번호)을 제도 ID로. 고른 줄이 없으면 이전에 고른 제도를 그대로 둔다 (수정·저장으로 표가 다시
+    그려지면서 선택이 풀려도 편집 중인 제도가 사라지지 않게)."""
+    if selected_rows and 0 <= selected_rows[0] < len(view):
+        return view[selected_rows[0]]["service_id"]
+    return current
+
+
+def _list_and_detail(store: CatalogStore, editor: str, api: dict, overlay, rows: list[dict]) -> None:
     c1, c2, c3, c4 = st.columns([3, 1.4, 1.4, 1.4])
     text = c1.text_input("검색 (서비스명·소관기관·ID)", key="cat_q").strip().lower()
     source = c2.selectbox("출처", ["전체", "API", "직접 추가"], key="cat_src")
@@ -140,25 +158,33 @@ def render() -> None:
     shown = [r for r in rows if (not text or text in f"{r['service_name']} {r['agency']} {r['service_id']}".lower())
              and source in ("전체", r["source"]) and (status == "전체" or r["hidden"] == (status == "숨김"))
              and (field == "전체" or r["field"] == field) and (not only_edited or r["edited"])]
-    st.caption(f"전체 {len(rows):,}개 중 {len(shown):,}개" + (f" (앞 {SHOW_ROWS}개만 표시, 검색으로 좁혀 보세요)" if len(shown) > SHOW_ROWS else ""))
+    st.caption(f"전체 {len(rows):,}개 중 {len(shown):,}개" + (f" (앞 {SHOW_ROWS}개만 표시, 검색으로 좁혀 보세요)" if len(shown) > SHOW_ROWS else "")
+               + " · 표에서 제도를 클릭하면 아래에 내용이 열려요")
     view = shown[:SHOW_ROWS]
-    st.dataframe([{"ID": r["service_id"], "서비스명": r["service_name"], "소관기관": r["agency"], "분야": r["field"],
-                   "신청기한": r["application_period"], "출처": r["source"], "상태": "숨김" if r["hidden"] else "활성",
-                   "수정": "✎" if r["edited"] else ""} for r in view], hide_index=True, height=260)
-
-    tab_edit, tab_add, tab_apply = st.tabs(["제도 보기·수정", "새 제도 추가", "색인에 반영"])
-    with tab_edit:
-        if not view:
-            st.info("조건에 맞는 제도가 없어요.")
-        else:
+    table = [{"ID": r["service_id"], "서비스명": r["service_name"], "소관기관": r["agency"], "분야": r["field"],
+              "신청기한": r["application_period"], "출처": r["source"], "상태": "숨김" if r["hidden"] else "활성",
+              "수정": "✎" if r["edited"] else ""} for r in view]
+    current = st.session_state.get("catalog_sel_id")
+    try:
+        event = st.dataframe(table, hide_index=True, height=300, key="cat_table", on_select="rerun", selection_mode="single-row")
+        current = pick_selected(list(event.selection.rows), view, current)
+    except TypeError:                  # 오래된 Streamlit(on_select 없음): 표는 보기만 하고 목록에서 고른다
+        st.dataframe(table, hide_index=True, height=300)
+        if view:
             by_id = {r["service_id"]: r for r in view}
-            sid = st.selectbox("제도 선택", list(by_id), key="catalog_sel",
-                               format_func=lambda i: f"{'🚫 ' if by_id[i]['hidden'] else ''}{by_id[i]['service_name']}  ·  {by_id[i]['agency']}  ·  {i}")
-            _detail(store, editor, sid, api, overlay)
-    with tab_add:
-        _add_form(store, editor)
-    with tab_apply:
-        _apply_tab(api, overlay)
+            ids = list(by_id)
+            current = st.selectbox("제도 선택", ids, index=ids.index(current) if current in ids else 0, key="catalog_sel",
+                                   format_func=lambda i: f"{'🚫 ' if by_id[i]['hidden'] else ''}{by_id[i]['service_name']}  ·  {i}")
+    st.session_state["catalog_sel_id"] = current
+
+    st.divider()
+    if not current:
+        st.info("조건에 맞는 제도가 없어요." if not view else "위 표에서 제도를 클릭하면 내용을 보고 고칠 수 있어요.")
+        return
+    if st.button("선택 닫기", key="cat_close"):
+        st.session_state["catalog_sel_id"] = None
+        st.rerun()
+    _detail(store, editor, current, api, overlay)
 
 
 def main() -> None:
