@@ -974,6 +974,13 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
                                        k=DISTRICT_CANDIDATES if districts else config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
+    for q in topical.phrase_queries(conditions.get("help"), question):
+        # 질문 문장 전체로 검색하면 '정부나 지자체 지원제도가 있어?'·'수원에 살고 있어' 같은 말에 끌려 핵심 주제(대중교통비)와 맞는
+        # 전국 제도(K-패스)가 64위로 밀렸다. 핵심어만으로 검색한 결과를 뒤에 더한다 (K-패스: 필터 적용 합산 2위).
+        extra = _drop_expired(hybrid.search_with_info(q, filters, k=k).chunks, today)
+        seen = {c.service_id for c in chunks}
+        chunks += [c for c in extra if c.service_id not in seen]
+        trace.listing(f"핵심어 '{q}'로 다시 찾은 제도", extra)
     before = chunks
     chunks, region_relaxed = _drop_other_regions(chunks, region)
     trace.dropped(f"다른 지역 제도 (질문 지역: {region})", before, chunks)
@@ -1434,6 +1441,14 @@ def _find_districts(question: str, region: str | None = None) -> set[str]:
         for name in (word, _JOSA_RE.sub("", word)):
             if name in DISTRICTS and (not region or region in DISTRICTS[name]):
                 found.add(name)
+        # '수원에 살고 있어'처럼 '시'·'군'을 뗀 이름도 시·군으로 본다 (수원 -> 수원시). 안 그러면 다른 시 제도(시흥·화성)가
+        # 수원 사는 사람에게 안내됐다. 시·도 이름과 같은 말('광주')과 시·도를 말했는데 거기 없는 이름은 쓰지 않는다.
+        bare = _JOSA_RE.sub("", word)
+        if len(bare) >= 2 and bare not in condition_extractor.REGIONS:
+            for suffix in ("시", "군"):
+                full = bare + suffix
+                if full in DISTRICTS and (not region or region in DISTRICTS[full]):
+                    found.add(full)
     return found
 
 

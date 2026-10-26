@@ -32,6 +32,16 @@ def core_terms(help_: list[str] | None) -> list[str]:
     return terms
 
 
+def phrase_queries(help_: list[str] | None, question: str = "", limit: int = 2) -> list[str]:
+    """'찾는 도움' 구절마다 핵심어만 이은 검색어 (앞 limit개). 핵심어가 없거나 질문 전체와 같으면 만들지 않는다."""
+    queries: list[str] = []
+    for phrase in (help_ or [])[:limit]:
+        q = " ".join(core_terms([phrase]))
+        if q and q != question.strip() and q not in queries:
+            queries.append(q)
+    return queries
+
+
 def _bigrams(text: str) -> set[str]:
     squashed = re.sub(r"[^0-9A-Za-z가-힣]", "", text)
     return {squashed[i:i + 2] for i in range(len(squashed) - 1)}
