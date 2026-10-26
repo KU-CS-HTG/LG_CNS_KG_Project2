@@ -121,6 +121,53 @@ def test_apply_button_html():
     assert "href" not in card_apply.apply_html(r)
 
 
+def test_gov24_online_application_goes_to_gov24_detail(links):
+    # '정부24(혜택알리미)(plus.gov.kr) 접속 - 로그인 - 검색창'이면 검색하지 않게 그 제도의 정부24 상세('바로 신청하기')로
+    how = ("- 온라인신청 : 정부24(혜택알리미)(plus.gov.kr) 접속 - 로그인(본인인증) - 검색창 '부산시 전세피해임차인 주거안정지원금 지원'\n"
+           "- 방문신청 : 부산광역시 전세피해지원센터(시청 1층)")
+    url = apply_link.find(_chunks("626000000617", how), "")
+    assert url == apply_link.GOV24_DETAIL + "626000000617" and apply_link.kind(url) == "gov24"
+    assert "바로 신청하기" in apply_link.next_step(url)
+    assert apply_link.find(_chunks("D1", "온라인신청: 정부24에서 '동작구 지원금' 검색"), "") == apply_link.GOV24_DETAIL + "D1"
+    # 다른 기관의 특정 페이지가 있으면 그쪽이 먼저, 정부24 말이 없으면 정부24로 보내지 않는다
+    links["D2"] = {"url": "https://www.ydp.go.kr/www/contents.do?key=5998", "org": ""}
+    assert apply_link.find(_chunks("D2", "온라인신청: 정부24 검색"), "") == "https://www.ydp.go.kr/www/contents.do?key=5998"
+    assert apply_link.find(_chunks("D3", "주민센터 방문 신청"), "") == ""
+    from app import card_apply
+    r = Recommendation(service_name="x", agency="", reason="", benefit="", how_to_apply="", apply_url=url)
+    assert card_apply.BUTTON["gov24"] in card_apply.apply_html(r) and "바로 신청하기" in card_apply.apply_html(r)
+
+
+def test_email_application_gives_mailto(links):
+    # 동대문구 미취업청년 자격취득 활동비: 사이트 없이 이메일 접수
+    how = "○ 신청방법 : 청년정책고용과 이메일 접수( ddm2030@ddm.go.kr )\n○ 신청 시 유의사항"
+    url = apply_link.find(_chunks("305000000119", how), "")
+    assert url == "mailto:ddm2030@ddm.go.kr" and apply_link.kind(url) == "email"
+    assert apply_link.find(_chunks("E1", "문의: help@korea.kr, 주민센터 방문 신청"), "") == ""   # 문의 주소는 신청이 아니다
+    from app import card_apply
+    r = Recommendation(service_name="x", agency="", reason="", benefit="", how_to_apply="", apply_url=url)
+    html = card_apply.apply_html(r)
+    assert 'href="mailto:ddm2030@ddm.go.kr"' in html and "ddm2030@ddm.go.kr" in html and card_apply.BUTTON["email"] in html
+
+
+def test_site_home_vs_specific_page():
+    # 첫 화면에만 '사이트에서 제도 이름으로 찾아 주세요'를 붙인다. 사이트 안의 특정 페이지는 그대로 연다
+    for home in ("https://www.kosaf.go.kr", "https://www.sb.go.kr/main/mainPage.do", "https://yongsanjejuyh.com/kor/main/",
+                 "https://www.bokjiro.go.kr/ssis-tbu/index.do", "https://uni.agrix.go.kr/webportal/main/portalIndex.do",
+                 "https://www.iksan.go.kr/index.iksan"):
+        assert apply_link.kind(home) == "home", home
+    for page in ("https://www.gwanak.go.kr/site/health/reservationHealth/reservationHealthView.do?riIdx=RI000103",
+                 "https://www.ydp.go.kr/www/contents.do?key=5998", "https://www.ehtis.or.kr/ecovoucher",
+                 "https://www.work24.go.kr/wk/k/a/1430/operOrgList.do"):
+        assert apply_link.kind(page) == "link", page
+    # 원본에 '&amp;'로 들어온 주소는 실제 '&'로
+    assert apply_link.normalize("https://x.go.kr/a.do?key=1&amp;no=2") == "https://x.go.kr/a.do?key=1&no=2"
+    from app import card_apply
+    r = Recommendation(service_name="x", agency="", reason="", benefit="", how_to_apply="",
+                       apply_url="https://www.ydp.go.kr/www/contents.do?key=5998")
+    assert card_apply.BUTTON["link"] in card_apply.apply_html(r) and card_apply.NOTE["home"] not in card_apply.apply_html(r)
+
+
 def test_next_step_and_before_on_verified_pages():
     # 신청 양식은 로그인 뒤 스크립트로 열려 주소가 없다 -> 페이지에서 누를 버튼과 먼저 할 일을 알려 준다
     for u in list(apply_link.NEXT_STEP) + list(apply_link.BEFORE):

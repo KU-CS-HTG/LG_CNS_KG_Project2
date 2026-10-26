@@ -17,8 +17,11 @@ from src.generate import apply_link
 
 NOT_FOUND_MESSAGE = "신청 사이트를 찾지 못함 — 담당 기관 확인"
 # 링크 종류별 버튼 문구 (apply_link.kind). 첫 화면으로 가는 링크를 '바로가기'처럼 보이게 하지 않는다
-BUTTON = {"page": "📝 이 제도 신청 페이지 바로가기 ↗", "search": "🔎 고용24에서 이 제도 찾기 ↗", "home": "🌐 신청 사이트 열기 ↗"}
-NOTE = {"page": "", "search": "검색 결과에서 신청 메뉴를 고르세요", "home": "사이트에서 제도 이름으로 찾아 주세요"}
+BUTTON = {"page": "📝 이 제도 신청 페이지 바로가기 ↗", "search": "🔎 고용24에서 이 제도 찾기 ↗",
+          "gov24": "📝 정부24에서 이 제도 신청하기 ↗", "email": "✉️ 이메일로 신청하기",
+          "link": "🔗 기관이 안내한 신청 페이지 열기 ↗", "home": "🌐 신청 사이트 열기 ↗"}
+NOTE = {"page": "", "search": "검색 결과에서 신청 메뉴를 고르세요", "gov24": "", "email": "신청방법의 제출 서류를 첨부해 보내세요", "link": "",
+        "home": "사이트에서 제도 이름으로 찾아 주세요"}
 
 
 def render(r: Recommendation, key: str) -> None:
@@ -28,12 +31,12 @@ def render(r: Recommendation, key: str) -> None:
 
 def apply_html(r: Recommendation) -> str:
     """신청하기 버튼 줄 (테스트에서 Streamlit 없이 확인)."""
-    url = r.apply_url if r.apply_url.startswith(("https://", "http://")) else ""
+    url = r.apply_url if r.apply_url.startswith(("https://", "http://", "mailto:")) else ""
     if not url:
         agency = f"({html.escape(r.agency)})" if r.agency else ""
         return (f'<div style="font-size:.8rem;opacity:.7;margin:-.2rem 0 .6rem">📝 {NOT_FOUND_MESSAGE}{agency}</div>')
     kind = apply_link.kind(url) or "home"
-    host = re.sub(r"^https?://", "", url).split("/")[0]
+    host = re.sub(r"^(?:https?://|mailto:)", "", url).split("/")[0]   # 이메일 접수면 주소를 그대로 보인다 (복사용)
     note = " · ".join(x for x in (host, NOTE[kind]) if x)
     step = apply_link.next_step(url)
     pre = apply_link.before(url)
