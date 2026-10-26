@@ -3,6 +3,7 @@
 사용:
   python -m src.generate.explain "질문"                     # 단계별 선정 과정
   python -m src.generate.explain "질문" --find "K-패스"      # 이 이름이 든 제도가 검색에서 몇 위였는지(색인에 있는지, 필터에 걸렸는지)
+  ... --find "K-패스" --find-query "대중교통비 환급"          # 검색어를 바꿨을 때 순위 (질문 문장이 순위를 끌어내리는지 실험)
 검색 색인(Chroma)과 OPENAI_API_KEY가 필요하다. 앱을 띄운 터미널에서 같은 추적을 보려면 RAG_TRACE=1로 앱을 실행한다."""
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ def _rank_text(ranks: dict[str, int], sid: str) -> str:
     return f"{ranks[sid]}위" if sid in ranks else f"{FIND_DEPTH}조각 안에 없음"
 
 
-def find_report(question: str, name_part: str, filters: dict) -> list[str]:
+def find_report(question: str, name_part: str, filters: dict, query: str | None = None) -> list[str]:
     """이름에 name_part가 든 제도마다 검색 방식별 순위를 적은 줄들. 필터 없이/있게 따로 보여 필터 때문인지 순위 때문인지 가른다."""
     from src.index import vector_store
     from src.retrieve import hybrid
@@ -42,7 +43,8 @@ def find_report(question: str, name_part: str, filters: dict) -> list[str]:
                     if wanted and wanted in _squash(m.get("service_name") or "")}.items())
     if not found:
         return [f"  색인에 '{name_part}'이(가) 들어간 제도가 없습니다 (수집되지 않았거나 범위에서 제외됨: python -m src.ingest.coverage 로 확인)"]
-    lines: list[str] = []
+    lines: list[str] = [f"  검색어: {query or question}"]
+    question = query or question
     where = vector_store.build_where(filters)
     ranks: dict[str, dict[str, dict[str, int]]] = {}
     for label, w in (("필터 없음", None), ("필터 적용", where)):
@@ -63,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="답변 선정 과정을 터미널에 출력")
     ap.add_argument("question", nargs="*")
     ap.add_argument("--find", metavar="이름", help="이 이름이 든 제도의 검색 순위를 보여 준다")
+    ap.add_argument("--find-query", metavar="검색어", help="--find의 순위를 질문 대신 이 검색어로 본다 (검색어를 다듬으면 순위가 오르는지 실험)")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if not args.question:
         print('사용: python -m src.generate.explain "질문" [--find 제도이름]', file=sys.stderr)
@@ -79,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.find:
         filters = condition_extractor.to_filters(condition_extractor.extract_conditions(question))
         trace.title(f"'{args.find}' 검색 순위 (질문 필터: {filters})")
-        for line in find_report(question, args.find, filters):
+        for line in find_report(question, args.find, filters, args.find_query):
             trace.out(line)
     return 0
 

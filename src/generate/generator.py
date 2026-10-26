@@ -21,7 +21,7 @@ from src.common import config
 from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.catalog import store as catalog_store
-from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail, trace
+from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail, topical, trace
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
@@ -992,6 +992,7 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         chunks = [c for c in chunks if c.service_id not in hidden]
         trace.dropped("관리자가 숨긴 제도", before, chunks)
     chunks = exclusion.exclude_in_use(question, conditions, chunks)   # W1 자리 (src/generate/exclusion.py)
+    chunks = topical.prioritize(chunks, conditions.get("help"))   # 핵심 주제어가 본문에 있는 제도를 판정 후보 앞으로
     selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
