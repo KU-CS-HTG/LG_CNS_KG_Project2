@@ -20,6 +20,7 @@ from pathlib import Path
 from src.common import config
 from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
+from src.catalog import store as catalog_store
 from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail, trace
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
@@ -983,6 +984,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
     # 상위 5개만 판정하면 관련 없는 제도가 빠진 자리가 비어 버렸다: 정답 손실 분석에서 검색 6~15위에 있던 정답 10개가
     # 판정 기회가 없었다 (q02 청년도전지원사업 13위 등). 10개를 판정하고(동시) 통과한 것 중 앞 5개만 안내한다
+    hidden = catalog_store.hidden_ids()          # 제도 목록 관리 화면에서 숨긴 제도 (색인에 반영하기 전에도 바로 빠진다)
+    if hidden:
+        before = chunks
+        chunks = [c for c in chunks if c.service_id not in hidden]
+        trace.dropped("관리자가 숨긴 제도", before, chunks)
     chunks = exclusion.exclude_in_use(question, conditions, chunks)   # W1 자리 (src/generate/exclusion.py)
     selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
