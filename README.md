@@ -619,6 +619,7 @@ python -m src.ingest.pipeline --validation --sample-pages 1 --per-page 3  # 승�
 python -m pytest tests/ingest -q -ra   # A: 네트워크·키 없이 검증
 python -m src.ingest.handoff --dry-run # A→B: 저장된 미처리 이벤트 확인 (--apply로 반영·검증·확인 처리)
 python -m src.index.vector_store       # B: 기존 직접 색인 CLI (pending 확인 처리·소비자 잠금 없음)
+python -m src.datapack status          # 팀 공용 데이터(DB·색인)가 최신인지 확인 (install로 교체, 조장은 build로 배포: docs/DATA_PACK.md)
 python -m app.main                     # C: 앱 실행
 python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
 python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
@@ -628,6 +629,8 @@ python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우
 python -m src.ingest.guides --dir data/guides   # A: 판정 기준 문서 파싱 (data/guides/에 PDF를 먼저 넣기, 제안)
 python -m src.index.guide_store                 # B: 판정 기준 문서 색인 (제안)
 ```
+
+**팀 공용 데이터(데이터 팩)**: DB(`data/services.db`)와 검색 색인(`data/vectorstore`)은 git에 올라가지 않아 사람마다 따로 만들면 결과가 달라집니다(K-패스가 빠지는 등). 조장이 만든 DB·색인을 zip(데이터 팩)으로 공유 드라이브에 올리고 `data_pack/LATEST.json`을 git으로 알리면, 팀원은 `git pull` -> `python -m src.datapack status` -> `python -m src.datapack install 받은zip` 으로 같은 데이터로 맞춥니다 (해시 검증, 기존 데이터 백업, 실패 시 복구). 결과가 이상하면 `python -m src.generate.explain --check`로 환경을 점검하세요. 절차: `docs/DATA_PACK.md`.
 
 모델 다운로드 시 나오는 `Warning: You are sending unauthenticated requests to the HF Hub` 경고는 무시해도 됩니다. 없애려면 `.env`에 `HF_TOKEN=<Hugging Face 토큰>`을 넣거나(다운로드도 빨라짐), 모델을 이미 받은 뒤라면 `HF_HUB_OFFLINE=1`을 넣으세요(`.env.example` 참고).
 
