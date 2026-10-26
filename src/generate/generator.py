@@ -304,7 +304,8 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
             (unverified, "해당 없음 판정을 확인하지 못해 확인 필요로 남김"), (bool(closed), "신규 신청 중단 구절"),
             (_change_notice(question, name), "변경 신청 안내"),
             (_recurring_closed(_application_period(sid), date.today()), "이번 회차 마감"),
-            (_unasked_job(question, needs, name), "일을 묻지 않았는데 일자리 제도")) if on]
+            (_unasked_job(question, needs, name), "일을 묻지 않았는데 일자리 제도"),
+            (_minors_only(question, name), "어린이·청소년 전용 제도인데 질문에 그 대상이 없음")) if on]
         later = bool(flags)
         # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
         # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
@@ -387,6 +388,21 @@ def _unasked_job(question: str, needs: list[str] | None, service_name: str) -> b
     """일을 묻지 않은 질문에 나온 일자리 제도인가 (빼지 않고 뒤로 보낸다). 처지(needs의 '구직(…)')도 본다."""
     asked_text = " ".join([question or "", *(needs or [])])
     return bool(_JOB_NAME_RE.search(service_name or "")) and not _ASKS_JOB_RE.search(asked_text)
+
+
+# 어린이·청소년 전용 제도 이름의 낱말과, 질문에 있으면 아이 이야기로 보는 말. 나이를 말하지 않은 '대중교통비' 질문에
+# 만 6~18세 대상 '경기도 어린이청소년 교통비 지원'이 1번 카드, 모든 성인이 받는 K-패스가 2번이었다. 부모가 아이 몫을
+# 물었을 수도 있어 빼지 않고 뒤로만 보낸다 (대상 판단은 제도 이름만 본다).
+_MINOR_NAME_RE = re.compile(r"어린이|청소년|영유아|아동|초등|중학|고등학|유아|학생")
+_MINOR_TALK_RE = re.compile(r"아이|자녀|아들|딸|애가|애들|학생|학부모|어린이|청소년|영유아|아동|초등|중학|고등학|유아|손자|손녀|10대|십대")
+
+
+def _minors_only(question: str, service_name: str) -> bool:
+    """제도 이름이 어린이·청소년·학생 전용인데 질문에 아이·학생 이야기가 없는가 (이름에 '학생'이 들어도 질문이 '대학생'이면 본인 이야기)."""
+    if not _MINOR_NAME_RE.search(service_name or ""):
+        return False
+    q = (question or "").replace("대학생", "").replace("대학원생", "")
+    return not _MINOR_TALK_RE.search(q)
 
 
 def _other_group(question: str, service_name: str) -> bool:

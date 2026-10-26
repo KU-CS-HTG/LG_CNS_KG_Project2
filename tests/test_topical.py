@@ -69,3 +69,16 @@ def test_answer_flow_adds_core_term_search_results(monkeypatch, fake_conditions)
     monkeypatch.setattr(generator.evidence_mod, "select_evidence", lambda chunks, n: {c.service_id: [c] for c in chunks})
     _, selected = generator._answer_with_evidence(q)
     assert "대중교통비" in asked and {"M1", "K1"} <= set(selected)
+
+
+def test_minors_only_programs_go_back_unless_the_question_talks_about_kids(capsys):
+    from src.generate import generator, trace
+    assert generator._minors_only("대중교통비를 아낄 수 있는 지원이 있어? 수원에 살아", "경기도 어린이청소년 교통비 지원")
+    assert not generator._minors_only("아이 교통비 지원이 있나요?", "경기도 어린이청소년 교통비 지원")
+    assert not generator._minors_only("중학생 자녀가 있어요", "경기도 어린이청소년 교통비 지원")
+    assert generator._minors_only("대학생인데 교통비가 부담돼요", "청소년 교통비 지원")          # '대학생'은 본인 이야기라 아이 말로 안 본다
+    assert not generator._minors_only("교통비가 부담돼요", "K-패스")
+    evidence = {"C1": [chunk("C1", "경기도 어린이청소년 교통비 지원", "교통비")], "K1": [chunk("K1", "K-패스", "대중교통 환급")]}
+    out = {"services": [{"service_id": s, "applicable": "확인 필요", "meets_need": True, "matches": [], "needs_check": []} for s in evidence]}
+    recs = generator._recommendations("대중교통비를 아낄 수 있는 지원이 있어?", evidence, [], None, out, {})
+    assert [r.service_id for r in recs] == ["K1", "C1"]                                          # 둘 다 안내하되 성인 제도가 먼저
