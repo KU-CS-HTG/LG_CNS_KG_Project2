@@ -13,6 +13,15 @@
 6. **지표를 바꾸는 변경은 전후 숫자를 같이 적는다.** 검색은 `python -m eval.run_eval --questions reviews/exports/dev_v2.jsonl --experiment hybrid_filter --k 5`, 같은 시험지·같은 기준일로 비교한다.
 7. 설계가 바뀌면 `docs/ARCHITECTURE.md`와 CLAUDE.md 해당 절, 기획서 8.3도 같은 PR에서 고친다 (기존 문서 동기화 규칙 그대로).
 
+## 1.1 시작 순서와 공통 규칙 (W1~W4)
+
+- **0단계**: 기반 PR(필드·자리표시자, #31)이 `main`에 병합되기 전에는 시작하지 않는다. 병합 후 모두 `git checkout main && git pull`, 각자 `main`에서 자기 브랜치를 만든다.
+- 위 "고치는 파일"에 없는 파일은 고치지 않는다. `schema.py`, `app/main.py`, `generator.py`에는 호출 자리가 이미 있다.
+- 새 테스트는 새 파일에 쓴다 (`test_generate.py`를 고치지 않음).
+- README·ARCHITECTURE·CLAUDE.md는 기능 PR에서 고치지 않고 PR 설명에 "문서에 넣을 내용"만 적는다. 모두 병합된 뒤 한 명이 문서 PR 하나로 모은다.
+- 하루 한 번과 PR 올리기 전에 `git merge origin/main`. PR은 기능 하나당 하나, 먼저 끝난 순서대로 병합하고 나중 사람은 `main`을 다시 합친다.
+- 마무리(한 명): 세 기능이 모두 병합되면 같은 질문("K-Digital Training 듣는 중 …")을 앱에서 확인하고 `eval.run_eval`로 검색 지표가 떨어지지 않았는지 본다.
+
 ## 2. 지금 상태 (2026-10-26 기준)
 
 - 검색 평가(검수 판정으로 만든 dev_v2, 질문 31개): hybrid_filter **Hit@5 0.839 / Recall@5 0.541 / MRR 0.593 / Precision@5 0.594 / nDCG@5 0.571**, 상위 5개 중 사람이 "나쁨"으로 판정한 비율(bad@5) **0.297**.
@@ -29,32 +38,43 @@
 - **목표**: 사용자가 이미 이용 중이라고 말한 제도는 추천에서 빼고, 같은 성격(예: 취업 훈련)이라 중복될 수 있는 제도는 그 사실을 표시한다.
 - **방법(안)**: ① 조건 추출에 "이미 이용 중인 제도" 항목 추가 ② 제도명으로 `service_id`를 찾아 결과에서 제외(공유 파일을 안 고치도록 결과를 받은 뒤 걸러낸다) ③ 비슷한 유형은 제외 대신 "이미 이용 중인 것과 겹칠 수 있음" 표시부터 시작(맞는 제도를 잘못 빼는 위험이 있어서).
 - **완료 기준**: 위 질문에서 K-Digital Training이 추천에 없다. 이용 중 제도를 말하지 않은 질문들의 결과는 그대로다(`run_eval` 지표 변화 없음). 이용 중 제도 표현 5개 이상으로 테스트.
-- **건드릴 곳**: `src/generate/condition_extractor.py`, `src/generate/generator.py`, (제도명 검색이 필요하면 `src/retrieve/`에 새 함수), 테스트.
 - **규모**: 중
+- **담당**: (이름)  **상태**: 대기  **브랜치**: `feat/w1-exclude-in-use`
+- **고치는 파일(이것만)**: `src/generate/exclusion.py`(`exclude_in_use` 구현), `src/generate/condition_extractor.py`(이용 중 제도 항목 추가), 새 테스트 `tests/test_exclusion.py`
+- **고치지 않는 파일**: `generator.py`(호출 자리가 이미 있음), `schema.py`, `app/main.py`
+- **시작 전 읽기**: 최근 `generator.py`의 "찾는 도움" 구절 처리
 
 ### W2. "무엇을 받나요"에 금액·조건을 자세히
 - **문제**: 카드에는 "참여수당, 인센티브 제공"처럼 한 줄만 나와서 얼마를 받는지 알 수 없다.
 - **목표**: "자세히 보기"를 열면 원문 `지원내용`의 금액·지급 조건을 보여 주고, 조건이 여러 개면 조건별로 구분해 보여 준다.
 - **주의**: "지금 신청하면 얼마를 받는다"를 단정하지 않는다. 소득·가구 같은 조건이 사용자 입력에 없으면 금액이 달라질 수 있으므로 "조건별 금액 + 해당 조건 확인" 형태로 보여 준다 (자격 불명확 시 단정 금지 규칙).
 - **완료 기준**: 청년도전지원사업·국민취업지원제도 카드에서 원문에 있는 금액(예: 월 50만 원)이 자세히 보기에 나온다. 원문에 없는 금액은 만들어 내지 않는다(근거 문구 연결).
-- **건드릴 곳**: `app/main.py`(카드·펼침), `src/generate/`(지원내용 정리), 필요 시 `vector_store.get_service_chunks`로 전체 지원내용 조각 조회.
 - **규모**: 중
+- **담당**: (이름)  **상태**: 대기  **브랜치**: `feat/w2-benefit-detail`
+- **고치는 파일(이것만)**: `src/generate/benefit_detail.py`(`extract` 구현), `app/card_benefit.py`(`render`에서 `r.benefit_detail`을 "자세히 보기"로), 새 테스트 `tests/test_benefit_detail.py`
+- **고치지 않는 파일**: `generator.py`, `schema.py`, `app/main.py`
+- **참고**: 전체 지원내용 조각은 `vector_store.get_service_chunks(service_id)`
 
 ### W3. 실제 신청 링크를 "어떻게 신청하나요"에
 - **문제**: "상세 페이지 열기"가 카드 맨 아래에 있고, 누르면 정부24 상세 페이지만 열려서 실제 신청을 하려면 다른 사이트로 또 가야 한다.
 - **목표**: 실제 신청 사이트·접수기관 링크를 "어떻게 신청하나요" 칸에 둔다. 정부24 상세는 보조 링크로 남긴다.
 - **먼저 확인할 것(조사)**: 지금 저장하는 URL은 `상세조회URL`(정부24 상세) 하나뿐이다. `serviceDetail` 응답에 온라인 신청 URL 필드가 있는지 확인한다. 없으면 `신청방법` 텍스트의 URL(예: www.work24.go.kr)을 추출하거나 소관기관 안내로 대체한다.
 - **완료 기준**: 국민취업지원제도·K-디지털 트레이닝 카드에서 "신청하기" 버튼이 work24 등 실제 신청 페이지로 간다. 링크를 못 찾으면 "신청 사이트를 찾지 못함 — 담당 기관 확인"을 표시한다(없는 링크를 만들지 않는다).
-- **건드릴 곳**: `src/ingest/` (필드 수집·정규화), `src/common/schema.py`(필드 추가 시 선택 필드로), `app/main.py`.
 - **규모**: 조사 후 결정 (조사가 먼저)
+- **담당**: (이름, W4와 같은 사람)  **상태**: 대기  **브랜치**: `feat/w3w4-apply-period`
+- **먼저 조사**: `serviceDetail` 원본(`data/raw/<실행ID>/serviceDetail-*.json` 또는 `data/a_validation/.../raw/`)에 온라인 신청 URL 필드가 있는지. 원본 위치는 팀원에게 확인
+- **고치는 파일(이것만)**: `src/generate/apply_link.py`(`find` 구현), `app/card_apply.py`, 수집 변경이 필요하면 `src/ingest/`의 **새 파일**(예: `apply_links.py`), 새 테스트 `tests/test_apply_period.py`
+- **고치지 않는 파일**: `generator.py`, `schema.py`, `app/main.py`, 기존 `normalize.py`(꼭 필요하면 팀에 먼저 알림)
 
 ### W4. 신청 기간 설명이 필요한 경우 "자세히 확인"
 - **문제**: "각 과정(캠퍼스)별 모집기간 상이"처럼 한 줄 설명만 나와서 실제 일정을 알 수 없다.
 - **목표**: 신청기한이 "상이" 같은 설명형일 때 "자세히 확인" 버튼으로 원문 기한 문구 전체와 해당 기관 링크를 보여 준다.
 - **한계**: 과정별 일정이 API에 없으면 앱이 만들 수 없다. 원문에 일정이 적혀 있는 경우만 보여 주고, 없으면 "기관에서 확인"과 링크를 안내한다.
 - **완료 기준**: 한국폴리텍 카드에서 버튼을 누르면 원문 기한 문구가 보이고 기관 링크가 열린다.
-- **건드릴 곳**: `app/main.py`.
 - **규모**: 작음 (W3과 링크 처리를 같이 하면 좋음)
+- **담당**: (이름, W3과 같은 사람)  **상태**: 대기  **브랜치**: W3과 같음
+- **고치는 파일(이것만)**: `src/generate/period_detail.py`(`explain` 구현), `app/card_period.py`, 새 테스트 `tests/test_apply_period.py`(W3과 공유)
+- **고치지 않는 파일**: `generator.py`, `schema.py`, `app/main.py`
 
 ---
 
