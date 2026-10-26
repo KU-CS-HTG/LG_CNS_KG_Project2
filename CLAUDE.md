@@ -67,6 +67,9 @@ No abandoned readiness/packaging/telemetry subsystem is part of this scope chang
 ## 검수 저장소 (B, `src/review/`, `reviews/`)
 질문별 제도 판정(good/partial/bad/unsure)·답변 메모·제도별 주석·지침을 **추가만 하는 이벤트**로 `reviews/events/<검수자>.jsonl`에 쌓는다(사람마다 파일이 달라 git 충돌 없음). 판정은 `(질문, 제도, 제도 내용 버전)` 단위이고 버전은 서비스명·지원대상·선정기준·지원내용·신청방법·신청기한의 해시라, 데이터가 바뀌면 바뀐 것만 다시 검수한다. 기한이 지난 제도는 내보내기·대기열에서 자동 제외한다(판정은 보존). `export`가 `eval`용 시험지(dev/test 8:2, 기존 36문항은 dev, test는 덮어쓰기 금지)를 만들며 `relevant_service_ids`를 손으로 채우지 않는다. 앱 검수 모드(C)는 `ReviewStore.add_*`로 쓴다. 실사용 질문은 쓰지 않는다. 필드·규칙: `docs/REVIEW_STORE.md`. 검수 화면은 `python -m app.review_mode`(`app/review_mode.py` + `src/review/session.py`, `app/main.py`와 독립). `import-questions`로 csv/jsonl의 새 질문을 일괄 등록하고(중복 건너뜀), `eval.run_eval`은 `relevance`가 있는 시험지에서 Precision@K·nDCG@K·bad_rate·unjudged_rate도 출력한다.
 
+## 공용 데이터 (데이터 팩, 2026-10-27)
+DB(`data/services.db`)와 검색 색인(`data/vectorstore`)은 git에 없고 사람마다 다르면 같은 코드에서도 결과가 달라진다. 데이터 갱신(수집·색인·`catalog apply`)은 조장 한 명이 하고, `python -m src.datapack build`로 만든 팩 zip을 공유 드라이브에 올려 `data_pack/LATEST.json`만 커밋한다. 팀원은 `git pull` 후 `status`·`install`로 맞춘다(해시 검증, 임베딩 모델 불일치 차단, 기존 데이터는 `data/a_validation/datapack/_backup_*`에 백업). 각자 따로 수집·색인해 데이터를 갈라놓지 않는다. 팩에는 DB·DB↔색인 연결 기록·색인만 들어가고 `data/raw/`·`.env`·임베딩 캐시는 들어가지 않는다. 절차·주의: `docs/DATA_PACK.md`.
+
 ## Metadata/replay corrections (2026-10-22)
 
 Shared additions are optional `Metadata.region_provenance` and `common.regions`; no required
@@ -127,6 +130,7 @@ python -m src.ingest.handoff --apply   # cached model only, apply→verify→exa
 python -m src.index.embed_shard run --shard 0/3 --out data/embed_shards/part0.npz   # B: 임베딩 계산 분담 (merge·coverage 하위 명령, 주 PC는 EMBEDDING_CACHE=data/embed_shards 로 handoff --apply)
 python -m src.index.vector_store --backfill-region --dry-run   # B: 이미 색인된 조각의 비어 있는 region을 기관명으로 채우기 (--dry-run 없이 실행하면 적용, 임베딩은 그대로)
 python -m src.index.vector_store       # legacy direct B CLI; bypasses consumer locking/ack
+python -m src.datapack status          # 팀 공용 데이터 팩(DB·색인)이 최신인지 확인. 조장은 build로 만들고(`--out` 폴더, `--by`) data_pack/LATEST.json을 커밋, 팀원은 git pull 후 install (docs/DATA_PACK.md)
 python -m app.main                     # C: 앱 실행
 python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
 python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
