@@ -39,7 +39,7 @@
 - **방법(안)**: ① 조건 추출에 "이미 이용 중인 제도" 항목 추가 ② 제도명으로 `service_id`를 찾아 결과에서 제외(공유 파일을 안 고치도록 결과를 받은 뒤 걸러낸다) ③ 비슷한 유형은 제외 대신 "이미 이용 중인 것과 겹칠 수 있음" 표시부터 시작(맞는 제도를 잘못 빼는 위험이 있어서).
 - **완료 기준**: 위 질문에서 K-Digital Training이 추천에 없다. 이용 중 제도를 말하지 않은 질문들의 결과는 그대로다(`run_eval` 지표 변화 없음). 이용 중 제도 표현 5개 이상으로 테스트.
 - **규모**: 중
-- **담당**: (이름)  **상태**: 대기  **브랜치**: `feat/w1-exclude-in-use`
+- **담당**: taegyu  **상태**: 구현 완료(PR 전)  **브랜치**: `taegyu`
 - **고치는 파일(이것만)**: `src/generate/exclusion.py`(`exclude_in_use` 구현), `src/generate/condition_extractor.py`(이용 중 제도 항목 추가), 새 테스트 `tests/test_exclusion.py`
 - **고치지 않는 파일**: `generator.py`(호출 자리가 이미 있음), `schema.py`, `app/main.py`
 - **시작 전 읽기**: 최근 `generator.py`의 "찾는 도움" 구절 처리
