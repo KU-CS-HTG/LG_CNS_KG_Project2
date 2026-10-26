@@ -221,3 +221,25 @@ def test_known_region_from_conditions_keeps_local_programs_in_search_order():
     without = generator._recommendations(q, evidence, [], None, out, {})
     assert [r.service_id for r in with_region] == ["L1", "N1"]      # 지역을 알면 지자체 제도도 검색 순서대로
     assert [r.service_id for r in without] == ["N1", "L1"]          # 지역을 모르면 전국 제도가 먼저
+
+
+def test_national_search_runs_even_when_no_place_word_can_be_removed(monkeypatch):
+    """'수원에 살고 있어'는 시·도 이름도, 시·군·구로 잡히는 말도 아니라 낱말을 못 뺀다. 그래도 지역 필터를 뺀 검색은 해야 전국 제도가 들어온다."""
+    from datetime import date
+
+    from src.generate import generator
+
+    k_pass = chunk("K1", "K-패스")
+    k_pass.metadata = {"agency": "국토교통부"}
+    seen = []
+
+    def fake_search(query, filters, k=5, mode="hybrid_filter"):
+        seen.append((query, dict(filters)))
+        return type("R", (), {"chunks": [k_pass], "filters_used": {}, "relaxed": False})()
+
+    monkeypatch.setattr(generator.hybrid, "search_with_info", fake_search)
+    monkeypatch.setattr(generator, "_application_period", lambda sid: "상시신청")
+    q = "대중교통비를 아낄 수 있는 지원제도가 있어? 나는 지금 수원에 살고 있어."
+    out = generator._national_candidates(q, "경기", {"region": "경기", "age": 30, "today": "2026-10-26"}, date(2026, 10, 26))
+    assert [c.service_id for c in out] == ["K1"]
+    assert seen and all("region" not in f and f.get("age") == 30 for _, f in seen)      # 지역 필터만 빼고 나이·기한은 그대로

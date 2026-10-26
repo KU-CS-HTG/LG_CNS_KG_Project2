@@ -981,7 +981,9 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     chunks = _drop_other_districts(chunks, districts, filters.get("field"), conditions.get("help"))
     trace.dropped(f"다른 시·군·구 제도 ({', '.join(sorted(districts))})", before, chunks)
     if region and not region_relaxed:
-        chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
+        national = _national_candidates(question, region, filters, today)
+        trace.listing("지역 필터 없이 다시 찾은 전국 제도", national)
+        chunks = _mix_national(chunks, national)
     # 상위 5개만 판정하면 관련 없는 제도가 빠진 자리가 비어 버렸다: 정답 손실 분석에서 검색 6~15위에 있던 정답 10개가
     # 판정 기회가 없었다 (q02 청년도전지원사업 13위 등). 10개를 판정하고(동시) 통과한 것 중 앞 5개만 안내한다
     hidden = catalog_store.hidden_ids()          # 제도 목록 관리 화면에서 숨긴 제도 (색인에 반영하기 전에도 바로 빠진다)
@@ -1022,7 +1024,10 @@ def _national_candidates(question: str, region: str, filters: dict, today: date)
     지역 필터는 필요 없다. 나이·기한 필터는 그대로 둔다."""
     stripped = " ".join(w for w in question.split()                       # 시·도와 시·군·구 낱말을 뺀다
                         if condition_extractor._find_region(w) != region and not _find_districts(w)).strip()
-    if not stripped or stripped == question.strip():
+    # 낱말을 하나도 못 뺐어도('수원에 살고 있어'처럼 시·도 이름이 아니고 시·군·구로도 안 잡히는 말) 검색은 한다: 이 검색의
+    # 목적은 지역 낱말 제거만이 아니라 지역 필터를 빼 전국 제도를 먼저 올리는 것이다. 예전에는 같은 질문이면 건너뛰어
+    # '수원에 살아요 + 대중교통비' 질문에서 전국 제도(K-패스)가 후보에 하나도 들어오지 못했다.
+    if not stripped:
         return []
     nationwide = {k: v for k, v in filters.items() if k != "region"}
     # 15개 순서를 먼저 두고 50개 결과에서 새로 나온 것을 뒤에 붙인다 (k를 키우면 B의 상위 순위가 바뀐다).
