@@ -335,6 +335,48 @@ def test_new_enrollment_closed_is_shown_first_in_needs_check_and_goes_later(monk
     assert recs[1].needs_check[0] == "신규 신청 — '24년부터 신규지원 중단 (원문 확인)"
 
 
+def test_new_recruitment_finished_counts_as_closed():
+    # '신규계약: (상) 1월 (하) 7월 -모집완료'인 청년맞춤형 주택임차보증금 이자지원 (검수 bad·기한 지남)
+    assert generator._NEW_CLOSED_RE.search("신규계약: (상) 1월 (하) 7월 -모집완료 / 갱신계약: 3,5,7,9,11월").group() \
+        == "신규계약: (상) 1월 (하) 7월 -모집완료"
+
+
+def test_annual_period_without_year_closed_after_its_months():
+    # 연도 없이 해마다 같은 달에 받는 기간: 올해 달이 지났으면 '이번 신청 마감'(빼지 않음), 끝이 열리면 판단하지 않는다
+    from datetime import date
+    oct26 = date(2026, 10, 26)
+    closed = generator._recurring_closed
+    assert closed("연1회 신청(8월말~9월초)", oct26)
+    assert closed("매년 3월~5월(연도별 상이)", oct26) and closed("매년 상반기", oct26)
+    assert not closed("매년 11월 ~ 12월 신청", oct26)                 # 아직 남음
+    assert not closed("매년 6월, 매년 10월(상·하반기 각 1회)", oct26)   # 이번 달
+    assert not closed("매년 1월 ~ 재원소진 시까지(수시)", oct26)        # 끝이 열림
+    assert not closed("신청기한 별도 공지(매년 6월 이후)", oct26)
+    assert not closed("매년 3월~5월", date(2026, 4, 1))                 # 기간 중
+    assert not generator._period_expired("연1회 신청(8월말~9월초)", oct26)  # 반복 제도라 후보에서 빼지 않는다
+
+
+def test_recurring_closed_program_goes_after_open_ones(monkeypatch, sample_chunks):
+    # 이번 회차가 끝난 반복 모집 제도는 지금 신청할 수 있는 제도 뒤로 (q08 국가장학금 Ⅱ유형 2학기 9월 마감이 앞자리)
+    from dataclasses import replace
+    from datetime import date
+
+    class Oct26(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 26)
+    base = sample_chunks[0]
+    ev = {sid: [replace(base, service_id=sid, service_name=sid, section="지원내용", text=f"{sid}\n장학금")]
+          for sid in ("closed", "open")}
+    periods = {"closed": "연1회 신청(8월말~9월초)", "open": "상시"}
+    monkeypatch.setattr(generator, "_application_period", lambda sid: periods.get(sid, ""))
+    monkeypatch.setattr(generator, "date", Oct26)
+    _fake_llm(monkeypatch, {"services": [{"service_id": s, "applicable": "확인 필요"} for s in ev]})
+    recs = generator._generate("장학금 있나요?", ev, [], None).recommendations
+    assert [r.service_name for r in recs] == ["open", "closed"]
+    assert generator.CLOSED_RECURRING_MARK in recs[1].how_to_apply
+
+
 def test_help_phrase_is_not_paired_as_eligibility(sample_chunks):
     # '보증금을 빌려주거나 보증해 주는 제도' 조건이 대상 '무주택세대구성원'에 해당된다는 이유가 나왔다 (q22)
     from dataclasses import replace
@@ -606,6 +648,37 @@ def test_agency_region_from_district_name_inside_foundation_name():
     assert generator._agency_region("한국남동발전") is None                   # 끝 글자 없는 '남동'은 보지 않는다
     assert generator._agency_region("재단법인용산복지재단") is None           # '용산구'가 아니라 '용산'
     assert generator._agency_region("보건복지부") is None
+
+
+def test_agency_districts_from_joined_foundation_name():
+    # 붙여 쓴 산하 기관 이름의 구 ('서울 중구 다자녀' 질문에 용산구·송파구 시설관리공단 할인이 후보로 남음)
+    assert generator._agency_districts("용산구시설관리공단") == {"용산구"}
+    assert generator._agency_districts("서울특별시중구시설관리공단") == {"중구"}
+    assert generator._agency_districts("서울특별시 동대문구") == {"동대문구"}     # 원래 방식 그대로
+    assert generator._agency_districts("서울특별시") == set()
+    assert generator._agency_districts("한국남동발전") == set()
+    assert generator._agency_districts("재단법인의왕시청소년재단") == set()       # 앞부분이 구 이름이 아님 (시·도는 _agency_region)
+
+
+def test_short_city_name_with_org_suffix_is_local():
+    # '시'를 뗀 시·군 이름 + 기관 이름 ('서울 마포구 65세' 질문에 전주보훈요양원·시흥도시공사 체육시설 감면)
+    assert generator._agency_region("한국보훈복지의료공단", "입소 이용서비스(전주보훈요양원)") == "전북"
+    assert generator._agency_districts("한국보훈복지의료공단", "입소 이용서비스(전주보훈요양원)") == {"전주시"}
+    assert generator._agency_region("한국보훈복지의료공단", "입소 이용서비스(광주보훈요양원)") == "광주"   # 광역시 (경기 광주시 아님)
+    assert generator._agency_region("시흥도시공사") == "경기" and generator._agency_districts("시흥도시공사") == {"시흥시"}
+    assert generator._agency_region("천안복지재단") == "충남"
+    assert generator._agency_region("한국보훈복지의료공단", "보훈 재가복지") is None                   # 전국 기관 그대로
+    assert generator._agency_region("재단법인용산복지재단") is None                                   # '구'를 뗀 이름은 보지 않는다
+    assert generator._agency_region("한국남동발전") is None
+
+
+def test_unasked_job_program_goes_later():
+    # 다자녀 '우대' 통계조사원 채용이 일을 묻지 않은 '다자녀가구 혜택' 질문의 1·2번 카드였다
+    q = "서울 중구에 살고 다자녀가구인데 받을 수 있는 혜택좀 찾아줘"
+    assert generator._unasked_job(q, ["양육(자녀를 키우는 중)"], "가계금융복지조사 통계조사원 일자리 제공")
+    assert not generator._unasked_job(q, [], "다자녀가구 자동차취득세 감면")
+    assert not generator._unasked_job("취업 준비 중인데 일자리 있나요", [], "공공근로 일자리 제공")
+    assert not generator._unasked_job("생활비가 필요해요", ["구직(일자리를 찾고 있거나 실직·퇴사한 상태)"], "공공근로 일자리 제공")
 
 
 def test_district_programs_must_match_interest_field(sample_chunks):
@@ -1014,6 +1087,10 @@ def test_help_must_be_quoted_from_question():
     assert norm({"help": [q3[:-1]]}, question=q3)["help"] == ["자격증 시험이나 어학 시험 응시료"]
     q4 = "대학생인데 자취방을 구해야 해요. 주거비를 지원받을 수 있을까요?"                  # '있을까요' 앞에서 잘려 온 경우
     assert norm({"help": ["주거비를 지원받을 수"]}, question=q4)["help"] == ["주거비"]
+    q5 = "서울 중구에 살고 다자녀가구인데 받을 수 있는 혜택좀 찾아줘"                     # 처지만 가리키는 말은 찾는 것이 아님
+    assert "help" not in norm({"help": ["다자녀가구"]}, question=q5)
+    q6 = "학자금 대출 이자 부담을 줄일 방법이 있나요?"                                       # '이자'는 처지가 아니라 도움
+    assert norm({"help": ["학자금 대출 이자"]}, question=q6)["help"] == ["학자금 대출 이자"]
 
 
 def test_extract_conditions_asks_help_separately(monkeypatch):
