@@ -74,6 +74,9 @@ class Recommendation:
     needs_check: list[str] = field(default_factory=list)  # 확인이 필요한 조건 ("확인 필요" 표시)
     citations: list[Citation] = field(default_factory=list)
     service_id: str = ""     # 판정 기준 문서 검색(search_guides의 service_ids)용. 비어 있어도 기존 동작은 같다
+    benefit_detail: list[str] = field(default_factory=list)  # W2: 지원내용 상세(조건별 금액 문장). 비면 카드는 benefit만 보여 준다
+    apply_url: str = ""      # W3: 실제 신청 사이트 링크. 비면 버튼을 그리지 않는다 (정부24 상세는 Citation.detail_url)
+    period_detail: str = ""  # W4: 신청기한 원문 전체(설명형일 때만). 비면 '자세히 확인'을 그리지 않는다
 
 
 @dataclass

@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:          # `streamlit run app/main.py`로 띄워�
 import streamlit as st  # noqa: E402
 from streamlit import runtime  # noqa: E402
 
+from app import card_apply, card_benefit, card_period  # noqa: E402
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
 from src.generate import generator, guide_evidence, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
@@ -445,6 +446,9 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
     checked = sum(1 for k in keys if saved.get(k))
     with st.container(key=f"card_{key}"):
         st.markdown(_card_head(i, r, checked), unsafe_allow_html=True)
+        card_benefit.render(r, key)     # W2 자리 (app/card_benefit.py)
+        card_apply.render(r, key)       # W3 자리 (app/card_apply.py)
+        card_period.render(r, key)      # W4 자리 (app/card_period.py)
         if r.needs_check:
             with st.container(key=f"checklist_{key}"):
                 st.markdown('<div class="ck-title">✅ 자격 체크리스트</div>'
