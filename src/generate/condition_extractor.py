@@ -108,6 +108,17 @@ _STATUS_ONLY_RE = re.compile(r"(?:가구|가정|가족|세대|부부|계층|저�
                              r"장애인|임산부|구직자|실직자|청년)$")
 
 
+# W1: 이미 이용 중인 제도. 질문에 이용 중임을 뜻하는 말이 있을 때만 세 번째 LLM 호출을 한다 (대부분의 질문은 호출이 늘지 않는다).
+_IN_USE_HINT_RE = re.compile(r"듣고|듣는|받고|받는\s*중|이용|참여|수강|수료|다니|하고\s*있|하는\s*중|가입|수급|신청(?:했|해\s*둔|을\s*했)|이미|중인|중이")
+IN_USE_PROMPT = """너는 질문에서 사용자가 이미 이용·참여·수강·수급 중이거나 이미 신청해 둔 정부 지원제도·프로그램 이름만 뽑는 도구다.
+JSON 객체 하나만 출력한다: {"in_use": [이름, ...]}
+
+- in_use: 질문 원문에서 글자 그대로 복사한 제도·프로그램 이름 (예: 질문에 적힌 영어 이름이면 영어 그대로).
+- 앞으로 받고 싶은 것, 묻고 있는 것, 사용자의 신분·처지(취업준비생 등)는 넣지 않는다.
+- 이미 이용 중인 제도 이름이 질문에 없으면 빈 배열이다."""
+MAX_IN_USE = 5
+MAX_IN_USE_CHARS = 30
+
 _client = None
 
 
@@ -136,9 +147,10 @@ def extract_conditions(question: str) -> dict:
 
     LLM 호출이 실패하면 빈 dict (필터 없이 검색되도록 한다. 서비스가 멈추지 않게).
     조건 호출과 찾는 것(help) 호출은 서로 관계없어 동시에 보낸다 (차례로 하면 약 2초, 동시에 하면 약 1초)."""
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         cond = pool.submit(_chat_json, SYSTEM_PROMPT, question)
         asked = pool.submit(_chat_json, HELP_PROMPT, question)
+        in_use = pool.submit(_chat_json, IN_USE_PROMPT, question) if _IN_USE_HINT_RE.search(question) else None
     try:
         raw = cond.result()
     except Exception as e:  # 네트워크·키·JSON 오류
@@ -148,6 +160,11 @@ def extract_conditions(question: str) -> dict:
         raw["help"] = asked.result().get("asked")
     except Exception as e:  # 찾는 것을 못 뽑으면 넓은 질문처럼 거르지 않는다
         log.warning("찾는 것 추출 실패, 없이 진행: %s", e)
+    if in_use is not None:
+        try:
+            raw["in_use"] = in_use.result().get("in_use")
+        except Exception as e:  # 이용 중인 제도를 못 뽑으면 거르지 않고 진행 (추천을 빼는 쪽이 아니라 두는 쪽이 안전)
+            log.warning("이용 중인 제도 추출 실패, 없이 진행: %s", e)
     return _normalize_conditions(raw, question=question)
 
 
@@ -220,6 +237,20 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
                 picked.append(h)
         if picked:
             out["help"] = picked
+    # in_use: 이미 이용 중인 제도 이름 (C 내부용, 필터에 들어가지 않는다). help와 같은 원리로 질문 원문에 있는 낱말만 받는다
+    in_use = raw.get("in_use")
+    if isinstance(in_use, str):
+        in_use = [in_use]
+    if isinstance(in_use, list) and question is not None:
+        q = "".join(question.split())
+        picked = []
+        for name in in_use:
+            name = name.strip() if isinstance(name, str) else ""
+            words = name.split()
+            if (words and len("".join(words)) <= MAX_IN_USE_CHARS and all(w in q for w in words) and name not in picked):
+                picked.append(name)
+        if picked:
+            out["in_use"] = picked[:MAX_IN_USE]
     return out
 
 

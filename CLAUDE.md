@@ -131,6 +131,7 @@ python -m app.main                     # C: 앱 실행
 python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
 python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
 python -m app.review_mode              # B: 검수 화면 (후보 판정·답변 메모 -> reviews/events/)
+python -m src.generate.explain "질문"   # 답변 선정 과정을 터미널에 출력 (제도를 고른·뺀 이유). 앱에서는 RAG_TRACE=1 환경변수로 같은 추적을 켠다 (색인·OPENAI_API_KEY 필요)
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
 python -m eval.label_helper label --only q01,q02   # 평가 질문 정답 채우기 (사용법: docs/LABELING.md. fetch→label→check)
 python -m eval.label_helper review                 # Claude 1차 정답의 사람 검수 대기 목록 (--ok q01,q02 로 완료 표시)

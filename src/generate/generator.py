@@ -20,7 +20,8 @@ from pathlib import Path
 from src.common import config
 from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
-from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail
+from src.catalog import store as catalog_store
+from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail, topical, trace
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
@@ -159,7 +160,7 @@ def _needs_from(conditions: dict) -> list[str]:
 
 
 def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
-              asked: list[str] | None = None) -> Answer:
+              asked: list[str] | None = None, region: str | None = None) -> Answer:
     """asked = 질문에서 검증된 '찾는 것' 구절(conditions['help']). 나이·지역 짝이 없을 때 이유 문장에 쓴다."""
     if not evidence:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
@@ -168,15 +169,17 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         answer_job = pool.submit(_judge, question, evidence, needs)
         checklists = pool.submit(_extract_checklists, evidence).result()
         out = answer_job.result()
-    recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists), evidence)
+    recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
     if not recs and isinstance(out.get("services"), list) and _named_candidates(evidence, asked):
         # 후보가 있는데 판정에서 모두 빠졌으면 판정을 한 번 더 받는다. 같은 근거로도 판정이 흔들렸다
         # ('대학생 자취방 주거비' 질문: 같은 후보 5개로 6번 중 2번 근거 없음, 평가 q07).
         # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
         out = _judge(question, evidence, needs)
-        recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists), evidence)
+        recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
+    for r in recs[config.MAX_RECOMMENDATIONS:]:
+        trace.decision(r.service_id, r.service_name, "제외", f"안내는 {config.MAX_RECOMMENDATIONS}개까지 (순서에서 밀림)")
     recs = recs[:config.MAX_RECOMMENDATIONS]   # 판정 후보는 JUDGE_CANDIDATES개, 안내는 앞 5개 (뒤로 보낸 제도가 먼저 잘린다)
     text = _render(recs, _str(out.get("situation")), _str(out.get("follow_up")))
     return Answer(text=text, recommendations=recs)
@@ -241,7 +244,7 @@ def _services_for(out: dict, sid: str) -> list[dict]:
 
 
 def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: list[str], asked: list[str] | None,
-                     out: dict, checklists: dict) -> list[Recommendation]:
+                     out: dict, checklists: dict, region: str | None = None) -> list[Recommendation]:
     """판정(out)을 코드로 검증해 안내할 제도만 남긴다."""
     # LLM이 판정을 돌려줬으면 판정에 없는 제도는 관련 없다고 보고 뺀다.
     # 판정 자체가 없을 때(호출 실패·형식 오류)만 모든 제도를 근거 원문으로 안내한다.
@@ -256,11 +259,20 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
             by_id.setdefault(str(s.get("service_id")).strip(), s)
     ranked: list[tuple[tuple, Recommendation]] = []
     rescued_only = True                   # 통과한 제도가 모두 확인 안 된 '해당 없음'에서 살린 것뿐인가
-    no_region = condition_extractor._find_region(question) is None
-    for rank, (sid, chunks) in enumerate(_named_candidates(evidence, asked).items()):
+    # 시·도를 직접 말하지 않아도('수원에 살아요') 조건 추출이 지역을 알아냈으면 지역을 말한 질문이다 (지자체 제도를 뒤로 미루지 않는다)
+    no_region = region is None and condition_extractor._find_region(question) is None
+    notes: dict[str, str] = {}            # 추적용: 제도별 선정 이유 한 줄 (trace가 꺼져 있어도 만든다. 비용은 문자열 몇 개)
+    trace.title("제도별 판정과 거르기")
+    named = _named_candidates(evidence, asked)
+    for sid in evidence:
+        if sid not in named:
+            trace.decision(sid, evidence[sid][0].service_name, "제외", "특정 제도 이름을 물었는데 이름이 다름")
+    for rank, (sid, chunks) in enumerate(named.items()):
+        name = chunks[0].service_name
         gen = by_id.get(sid)
         if gen is None:
             if judged:
+                trace.decision(sid, name, "제외", "판정 결과에 없음 (관련 없다고 보고 뺌)")
                 continue
             gen = {}
         applicable = gen.get("applicable")
@@ -268,28 +280,44 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
         if unverified:
             applicable = UNCLEAR          # 나이·거주지가 실제로 다르다고 확인되지 않으면 제외하지 않고 확인 필요로 남긴다
         if applicable in (NOT_ELIGIBLE, NOT_RELEVANT):
+            mismatch = gen.get("mismatch") if isinstance(gen.get("mismatch"), dict) else {}
+            trace.decision(sid, name, "제외", f"판정 '{applicable}'" + (f" (질문 '{mismatch.get('said')}' / 제도 '{mismatch.get('condition')}')" if mismatch else ""))
             continue
         if needs and gen.get("meets_need") is False:
+            trace.decision(sid, name, "제외", f"원하는 도움({', '.join(needs)})을 주지 않는 제도 (meets_need=false)")
             continue                      # 원하는 도움을 주지 않는 제도 (지역·나이만 맞는 제도가 섞이는 것 방지)
         if _tenure_mismatch(asked, chunks):
+            trace.decision(sid, name, "제외", "전세·월세를 묻는데 집을 사는 제도 (또는 그 반대)")
             continue                      # 전세·월세를 묻는데 집을 사는 제도 (또는 그 반대)
+        if _other_group(question, name):
+            # 특정 대상(장애인·보훈·북한이탈주민 등) 전용 제도인데 질문에 그 대상이 없다. 뒤로 미루기만 했더니 다른 제도가
+            # 빠져 후보가 줄면 해당할 가능성이 낮은 이 제도가 안내에 올라왔다 -> 안내하지 않는다.
+            trace.decision(sid, name, "제외", "특정 대상 전용 제도인데 질문에 그 대상이 없음 (해당 가능성 낮음)")
+            continue
         # 신분(중고등 신입생·보훈대상)이 맞지 않는다는 판정은 코드로 확인할 수 없어 빼지 않지만 맨 앞 카드가 되지 않게
         # 뒤로 보낸다. 질문에 없는 특정 대상 전용 제도도 같다: 졸업 후 미취업 질문에 '장애인 취업성공패키지'가
         # 1번 카드였다 (평가 q02, 판정은 장애 여부를 말하지 않아 '확인 필요'로 맞게 냈고 검색 순위가 1위였다)
         closed = _new_closed(sid, chunks)
         # 이번 회차가 끝난 반복 모집 제도('이번 신청 마감 · 다음 공고 확인')도 지금 신청할 수 있는 제도 뒤로
         # (검수: q08 국가장학금 Ⅱ유형 2학기 9월 마감·'연1회(8월말~9월초)' 장학금이 앞자리에 나와 bad·기한 지남)
-        later = (unverified or bool(closed) or _other_group(question, chunks[0].service_name)
-                 or _change_notice(question, chunks[0].service_name)
-                 or _recurring_closed(_application_period(sid), date.today())
-                 or _unasked_job(question, needs, chunks[0].service_name))
+        flags = [label for on, label in (
+            (unverified, "해당 없음 판정을 확인하지 못해 확인 필요로 남김"), (bool(closed), "신규 신청 중단 구절"),
+            (_change_notice(question, name), "변경 신청 안내"),
+            (_recurring_closed(_application_period(sid), date.today()), "이번 회차 마감"),
+            (_unasked_job(question, needs, name), "일을 묻지 않았는데 일자리 제도"),
+            (_minors_only(question, name), "어린이·청소년 전용 제도인데 질문에 그 대상이 없음")) if on]
+        later = bool(flags)
         # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
         # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
         # (전주·세종·강원)가 앞자리를 차지했다 -> 뒤로 보낸 제도 맨 뒤, 지역 없는 질문의 지자체 제도는 전국 제도 뒤,
         # 판정 '가능'을 '확인 필요' 앞. 같은 조건 안에서는 검색 순서 (CLAUDE.md B 계약: 지역 없는 질문은 지자체 제도를 뒤로)
-        key = (later, no_region and _is_local(chunks), applicable != LIKELY, rank)
+        local_later = no_region and _is_local(chunks)
+        key = (later, local_later, applicable != LIKELY, rank)
         rec = _to_recommendation(question, chunks, gen, _met_asked(chunks, needs, asked)
                                  if gen.get("meets_need") is True else None, checklists.get(sid), asked)
+        notes[sid] = (f"판정 '{applicable}', 원하는 도움 {'충족' if gen.get('meets_need') is True else '확인 안 됨'}; 이유: {rec.reason}"
+                      + (f"; 뒤로 미룸: {', '.join(flags)}" if flags else "") + ("; 지역 없는 질문의 지자체 제도라 뒤로" if local_later else "")
+                      + f"; 검색 순위 {rank + 1}")
         if closed:
             rec.needs_check.insert(0, f"{NEW_CLOSED_ITEM} — {closed} (원문 확인)")
         ranked.append((key, rec))
@@ -299,8 +327,14 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
     # 대상인 노인일자리가 '해당 없음'+meets_need true로 남아 단독 카드가 됐다 (8번 중 4번, 판정 재시도로 기회가 두 번).
     # 질문에 없는 구절을 근거로 댄 '해당 없음'은 판정 자체를 믿을 수 없어 혼자여도 확인 필요로 남긴다.
     if ranked and rescued_only:
+        trace.out("  -> 질문 구절을 근거로 '해당 없음'이라 본 제도만 남아 모두 안내하지 않습니다 (근거 없음 처리)")
         return []
-    return [r for _, r in sorted(ranked, key=lambda kr: kr[0])]
+    ordered = [r for _, r in sorted(ranked, key=lambda kr: kr[0])]
+    if trace.enabled():
+        trace.title("안내 후보 순서 (앞 5개를 안내)")
+        for pos, r in enumerate(ordered, start=1):
+            trace.out(f"  {pos}. {r.service_id}  {trace.short(r.service_name)}  <- {notes.get(r.service_id, '')}")
+    return ordered
 
 
 NEW_CLOSED_ITEM = "신규 신청"
@@ -354,6 +388,21 @@ def _unasked_job(question: str, needs: list[str] | None, service_name: str) -> b
     """일을 묻지 않은 질문에 나온 일자리 제도인가 (빼지 않고 뒤로 보낸다). 처지(needs의 '구직(…)')도 본다."""
     asked_text = " ".join([question or "", *(needs or [])])
     return bool(_JOB_NAME_RE.search(service_name or "")) and not _ASKS_JOB_RE.search(asked_text)
+
+
+# 어린이·청소년 전용 제도 이름의 낱말과, 질문에 있으면 아이 이야기로 보는 말. 나이를 말하지 않은 '대중교통비' 질문에
+# 만 6~18세 대상 '경기도 어린이청소년 교통비 지원'이 1번 카드, 모든 성인이 받는 K-패스가 2번이었다. 부모가 아이 몫을
+# 물었을 수도 있어 빼지 않고 뒤로만 보낸다 (대상 판단은 제도 이름만 본다).
+_MINOR_NAME_RE = re.compile(r"어린이|청소년|영유아|아동|초등|중학|고등학|유아|학생")
+_MINOR_TALK_RE = re.compile(r"아이|자녀|아들|딸|애가|애들|학생|학부모|어린이|청소년|영유아|아동|초등|중학|고등학|유아|손자|손녀|10대|십대")
+
+
+def _minors_only(question: str, service_name: str) -> bool:
+    """제도 이름이 어린이·청소년·학생 전용인데 질문에 아이·학생 이야기가 없는가 (이름에 '학생'이 들어도 질문이 '대학생'이면 본인 이야기)."""
+    if not _MINOR_NAME_RE.search(service_name or ""):
+        return False
+    q = (question or "").replace("대학생", "").replace("대학원생", "")
+    return not _MINOR_TALK_RE.search(q)
 
 
 def _other_group(question: str, service_name: str) -> bool:
@@ -915,6 +964,10 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     conditions = condition_extractor.extract_conditions(question)
     filters = condition_extractor.to_filters(conditions)
     region = conditions.get("region")
+    if trace.enabled():
+        trace.title("질문 분석")
+        trace.out(f"  질문: {question}")
+        trace.out("  조건: " + (", ".join(f"{k}={v}" for k, v in conditions.items()) or "(없음)"))
     # CLAUDE.md: 완화 여부가 필요하면 search_with_info. search와 결과는 같고 완화 정보가 더 붙는다.
     # 지역을 말했으면 후보를 넉넉히 받아 다른 지역 지자체 제도를 뺀 뒤 상위 5개를 고른다 (_drop_other_regions)
     k = config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR if region else config.DEFAULT_TOP_K
@@ -924,7 +977,9 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     _progress(STEP_SEARCH)
     result = hybrid.search_with_info(question, filters, k=k)
     today = date.fromisoformat(filters.get("today") or date.today().isoformat())
+    trace.listing("검색 결과", result.chunks)
     chunks = _drop_expired(result.chunks, today)
+    trace.dropped("신청기한이 지남", result.chunks, chunks)
     if not region or districts:
         # 판정 후보(JUDGE_CANDIDATES)를 채우려고 더 큰 검색 결과를 뒤에 붙인다. 처음 검색의 순서는 그대로 둔다:
         # 처음부터 k를 키우면 B의 후보 수(k*5)가 늘어 상위 순위가 달라졌다 (면접 비용 질문에서 면접정장 제도들이
@@ -935,16 +990,37 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
                                        k=DISTRICT_CANDIDATES if districts else config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
+    for q in topical.phrase_queries(conditions.get("help"), question):
+        # 질문 문장 전체로 검색하면 '정부나 지자체 지원제도가 있어?'·'수원에 살고 있어' 같은 말에 끌려 핵심 주제(대중교통비)와 맞는
+        # 전국 제도(K-패스)가 64위로 밀렸다. 핵심어만으로 검색한 결과를 뒤에 더한다 (K-패스: 필터 적용 합산 2위).
+        extra = _drop_expired(hybrid.search_with_info(q, filters, k=k).chunks, today)
+        seen = {c.service_id for c in chunks}
+        chunks += [c for c in extra if c.service_id not in seen]
+        trace.listing(f"핵심어 '{q}'로 다시 찾은 제도", extra)
+    before = chunks
     chunks, region_relaxed = _drop_other_regions(chunks, region)
+    trace.dropped(f"다른 지역 제도 (질문 지역: {region})", before, chunks)
+    before = chunks
     chunks = _drop_other_districts(chunks, districts, filters.get("field"), conditions.get("help"))
+    trace.dropped(f"다른 시·군·구 제도 ({', '.join(sorted(districts))})", before, chunks)
     if region and not region_relaxed:
-        chunks = _mix_national(chunks, _national_candidates(question, region, filters, today))
+        national = _national_candidates(question, region, filters, today)
+        trace.listing("지역 필터 없이 다시 찾은 전국 제도", national)
+        chunks = _mix_national(chunks, national)
     # 상위 5개만 판정하면 관련 없는 제도가 빠진 자리가 비어 버렸다: 정답 손실 분석에서 검색 6~15위에 있던 정답 10개가
     # 판정 기회가 없었다 (q02 청년도전지원사업 13위 등). 10개를 판정하고(동시) 통과한 것 중 앞 5개만 안내한다
+    hidden = catalog_store.hidden_ids()          # 제도 목록 관리 화면에서 숨긴 제도 (색인에 반영하기 전에도 바로 빠진다)
+    if hidden:
+        before = chunks
+        chunks = [c for c in chunks if c.service_id not in hidden]
+        trace.dropped("관리자가 숨긴 제도", before, chunks)
     chunks = exclusion.exclude_in_use(question, conditions, chunks)   # W1 자리 (src/generate/exclusion.py)
+    chunks = topical.prioritize(chunks, conditions.get("help"))   # 핵심 주제어가 본문에 있는 제도를 판정 후보 앞으로
     selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
+    trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
+    trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
     _progress(STEP_GENERATE)
-    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"))
+    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"), region)
     used = dict(result.filters_used)
     if region_relaxed:
         used.pop("region", None)
@@ -972,7 +1048,10 @@ def _national_candidates(question: str, region: str, filters: dict, today: date)
     지역 필터는 필요 없다. 나이·기한 필터는 그대로 둔다."""
     stripped = " ".join(w for w in question.split()                       # 시·도와 시·군·구 낱말을 뺀다
                         if condition_extractor._find_region(w) != region and not _find_districts(w)).strip()
-    if not stripped or stripped == question.strip():
+    # 낱말을 하나도 못 뺐어도('수원에 살고 있어'처럼 시·도 이름이 아니고 시·군·구로도 안 잡히는 말) 검색은 한다: 이 검색의
+    # 목적은 지역 낱말 제거만이 아니라 지역 필터를 빼 전국 제도를 먼저 올리는 것이다. 예전에는 같은 질문이면 건너뛰어
+    # '수원에 살아요 + 대중교통비' 질문에서 전국 제도(K-패스)가 후보에 하나도 들어오지 못했다.
+    if not stripped:
         return []
     nationwide = {k: v for k, v in filters.items() if k != "region"}
     # 15개 순서를 먼저 두고 50개 결과에서 새로 나온 것을 뒤에 붙인다 (k를 키우면 B의 상위 순위가 바뀐다).
@@ -1378,6 +1457,14 @@ def _find_districts(question: str, region: str | None = None) -> set[str]:
         for name in (word, _JOSA_RE.sub("", word)):
             if name in DISTRICTS and (not region or region in DISTRICTS[name]):
                 found.add(name)
+        # '수원에 살고 있어'처럼 '시'·'군'을 뗀 이름도 시·군으로 본다 (수원 -> 수원시). 안 그러면 다른 시 제도(시흥·화성)가
+        # 수원 사는 사람에게 안내됐다. 시·도 이름과 같은 말('광주')과 시·도를 말했는데 거기 없는 이름은 쓰지 않는다.
+        bare = _JOSA_RE.sub("", word)
+        if len(bare) >= 2 and bare not in condition_extractor.REGIONS:
+            for suffix in ("시", "군"):
+                full = bare + suffix
+                if full in DISTRICTS and (not region or region in DISTRICTS[full]):
+                    found.add(full)
     return found
 
 
