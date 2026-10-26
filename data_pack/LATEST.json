@@ -1,0 +1,15 @@
+{
+  "pack_id": "20261026-165811",
+  "file": "data_pack_20261026-165811.zip",
+  "size": 190391112,
+  "sha256": "8ed735580033c2d11248fd74dcfbb1c1de8a8331115875a4f00002eb572b78af",
+  "created_by": "taegyu",
+  "created_at": "2026-10-26T07:58:12Z",
+  "notes": "데이터 통일",
+  "where": "https://drive.google.com/drive/folders/11sPrCTm7wiciiXNUjzPXtiMzTzkqCEKD?usp=drive_link",
+  "embedding_model": "BAAI/bge-m3",
+  "counts": {
+    "services_total": 10964,
+    "services_active": 10695
+  }
+}
