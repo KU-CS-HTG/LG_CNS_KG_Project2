@@ -21,7 +21,7 @@ from src.common import config
 from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.catalog import store as catalog_store
-from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail, topical, trace
+from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, fit_check, period_detail, topical, trace
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
@@ -176,6 +176,7 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
         out = _judge(question, evidence, needs)
         recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
+    recs = fit_check.drop_unfit(question, recs, asked)   # 형식상 맞아도 이 사람에게는 맞지 않는 제도를 뺀다 (앞 5개를 고르기 전에 해서 빈자리는 다음 후보가 채운다)
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     for r in recs[config.MAX_RECOMMENDATIONS:]:
