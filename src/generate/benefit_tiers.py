@@ -90,17 +90,23 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
     return {"tiers": tiers, "notes": notes}
 
 
-def add_web_amounts(result: dict, service_name: str) -> None:
+def add_web_amounts(result: dict, service_name: str, urls: list[str] | None = None) -> None:
     """원문에서 금액을 확인하지 못한 항목의 금액을 공식 웹사이트에서 찾아 채운다 (한 번 호출, 검증 통과분만).
     조회를 못 하면 그대로 둔다 -> 화면은 '금액을 확인하지 못했어요'로 안내한다."""
     missing = [t for t in result["tiers"] if not t["amount"]][:MAX_WEB_LOOKUP]
     if not missing:
         return
-    found = web_evidence.lookup(service_name, [t["label"] + " — " + t["benefit"] for t in missing])
-    for idx, hit in found.items():
-        t = missing[idx - 1]
-        t["amount"], t["amount_basis"] = hit["amount"], "web"
-        t["evidence"] = [{"kind": "공식 웹사이트", "quote": hit["quote"], "url": hit["url"]}]
+    labels = [t["label"] + " — " + t["benefit"] for t in missing]
+    for kind, finder in (("공식 웹사이트(검색)", lambda ls: web_evidence.lookup(service_name, ls)),
+                         ("공식 페이지(직접 확인)", lambda ls: web_evidence.page_lookup(service_name, ls, urls or []))):
+        pending = [t for t in missing if not t["amount"]]
+        if not pending:
+            break
+        found = finder([labels[missing.index(t)] for t in pending])        # 1차 웹 검색 -> 2차 공식 페이지 직접 읽기
+        for idx, hit in found.items():
+            t = pending[idx - 1]
+            t["amount"], t["amount_basis"] = hit["amount"], "web"
+            t["evidence"] = [{"kind": kind, "quote": hit["quote"], "url": hit["url"]}]
 
 
 def compute(service_id: str, service_name: str, needs: list[str], chunks: list[Chunk] | None = None) -> dict | None:
@@ -123,7 +129,7 @@ def compute(service_id: str, service_name: str, needs: list[str], chunks: list[C
         return None
     if not result["tiers"]:
         return None
-    add_web_amounts(result, service_name)
+    add_web_amounts(result, service_name, [c.detail_url for c in chunks if c.detail_url])
     if len(_cache) >= CACHE_LIMIT:
         _cache.pop(next(iter(_cache)))
     _cache[key] = result

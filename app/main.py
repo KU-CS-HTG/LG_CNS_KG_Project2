@@ -98,9 +98,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .box { border-radius:12px; padding:.65rem .8rem; border:1px solid var(--line); }
 .box .k { font-size:.78rem; font-weight:700; opacity:.6; margin-bottom:.2rem; }
 .box .v { font-size:.92rem; line-height:1.55; }
-.box a.src-link { display:inline-block; margin-top:.4rem; font-size:.74rem; font-weight:600; text-decoration:none !important;
-  color:var(--accent) !important; border:1px solid var(--accent); border-radius:999px; padding:.05rem .55rem; }
-.box a.src-link:hover { background:var(--accent-soft); }
+.src-detail { margin-top:.4rem; }
+.src-detail summary { display:inline-block; cursor:pointer; list-style:none; font-size:.74rem; font-weight:600; color:var(--accent);
+  border:1px solid var(--accent); border-radius:999px; padding:.05rem .55rem; }
+.src-detail summary::-webkit-details-marker { display:none; }
+.src-detail .src-text { white-space:pre-wrap; font-size:.8rem; line-height:1.5; margin-top:.45rem; padding:.45rem .6rem; border-radius:8px;
+  background:var(--accent-soft); }
+.src-detail a.src-more { display:inline-block; margin-top:.35rem; font-size:.74rem; text-decoration:none !important; color:var(--accent) !important; }
 .deadline { display:inline-block; margin-top:.35rem; font-size:.78rem; font-weight:600; opacity:.8; }
 .upcoming { color:var(--accent); background:var(--accent-soft); padding:.05rem .45rem; border-radius:999px; }
 .closed { color:var(--warn); background:var(--warn-soft); padding:.05rem .45rem; border-radius:999px; }
@@ -302,11 +306,15 @@ def _md(s: str) -> str:
 
 
 def _benefit_source_link(r: Recommendation) -> str:
-    """'지원내용' 원문이 있는 제도에는 무엇을 받나요 칸 안에 원문 확인 링크를 작게 붙인다 (새 창)."""
-    url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
-    if not (url and any(b.strip() for b in r.benefit_detail)):
+    """'지원내용' 원문이 있는 제도에는 무엇을 받나요 칸 안에 '원문 확인하기'를 작게 붙인다.
+    누르면 그 자리에서 수집한 지원내용 원문이 펼쳐진다 (외부 페이지로 보내지 않는다). 상세 페이지 링크는 원문 아래에 따로 둔다."""
+    blocks = [b for b in r.benefit_detail if b.strip()]
+    if not blocks:
         return ""
-    return f'<a class="src-link" href="{_e(url)}" target="_blank" rel="noopener">원문 확인하기 ↗</a>'
+    url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
+    body = "".join(f'<div class="src-text">{_e(b)}</div>' for b in blocks)
+    link = f'<a class="src-more" href="{_e(url)}" target="_blank" rel="noopener">상세 페이지에서 보기 ↗</a>' if url else ""
+    return f'<details class="src-detail"><summary>원문 확인하기</summary>{body}{link}</details>'
 
 
 def _card_head(i: int, r: Recommendation, checked: int) -> str:

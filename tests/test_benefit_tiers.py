@@ -139,6 +139,24 @@ def test_web_lookup_is_off_without_key_or_when_disabled_and_failure_is_empty(mon
         and not we.allowed("javascript:alert(1)")
 
 
+def test_search_citation_urls_match_despite_tracking_params():
+    from src.generate import web_evidence as we
+    raw = {"items": [{"index": 1, "amount": "월 5만원", "quote": "월 5만원 지급", "url": "https://www.molit.go.kr/a"}]}
+    assert we.validate(raw, {"https://www.molit.go.kr/a/?utm_source=openai"}, 1)
+
+
+def test_page_lookup_reads_official_page_and_requires_verbatim_quote(monkeypatch):
+    from src.generate import web_evidence as we
+    monkeypatch.setenv("WEB_LOOKUP", "1")
+    monkeypatch.setattr(we, "_fetch_text", lambda url: "II유형 참여수당 월 28만4천원 지급 (6개월)")
+    good = lambda p, u: {"items": [{"index": 1, "amount": "월 28만4천원", "quote": "월 28만4천원 지급"}]}
+    got = we.page_lookup("x", ["II유형"], ["https://www.work24.go.kr/p", "https://blog.example.com"], good)
+    assert got[1]["amount"] == "월 28만4천원" and got[1]["url"] == "https://www.work24.go.kr/p"
+    fake = lambda p, u: {"items": [{"index": 1, "amount": "월 50만원", "quote": "월 50만원 지급"}]}      # 본문에 없는 구절
+    assert we.page_lookup("x", ["II유형"], ["https://www.work24.go.kr/p"], fake) == {}
+    assert we.page_lookup("x", ["II유형"], ["https://blog.example.com"], good) == {}                      # 공식 도메인만 읽는다
+
+
 def _click(at, label):
     next(b for b in at.button if b.label == label).click().run()
 

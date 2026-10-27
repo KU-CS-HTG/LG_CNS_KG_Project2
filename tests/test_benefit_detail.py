@@ -232,7 +232,7 @@ def test_render_draws_nothing_without_service_id_and_leaves_recommendation_intac
     r = rec(benefit_detail=["유형 A\n월 50만원 지급", "※ 결석 시 미지급"], citations=[Citation("s", "a", "원문", "https://example.invalid")])
     before = deepcopy(r)
     assert render(r, "first") is None
-    assert ui.calls == [] and r == before          # 지원내용 원문은 카드 머리의 '원문 확인하기' 링크로 본다
+    assert ui.calls == [] and r == before          # 지원내용 원문은 카드 머리 '원문 확인하기'(제자리 펼침)로 본다
 
 
 def _cards_script():
@@ -256,8 +256,9 @@ def test_actual_streamlit_card_preserves_summary_sources_and_separate_detail_are
     markup = "\n".join(m.value for m in at.markdown)
     assert "기존 요약 1" in markup and "기존 요약 2" in markup
     assert markup.count("근거 원문 1건 보기") == 2
-    assert markup.count("원문 확인하기 ↗") == 2                                  # 무엇을 받나요 칸 안의 작은 링크 (새 창)
-    assert 'href="https://example.invalid/source" target="_blank"' in markup
+    assert markup.count("<summary>원문 확인하기</summary>") == 2                # 무엇을 받나요 칸 안에서 지원내용 원문이 펼쳐진다
+    assert "월 20만원 지급" in markup and "&lt;b&gt;원문 표기&lt;/b&gt;" in markup   # 지원내용 원문(이스케이프됨)
+    assert 'href="https://example.invalid/source" target="_blank"' in markup       # 상세 페이지는 원문 아래 보조 링크
     at.run()
     assert not at.exception
 
