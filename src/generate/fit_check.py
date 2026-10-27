@@ -12,7 +12,7 @@ import json
 import logging
 
 from src.common.schema import Recommendation
-from src.generate import condition_extractor, trace
+from src.generate import condition_extractor, exclusion, trace
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ poor(안내하면 안 됨)로 보는 경우:
 - 특정 직무·업종·전공·소속(예: 광고, 소상공인, 창업, 해외취업, 특정 학교)에만 해당해, 질문의 일반적인 상황(예: 취업준비생)에
   흔히 적용되지 않는 경우.
 - 지원 내용이 사용자가 실제로 원하는 도움과 다른 경우 (이름이나 낱말만 겹침).
+- [이용 중인 제도 설명]이 있으면, 후보가 그 제도의 전제 조건(예: 특정 카드·계정 발급)이나 이미 포함한 혜택을 다시 안내하는 것이어도 중복이다.
 확실하지 않으면 ok다. poor일 때 reason에는 질문의 어떤 구절과 맞지 않는지 적는다.
 후보 목록의 모든 id를 results에 한 번씩 넣는다."""
 
@@ -45,7 +46,10 @@ def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | Non
         return recs
     ids = [r.service_id or r.service_name for r in recs]
     try:
-        out = condition_extractor._chat_json(PROMPT, json.dumps({"질문": question, "후보": [_candidate(r) for r in recs]}, ensure_ascii=False))
+        payload = {"질문": question, "후보": [_candidate(r) for r in recs]}
+        if exclusion.IN_USE_CONTEXT.get():
+            payload["이용 중인 제도 설명"] = exclusion.IN_USE_CONTEXT.get()
+        out = condition_extractor._chat_json(PROMPT, json.dumps(payload, ensure_ascii=False))
     except Exception as e:      # noqa: BLE001 — 점검이 안 되면 거르지 않는다 (맞는 제도를 잘못 빼는 쪽이 더 나쁘다)
         log.warning("실제 적합성 점검 실패, 거르지 않고 진행: %s", e)
         return recs

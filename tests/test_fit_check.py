@@ -77,3 +77,63 @@ def test_generate_applies_the_check_before_taking_the_top_five(monkeypatch):
     monkeypatch.setattr(ce, "_chat_json", fake([{"id": "A", "fit": "poor", "reason": "또 다른 훈련이라 이것 말고 요청에 맞지 않음"}]))
     answer = generator._generate(Q, chunks, [], ["취업준비생이 받을 수 있는 정부지원제도"])
     assert [r.service_id for r in answer.recommendations] == ["B", "C"]
+
+
+# --- 이용 중인 제도 설명을 점검에 넘기기, 모자란 자리 채우기 ----------------------------------------------------------
+def test_in_use_program_text_reaches_the_fit_check(monkeypatch):
+    import json
+    from src.common.schema import Chunk
+    from src.generate import exclusion
+
+    kd = Chunk("K#지원대상", "K", "K-디지털 트레이닝", "지원대상", "K-디지털 트레이닝\n국민내일배움카드 발급자")
+    other = Chunk("N#지원내용", "N", "국민취업지원제도", "지원내용", "국민취업지원제도\n구직촉진수당")
+    seen = []
+    monkeypatch.setattr(ce, "_chat_json", lambda s, u: seen.append((s, u)) or {"analysis": 1, "in_use": [{"name": "K-Digital Training", "aliases": ["K-디지털 트레이닝"], "kind": "직업훈련"}], "candidates": []})
+    exclusion.exclude_in_use(Q, {"in_use": ["K-Digital Training"]}, [kd, other])
+    ctx = exclusion.IN_USE_CONTEXT.get()
+    assert [c["이름"] for c in ctx] == ["K-디지털 트레이닝"] and "국민내일배움카드 발급자" in ctx[0]["설명"]
+    monkeypatch.setattr(ce, "_chat_json", lambda s, u: seen.append((s, u)) or {"results": []})
+    fit_check.drop_unfit(Q, RECS)
+    assert "이용 중인 제도 설명" in json.loads(seen[-1][1]) and "국민내일배움카드 발급자" in seen[-1][1]
+    exclusion.exclude_in_use(Q, {}, [kd])                                              # 이용 중인 제도를 말하지 않은 질문은 비운다
+    assert exclusion.IN_USE_CONTEXT.get() == []
+
+
+def _fill_setup(monkeypatch, first, second):
+    from src.common.schema import Chunk
+    from src.generate import generator
+
+    calls = {"rec": 0, "more": 0}
+
+    def ev(*ids):
+        return {i: [Chunk(f"{i}#지원내용", i, f"제도 {i}", "지원내용", f"제도 {i}\n내용")] for i in ids}
+
+    def fake_recs(*a, **k):
+        calls["rec"] += 1
+        return list(first if calls["rec"] == 1 else second)
+
+    def more():
+        calls["more"] += 1
+        return ev("X", "Y", "Z")
+
+    monkeypatch.setattr(generator, "_judge", lambda *a, **k: {})
+    monkeypatch.setattr(generator, "_extract_checklists", lambda e: {})
+    monkeypatch.setattr(generator, "_recommendations", fake_recs)
+    monkeypatch.setattr(ce, "_chat_json", lambda s, u: {"results": []})            # 적합성 점검: 모두 ok
+    return generator, ev, more, calls
+
+
+def test_missing_slots_are_filled_from_the_next_batch(monkeypatch):
+    generator, ev, more, calls = _fill_setup(monkeypatch, [rec("A", "가"), rec("B", "나")], [rec("A", "가"), rec("X", "엑스"), rec("Y", "와이"), rec("Z", "지"), rec("W", "더블유")])
+    evidence = ev("A", "B")
+    answer = generator._generate(Q, evidence, [], None, None, more)
+    assert [r.service_id for r in answer.recommendations] == ["A", "B", "X", "Y", "Z"]      # 5개까지, 중복(A) 없음, 앞 묶음이 먼저
+    assert calls["more"] == 1 and {"X", "Y", "Z"} <= set(evidence)                          # 평가용 근거에도 반영
+
+
+def test_no_refill_when_enough_or_when_the_first_batch_was_all_rejected(monkeypatch):
+    generator, ev, more, calls = _fill_setup(monkeypatch, [rec(i, i) for i in "ABCDE"], [])
+    assert len(generator._generate(Q, ev("A"), [], None, None, more).recommendations) == 5 and calls["more"] == 0
+    generator, ev, more, calls = _fill_setup(monkeypatch, [], [rec("X", "x")])
+    answer = generator._generate(Q, ev("A"), [], None, None, more)
+    assert answer.no_evidence and calls["more"] == 0                                         # 범위 밖 질문은 채우지 않고 근거 없음
