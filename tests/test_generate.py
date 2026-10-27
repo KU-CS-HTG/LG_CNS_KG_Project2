@@ -597,14 +597,15 @@ def test_card_order_puts_likely_and_national_first_for_questions_without_region(
     base = sample_chunks[0]
     def svc(sid, agency):
         return [replace(base, service_id=sid, service_name=sid, metadata={**base.metadata, "agency": agency, "region": None})]
-    ev = {"local": svc("local", "재단법인강원인재원"), "unclear": svc("unclear", "한국장학재단"),
+    ev = {"local": svc("local", "재단법인행복나눔재단"), "unclear": svc("unclear", "한국장학재단"),
           "likely": svc("likely", "교육부"), "jeonju": svc("jeonju", "전주시복지재단전주사람")}
     verdict = {"local": "확인 필요", "unclear": "확인 필요", "likely": "가능", "jeonju": "가능"}
     monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: {"services": [
         {"service_id": sid, "applicable": verdict[sid]} for sid in verdict if f"id={sid}]" in u]}
         if s == generator.SYSTEM_PROMPT else {})
     names = lambda q: [r.service_name for r in generator._generate(q, ev, [], None).recommendations]  # noqa: E731
-    # '재단법인강원인재원'은 이름으로 지역을 알 수 없어 전국 쪽에 남는다 (저장된 지역 값이 없을 때)
+    # '재단법인행복나눔재단'은 이름으로 지역을 알 수 없어 전국 쪽에 남는다 (저장된 지역 값이 없을 때).
+    # W5 전에는 '재단법인강원인재원'을 썼는데 이제 법인 표시를 떼고 강원으로 읽는다 (test_w5_agency_region.py)
     assert names("학자금 이자 지원 있나요?") == ["likely", "local", "unclear", "jeonju"]
     assert names("전북에 사는데 학자금 이자 지원 있나요?") == ["likely", "jeonju", "local", "unclear"]   # 지역 질문은 지자체를 뒤로 보내지 않음
 
@@ -646,7 +647,8 @@ def test_agency_region_from_district_name_inside_foundation_name():
     assert generator._agency_region("충청북도 충주시") == "충북"              # 원래 방식 그대로
     assert generator._agency_region("중구시설관리공단") is None               # 여러 시·도에 있는 이름
     assert generator._agency_region("한국남동발전") is None                   # 끝 글자 없는 '남동'은 보지 않는다
-    assert generator._agency_region("재단법인용산복지재단") is None           # '용산구'가 아니라 '용산'
+    assert generator._agency_region("재단법인용산복지재단") == "서울"         # W5: 두 글자 이상 구 이름은 '구'를 떼도 본다
+    assert generator._agency_region("중복지재단") is None                     # 한 글자 '중'은 여전히 보지 않는다
     assert generator._agency_region("보건복지부") is None
 
 
@@ -657,7 +659,7 @@ def test_agency_districts_from_joined_foundation_name():
     assert generator._agency_districts("서울특별시 동대문구") == {"동대문구"}     # 원래 방식 그대로
     assert generator._agency_districts("서울특별시") == set()
     assert generator._agency_districts("한국남동발전") == set()
-    assert generator._agency_districts("재단법인의왕시청소년재단") == set()       # 앞부분이 구 이름이 아님 (시·도는 _agency_region)
+    assert generator._agency_districts("재단법인의왕시청소년재단") == {"의왕시"}  # W5: 시·군 이름으로 시작하는 재단은 그 시·군
 
 
 def test_short_city_name_with_org_suffix_is_local():
@@ -668,7 +670,7 @@ def test_short_city_name_with_org_suffix_is_local():
     assert generator._agency_region("시흥도시공사") == "경기" and generator._agency_districts("시흥도시공사") == {"시흥시"}
     assert generator._agency_region("천안복지재단") == "충남"
     assert generator._agency_region("한국보훈복지의료공단", "보훈 재가복지") is None                   # 전국 기관 그대로
-    assert generator._agency_region("재단법인용산복지재단") is None                                   # '구'를 뗀 이름은 보지 않는다
+    assert generator._agency_region("재단법인용산복지재단") == "서울"                                 # W5: 두 글자 이상 구 이름은 본다
     assert generator._agency_region("한국남동발전") is None
 
 

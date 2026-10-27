@@ -53,6 +53,10 @@ def _squash(s: str) -> str:
     return re.sub(r"\s+", "", s or "")
 
 
+# 후보 원문의 제외 조건을 뜻하는 말 (공백을 뺀 구절에서 찾는다): '실업급여 수급중인 자는 제외', '재학생 지원 불가'
+_EXCLUDES_RE = re.compile(r"제외|불가|제한|안됨|않는자|아닌자|해당하지")
+
+
 def _text(chunks: list[Chunk] | None) -> str:
     """후보 원문: 지원대상과 지원내용 앞부분 (이 글을 LLM에 보여 주고, 근거 구절도 이 글에서 대조한다)."""
     parts: dict[str, list[str]] = {}
@@ -98,7 +102,14 @@ def _valid(item: dict, candidates: dict[str, str], in_use_text: str, names: dict
     if item["category"] == "duplicate":
         name = _squash(names.get(rid, ""))
         named_in_use = len(name) >= MIN_QUOTE and name in _squash(in_use_text)
-        return _quoted(str(item.get("quote")), in_use_text) or (named_in_use and _quoted(str(item.get("quote")), f"{in_use_text} {own}"))
+        if _quoted(str(item.get("quote")), in_use_text) or (named_in_use and _quoted(str(item.get("quote")), f"{in_use_text} {own}")):
+            return True
+        # duplicate라고 했지만 구절이 후보 원문의 제외 조건이면 mismatch로 본다: '실업급여 받는 중' 질문에 '직업훈련 생계비대부사업'의
+        # '실업급여 수급중인 자는 제외'를 찾고도 범주를 duplicate로 달아 판정이 버려졌다. 제외 말이 있을 때만 (혜택 설명 구절로는 빼지 않는다)
+        if _EXCLUDES_RE.search(quote) and _quoted(str(item.get("quote")), own):
+            item["category"] = "mismatch"
+            return True
+        return False
     return _quoted(str(item.get("quote")), own)
 
 

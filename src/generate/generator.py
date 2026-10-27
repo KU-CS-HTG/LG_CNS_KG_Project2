@@ -322,7 +322,8 @@ def _recommendations(question: str, evidence: dict[str, list[Chunk]], needs: lis
             (_change_notice(question, name), "변경 신청 안내"),
             (_recurring_closed(_application_period(sid), date.today()), "이번 회차 마감"),
             (_unasked_job(question, needs, name), "일을 묻지 않았는데 일자리 제도"),
-            (_minors_only(question, name), "어린이·청소년 전용 제도인데 질문에 그 대상이 없음")) if on]
+            (_minors_only(question, name), "어린이·청소년 전용 제도인데 질문에 그 대상이 없음"),
+            (_prevention_for_victim(question, needs, name), "이미 전세 피해를 입었는데 피해 전에 드는 보증보험 지원")) if on]
         later = bool(flags)
         # 안내 순서 (판정 후보 10개 중 앞 5개만 나가므로): 판정을 통과한 정답이 검색 순서로만 정하면 잘렸다
         # (q12 '한국자산관리공사 채무조정'·q09 판정 '가능'인 학자금대출이 6위 아래). 지역을 말하지 않은 질문에 지자체 제도
@@ -382,6 +383,29 @@ def _is_local(chunks: list[Chunk]) -> bool:
 _GROUP_WORDS = {"장애": ("장애",), "보훈": ("보훈", "유공"), "국가유공": ("보훈", "유공"), "북한이탈": ("북한", "탈북"),
                 "탈북": ("북한", "탈북"), "한부모": ("한부모", "미혼모", "미혼부"), "다문화": ("다문화", "이민", "외국"),
                 "결혼이민": ("다문화", "이민", "외국"), "어르신": ("어르신", "노인", "65세"), "노인": ("어르신", "노인", "65세")}
+# 2026-10-27 추가 (검수 not_eligible 73건, 평가 q08·q12): '대학 등록금' 질문에 농어촌 출신 학자금·청년창업농 장학금·
+# 다자녀 국가장학금, '빚이 많은 청년' 질문에 재창업 재기지원 보증, 취업준비생 질문에 기업이 받는 인건비 지원이 나왔다.
+# 질문은 공백을 뺀 채로 비교한다 ('세 자녀' -> '세자녀'). 한 글자 '농'은 '농구' 같은 말과 겹쳐 쓰지 않는다.
+_FARM_SAID = ("농사", "농업", "농촌", "농가", "농민", "귀농", "어촌", "어업", "어민", "귀어", "농어촌", "시골", "축산", "임업")
+# 다자녀는 지자체마다 둘째부터인 곳도 있고('다자녀가족 둘째아 이상') 형제가 많은 대학생도 대상이라('다자녀 국가장학금'),
+# 아이·형제 이야기가 아예 없을 때만 뺀다
+_MANY_KIDS_SAID = ("다자녀", "자녀", "아이", "아들", "딸", "애가", "애들", "애둘", "애셋", "첫째", "둘째", "셋째", "넷째",
+                   "출산", "임신", "양육", "육아", "형제", "남매", "자매")
+_EMPLOYER_SAID = ("사업주", "사장", "대표", "직원", "채용하", "고용하", "인건비", "소상공인", "자영업", "창업", "회사를운영",
+                  "가게를운영")
+_GROUP_WORDS.update({
+    "농어촌": _FARM_SAID, "농촌": _FARM_SAID, "어촌": _FARM_SAID, "농업인": _FARM_SAID, "어업인": _FARM_SAID,
+    "창업농": _FARM_SAID, "후계농": _FARM_SAID, "귀농": _FARM_SAID, "귀어": _FARM_SAID, "임업인": _FARM_SAID,
+    "다자녀": _MANY_KIDS_SAID,
+    "재창업": ("재창업", "폐업", "재기", "사업실패", "다시창업"),
+    "인건비": _EMPLOYER_SAID, "고용장려금": _EMPLOYER_SAID, "채용장려금": _EMPLOYER_SAID,
+    # '회사를 그만두고 실업급여 받는 중' 질문에 폐업 소상공인용 '소상공인 재기지원'이 5번 카드였다
+    "소상공인": ("소상공인", "자영업", "가게", "장사", "사장", "폐업", "창업", "사업", "가맹점", "점포", "매장", "식당", "카페"),
+    # '군대 전역한 23살' 질문에 6ㆍ25전사자 유가족 포상금·의료급여 건강생활 유지비가 2번 카드였다 (적합성 점검이 빼기도 하고
+    # 못 빼기도 해서 코드로 거른다). 의료급여 제도는 모두 의료급여 수급권자(기초생활보장) 대상이다
+    "유가족": ("유가족", "유족", "전사", "순직", "돌아가신", "사망"), "유족": ("유가족", "유족", "전사", "순직", "돌아가신", "사망"),
+    "의료급여": ("의료급여", "수급", "기초생활", "생계급여", "저소득", "차상위"),
+})
 
 
 # 이미 선정된 사람의 변경 신청 안내 ('(변경·중지·연장 등) 부산 평생함께 청년 주거비', '청년월세 지원사업 변경신청').
@@ -422,9 +446,29 @@ def _minors_only(question: str, service_name: str) -> bool:
     return not _MINOR_TALK_RE.search(q)
 
 
+# 피해자 전용 제도 ('부도 임대주택 퇴거자 전세자금 융자', '인천 전세사기 피해자 주거안정 지원사업', '화재피해 주민 지원').
+# '인천 부평구 27살 전세 보증금 지원' 질문에 2번·5번 카드로 나왔다. '피해 예방·방지·경감' 시설 지원은 피해자 전용이 아니다.
+_VICTIM_NAME_RE = re.compile(r"부도|퇴거자|피해(?!.{0,6}(?:예방|방지|경감))")
+_VICTIM_SAID_RE = re.compile(r"피해|사기|부도|경매|퇴거|쫓겨|떼였|떼일|못\s*받|못\s*돌려|돌려\s*받지|폭력|학대|범죄|스토킹|"
+                             r"화재|불이\s*나|재난|침수|소음|석면|부작용|체불|강제동원")
+
+
+_JEONSE_VICTIM_SAID_RE = re.compile(r"전세\s*사기|전세\s*피해|깡통\s*전세|보증금을?\s*(?:못|안)\s*(?:돌려|받)|보증금을?\s*돌려\s*받지\s*못")
+
+
+def _prevention_for_victim(question: str, needs: list[str] | None, service_name: str) -> bool:
+    """전세사기 피해를 이미 입었다는 질문에 나온, 피해 전에 드는 보증보험의 보증료 지원인가 (빼지 않고 피해자 제도 뒤로).
+    '전세사기를 당했는데 보증금을 못 돌려받고 있어요'에 '국토교통부 전세보증금반환보증 보증료 지원'이 1번 카드였다
+    (전국 단위 피해자 제도가 데이터에 없어 지자체 피해자 제도가 뒤로 밀린 자리를 차지). 새 집으로 옮길 때는 쓸 수 있어 남긴다."""
+    victim = any(str(n).startswith("전세사기피해") for n in (needs or [])) or bool(_JEONSE_VICTIM_SAID_RE.search(question or ""))
+    return victim and "반환보증" in (service_name or "") and not _VICTIM_NAME_RE.search(service_name or "")
+
+
 def _other_group(question: str, service_name: str) -> bool:
-    """제도 이름이 특정 대상(장애인·보훈·북한이탈주민 등) 전용인데 질문에 그 대상이 없는가."""
+    """제도 이름이 특정 대상(장애인·보훈·북한이탈주민·피해자 등) 전용인데 질문에 그 대상이 없는가."""
     q = "".join((question or "").split())
+    if _VICTIM_NAME_RE.search(service_name or "") and not _VICTIM_SAID_RE.search(question or ""):
+        return True
     return any(w in (service_name or "") and not any(s in q for s in said) for w, said in _GROUP_WORDS.items())
 
 
@@ -1008,6 +1052,9 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
     queries = topical.phrase_queries(conditions.get("help"), question)
+    situation_q = "" if conditions.get("help") else _situation_query(question, region)
+    if situation_q:
+        queries.append(situation_q)
     cleaned = topical.without_in_use_clause(question, conditions.get("in_use"))
     if cleaned:
         queries.append(cleaned)          # 이용 중인 제도를 말한 절을 뺀 질문으로도 찾는다 (그 제도와 비슷한 제도가 결과를 채우는 것을 피한다)
@@ -1024,7 +1071,13 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     before = chunks
     chunks = _drop_other_districts(chunks, districts, filters.get("field"), conditions.get("help"))
     trace.dropped(f"다른 시·군·구 제도 ({', '.join(sorted(districts))})", before, chunks)
-    if region and not region_relaxed:
+    if region and not region_relaxed and _asks_local_only(question):
+        # '대전에서만 받을 수 있는 제도'처럼 지역 제도만 물으면 전국 제도를 섞지 않는다 (섞으면 4·5번 카드가 전국 제도였다).
+        # 지역 제도가 하나도 없으면 전국 제도로 답한다 (소프트)
+        before = chunks
+        chunks = [c for c in chunks if _agency_region(c.metadata.get("agency") or "", c.service_name) is not None] or chunks
+        trace.dropped("전국 제도 (지역 제도만 찾는 질문)", before, chunks)
+    elif region and not region_relaxed:
         national = _national_candidates(question, region, filters, today)
         trace.listing("지역 필터 없이 다시 찾은 전국 제도", national)
         chunks = _mix_national(chunks, national)
@@ -1036,7 +1089,8 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         chunks = [c for c in chunks if c.service_id not in hidden]
         trace.dropped("관리자가 숨긴 제도", before, chunks)
     chunks = exclusion.exclude_in_use(question, conditions, chunks)   # W1 자리 (src/generate/exclusion.py)
-    chunks = topical.prioritize(chunks, conditions.get("help"))   # 핵심 주제어가 본문에 있는 제도를 판정 후보 앞으로
+    # 핵심 주제어가 본문에 있는 제도를 판정 후보 앞으로. 찾는 도움이 없는 넓은 질문은 처지 핵심어로 ('귀농' 질문의 실업크레딧이 1번 카드였다)
+    chunks = topical.prioritize(chunks, conditions.get("help") or ([situation_q] if situation_q else None))
     selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
@@ -1063,6 +1117,39 @@ REGION_CANDIDATE_FACTOR = 3   # 검색 후보 배수 (지역을 말했거나 기
 DISTRICT_CANDIDATES = 50      # 시·군·구까지 말한 질문의 추가 검색 수, 지역 질문의 전국 후보 추가 검색 수
 MAX_LOCAL_SERVICES = 3        # 지역을 말했을 때 답변 5자리 중 그 지역 지자체 제도의 최대 수
 MIN_NATIONAL_SERVICES = 2     # 지역을 말했을 때 전국 제도(중앙부처·공공기관)에 남겨 두는 최소 자리
+
+
+_AGE_WORD_RE = re.compile(r"^\d+\s*(?:살|세)$|^(?:\d+|[이삼사오육칠팔구]십)대$")
+_FILLER_WORDS = {"사는", "살고", "살아요", "중인", "중이에요", "있는", "하는", "되는", "저는", "제가", "혼자서",
+                 "제도좀", "추천해줘", "추천해", "알려줘", "알려주세요", "궁금해요", "뭐가", "어떤"}
+
+
+def _situation_query(question: str, region: str | None) -> str:
+    """찾는 도움을 말하지 않은 넓은 질문의 처지 핵심어 검색어 ('귀농해서 농사 짓는 29살인데 받을 수 있는 지원이 있나요?' -> '귀농 농사 짓는').
+    문장 전체로 검색하면 '받을 수 있는 지원' 같은 말에 끌려 외국인근로자 의료지원·커리어넷·실업크레딧이 상위였고 귀농 제도 87개 중
+    2개만 잡혔다 ('귀농 농사'로 찾으면 상위 8개가 모두 귀농 제도). 나이·지역 낱말은 필터가 맡으니 뺀다. 남는 말이 없으면 ''."""
+    from src.retrieve import baseline
+    words = [w for w in baseline.extract_keywords(question)
+             if not _AGE_WORD_RE.match(w) and w not in _FILLER_WORDS
+             and condition_extractor._find_region(w) is None and not _find_districts(w)]
+    q = " ".join(words)
+    return q if q and q != question.strip() else ""
+
+
+# 지역 제도만 찾는 말: '지자체 제도만', '대전시 자체 지원', '우리 지역 제도만' (+ 지역 이름 뒤의 '에서만', _asks_local_only)
+_LOCAL_ONLY_RE = re.compile(r"지자체\s*(?:제도|지원|혜택)?\s*만|지역\s*(?:제도|지원|혜택)\s*만|자체\s*(?:제도|지원|사업|혜택)|"
+                            r"(?:시|도|구|군)\s*(?:제도|지원|혜택)\s*만")
+_ONLY_HERE_RE = re.compile(r"(\S+?)에서만")
+_HERE_WORDS = ("지역", "우리지역", "동네", "우리동네", "여기", "이곳")
+
+
+def _asks_local_only(question: str) -> bool:
+    """지역 제도만 원하는가. '에서만'은 앞말이 지역일 때만 ('대전에서만'은 맞고 '온라인에서만 신청'은 아니다)."""
+    q = question or ""
+    if _LOCAL_ONLY_RE.search(q):
+        return True
+    return any(condition_extractor._find_region(w) or _find_districts(w) or w in _HERE_WORDS
+               for w in _ONLY_HERE_RE.findall(q))
 
 
 def _national_candidates(question: str, region: str, filters: dict, today: date) -> list[Chunk]:
@@ -1518,22 +1605,46 @@ _REGION_PREFIX_RE = re.compile("^(?:" + "|".join(sorted(condition_extractor._REG
 _ORG_SUFFIX_RE = re.compile(r"(?:도시공사|도시관리공사|도시관리공단|시설관리공단|시설공단|환경공단|문화재단|복지재단|체육회|"
                             r"청소년재단|교육재단|장학재단|인재육성재단|보훈요양원|요양원|복지관|청소년수련관)$")
 _METRO_SHORT = ("부산", "대구", "인천", "광주", "대전", "울산", "세종")
+# 법인 표시 ('재단법인울산문화관광재단', '(재)충북문화재단', '(주)강원랜드'). 떼고 나서 지역 이름을 본다
+_LEGAL_PREFIX_RE = re.compile(r"^(?:재단법인|사단법인|사회복지법인|\(재\)|\(사\)|\(주\)|주식회사)")
+# 시·군·구 이름 + 이 끝말이면 그 지역 기관 ('고양산업진흥원', '단양관광공사', '수원컨벤션센터'). _ORG_SUFFIX_RE보다 넓어
+# 앞부분이 시·군·구 이름일 때만 쓴다 (_place_prefix)
+# '의료원'은 넣지 않는다: '충청남도천안의료원'은 도 의료원이라 천안시 제도로 보면 아산 사는 사람에게서 빠진다
+_ORG_END_RE = re.compile(r"(?:재단|진흥원|공사|공단|센터|회관|교육원|복지원)$")
+# '세종'으로 시작해도 세종시 기관이 아닌 이름 ('세종문화회관'은 서울). 세종시는 '세종특별자치시'·'세종시'로 쓴 것만
+_NOT_SEJONG_RE = re.compile(r"^세종(?!(?:특별자치)?시)")
 
 
 def _short_place(token: str) -> tuple[str, str | None] | None:
     """'시'·'군'을 뗀 이름 + 기관 이름인 낱말의 (시·도, 시·군). '광주보훈요양원'처럼 광역시 이름이면 (광역시, None).
     전국 기관(한국보훈복지의료공단)이 운영하는 지역 시설이 전국 제도로 보여 '서울 마포구 65세' 질문에 전주보훈요양원,
-    '시흥도시공사' 체육시설 감면이 나왔다 (44곳·160개 제도). 끝 글자를 뗀 구 이름('용산복지재단')은 '중'·'남'처럼
-    짧아 다른 말과 겹칠 수 있어 보지 않는다. 기관 이름이 뒤에 붙을 때만 읽어 '한국남동발전' 같은 오인을 막는다."""
-    t = _REGION_PREFIX_RE.sub("", re.sub(r"^(?:재단법인|사단법인|\(재\)|\(사\))", "", token))
+    '시흥도시공사' 체육시설 감면이 나왔다 (44곳·160개 제도). 기관 이름이 뒤에 붙을 때만 읽어 '한국남동발전' 같은 오인을 막는다.
+    끝말이 _ORG_SUFFIX_RE에 없으면 _ORG_END_RE + 앞부분의 시·군·구 이름(_place_prefix)으로 읽는다: '재단법인울산문화관광재단'
+    시티투어 감면이 전국 제도로 보여 '수원 대중교통비' 질문에 3번 카드로 나왔다 (73곳·238개 제도)."""
+    t = _REGION_PREFIX_RE.sub("", _LEGAL_PREFIX_RE.sub("", token))
     m = _ORG_SUFFIX_RE.search(t)
-    if not m or len(t[:m.start()]) < 2:
-        return None
-    short = t[:m.start()]
-    if short in _METRO_SHORT:
-        return short, None
-    name = next((short + s for s in "시군" if len(DISTRICTS.get(short + s, ())) == 1), None)
-    return (DISTRICTS[name][0], name) if name else None
+    if m and len(t[:m.start()]) >= 2:
+        short = t[:m.start()]
+        if short in _METRO_SHORT:
+            return short, None
+        name = next((short + s for s in "시군" if len(DISTRICTS.get(short + s, ())) == 1), None)
+        if name:
+            return DISTRICTS[name][0], name
+    return _place_prefix(t) if _ORG_END_RE.search(t) else None
+
+
+def _place_prefix(name: str) -> tuple[str, str] | None:
+    """이름 앞 2~4글자 + 시·군·구가 한 시·도에만 있는 시·군·구이면 (시·도, 시·군·구) ('고양산업진흥원' -> 경기 고양시,
+    '영등포문화재단' -> 서울 영등포구). 한 글자 구 이름('중'·'남')은 다른 말과 겹쳐 보지 않는다. 앞부분이 시·도 이름이면
+    보지 않는다: '광주신용보증재단'은 광주광역시 기관인데 경기 광주시로, '제주관광공사'는 도 기관인데 제주시로 읽힌다."""
+    for n in (4, 3, 2):
+        if len(name) <= n + 1 or name[:n] in condition_extractor.REGIONS:
+            continue
+        for suffix in "시군구":
+            district = name[:n] + suffix
+            if len(DISTRICTS.get(district, ())) == 1:
+                return DISTRICTS[district][0], district
+    return None
 
 
 def _short_places(agency: str, service_name: str = "") -> list[tuple[str, str | None]]:
@@ -1590,7 +1701,17 @@ def _agency_region(agency: str, service_name: str = "") -> str | None:
         if found:
             return found
     regions = {r for r, _ in _short_places(agency, service_name)}
-    return _district_region(agency) or (regions.pop() if len(regions) == 1 else None)
+    return _district_region(agency) or (regions.pop() if len(regions) == 1 else None) or _legal_bare_region(agency)
+
+
+def _legal_bare_region(agency: str) -> str | None:
+    """법인 표시를 뗀 이름이 시·도 이름으로 시작하면 그 시·도 ('재단법인경기도시장상권진흥원' -> 경기, '(주)강원랜드' -> 강원).
+    시·군·구 이름으로 먼저 찾은 뒤에만 쓴다: '재단법인광주시문화재단'은 경기 광주시인데 앞의 '광주'로 광주광역시가 된다."""
+    raw = (agency or "").strip()
+    bare = _LEGAL_PREFIX_RE.sub("", raw)
+    if bare == raw or _NOT_SEJONG_RE.match(bare) or not evidence_mod._LOCAL_AGENCY_RE.search(bare):
+        return None
+    return condition_extractor._find_region(bare)
 
 
 def _district_region(agency: str) -> str | None:

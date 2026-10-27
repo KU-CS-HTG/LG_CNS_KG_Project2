@@ -97,7 +97,14 @@ def is_local(chunk: Chunk) -> bool:
     if region:
         return region != NATIONWIDE
     agency = (chunk.metadata.get("agency") or "").strip()
-    return agency_region(agency) is not None or bool(_LOCAL_UNIT.match(agency))
+    if agency_region(agency) is not None or _LOCAL_UNIT.match(agency):
+        return True
+    # 지자체 산하 재단·공단은 이름이 시·도로 시작하지 않는다 ('재단법인안산인재육성재단', '성남시장학회', '용산구시설관리공단').
+    # 전국 제도로 보면 지역 없는 질문의 감점(LOCAL_PENALTY)이 안 걸려 '대학 등록금' 질문에 지자체 장학재단 10여 곳이
+    # 국가장학금 Ⅰ유형(16위)보다 앞섰다. 생성 단계와 같은 기관명 규칙(generator._agency_region)을 쓴다.
+    # 함수 안에서 불러온다 (generator가 이 모듈을 불러와서 모듈 맨 위에서 부르면 순환 import)
+    from src.generate import generator
+    return generator._agency_region(agency, chunk.service_name) is not None
 
 
 def field_matches(chunk_field: str | None, wanted: str | None) -> bool:
