@@ -252,3 +252,10 @@ def test_verdicts_from_both_passes_are_combined(monkeypatch):
     monkeypatch.setattr(ce, "_chat_json", alternate)
     out = fit_check.drop_unfit(Q, RECS, None, EVIDENCE)
     assert [r.service_id for r in out] == ["B"]              # 한 번에는 A, 다른 한 번에는 C가 나와도 근거가 확인된 둘 다 반영
+
+
+def test_the_two_passes_send_different_inputs_so_a_response_cache_cannot_merge_them(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ce, "_chat_json", lambda s, u: seen.append(u) or {"results": []})
+    fit_check.drop_unfit(Q, RECS, None, EVIDENCE)
+    assert len(seen) == fit_check.PASSES and len(set(seen)) == fit_check.PASSES
