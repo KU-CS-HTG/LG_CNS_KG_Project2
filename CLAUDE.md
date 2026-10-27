@@ -137,7 +137,6 @@ python -m app.main                     # C: 앱 실행
 python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
 python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
 python -m app.catalog_mode             # 제도 목록 관리 웹 화면 (추가·수정·숨김·삭제). 숨김은 답변에 바로, 추가·수정은 python -m src.catalog apply 후 반영 (docs/CATALOG.md)
-python -m src.generate.llm_cache stats # LLM 응답 저장소 현황 (같은 입력이면 같은 응답. 새 응답을 받으려면 LLM_CACHE=0, 공유 파일 갱신은 한 사람이 warm --fresh)
 python -m app.review_mode              # B: 검수 화면 (후보 판정·답변 메모 -> reviews/events/)
 python -m src.generate.explain "질문"   # 답변 선정 과정을 터미널에 출력 (제도를 고른·뺀 이유). 앱에서는 RAG_TRACE=1 환경변수로 같은 추적을 켠다 (색인·OPENAI_API_KEY 필요)
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)
