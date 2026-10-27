@@ -178,7 +178,7 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
         out = _judge(question, evidence, needs)
         recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
-    recs = fit_check.drop_unfit(question, recs, asked)   # 형식상 맞아도 이 사람에게는 맞지 않는 제도를 뺀다 (앞 5개를 고르기 전에 해서 빈자리는 다음 후보가 채운다)
+    recs = fit_check.drop_unfit(question, recs, asked, evidence)   # 형식상 맞아도 이 사람에게는 맞지 않는 제도를 뺀다 (앞 5개를 고르기 전에 해서 빈자리는 다음 후보가 채운다)
     if 0 < len(recs) < config.MAX_RECOMMENDATIONS and more is not None:
         # 거르고 나니 5개가 안 되면 판정하지 못한 다음 후보를 한 번 더 판정해 채운다 (이용 중 제도·특정 대상 제도를 빼고 나니 3개만 남았는데,
         # 10개 밖에 '구직자 취업지원 서비스 제공' 같은 맞는 제도가 있었다). 첫 묶음이 모두 빠진 경우(범위 밖 질문)에는 채우지 않는다.
@@ -189,7 +189,7 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
                 job = pool.submit(_judge, question, extra, needs)
                 extra_checklists = pool.submit(_extract_checklists, extra).result()
                 extra_out = job.result()
-            extra_recs = fit_check.drop_unfit(question, _recommendations(question, extra, needs, asked, extra_out, extra_checklists, region), asked)
+            extra_recs = fit_check.drop_unfit(question, _recommendations(question, extra, needs, asked, extra_out, extra_checklists, region), asked, extra)
             have = {r.service_id for r in recs}
             recs = recs + [r for r in extra_recs if r.service_id not in have]
             evidence.update(extra)                      # 답변 평가가 같은 근거로 채점하도록 (호출한 쪽의 evidence에도 반영된다)
