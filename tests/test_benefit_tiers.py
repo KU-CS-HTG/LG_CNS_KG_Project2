@@ -27,9 +27,8 @@ RAW = {"tiers": [
 
 
 @pytest.fixture(autouse=True)
-def fresh_cache(monkeypatch):
+def fresh_cache():
     bt._cache.clear()
-    monkeypatch.setenv("WEB_LOOKUP", "0")          # 테스트는 웹 조회를 하지 않는다 (필요한 테스트가 가짜로 바꿔 끼운다)
 
 
 def test_source_text_orders_sections_and_strips_the_name_prefix():
@@ -102,59 +101,6 @@ def test_amount_is_kept_only_when_grounded_in_the_source():
     by = {t["label"]: t for t in out["tiers"]}
     assert by["청년"]["amount"] == "지출액의 30%" and by["청년"]["amount_basis"] == bt.SOURCE
     assert by["다자녀"]["amount"] == "" and by["지급 방식"]["amount"] == ""        # 원문에 없는 숫자·근거 없는 항목은 버린다
-
-
-def test_web_amounts_fill_only_verified_items(monkeypatch):
-    from src.generate import web_evidence as we
-    seen = {}
-
-    def fake_search(name, labels):
-        seen["labels"] = labels
-        return ({"items": [
-            {"index": 1, "amount": "월 최대 5만원", "quote": "월 최대 5만원을 환급한다", "url": "https://www.molit.go.kr/a"},
-            {"index": 2, "amount": "월 9만원", "quote": "월 5만원", "url": "https://www.molit.go.kr/a"},            # 숫자가 근거에 없다
-            {"index": 3, "amount": "월 7만원", "quote": "월 7만원", "url": "https://blog.example.com/x"},            # 공식 도메인 아님
-        ]}, {"https://www.molit.go.kr/a", "https://blog.example.com/x"})
-
-    monkeypatch.setenv("WEB_LOOKUP", "1")
-    monkeypatch.setattr(we.config, "OPENAI_API_KEY", "k")
-    monkeypatch.setattr(we, "_search", fake_search)
-    result = _amounts({"청년": "지출액의 30%"})
-    bt.add_web_amounts(result, "K-패스")
-    by = {t["label"]: t for t in result["tiers"]}
-    assert by["청년"]["amount_basis"] == bt.SOURCE and len(seen["labels"]) == 4        # 금액이 이미 있는 항목은 조회하지 않는다
-    web = [t for t in result["tiers"] if t["amount_basis"] == "web"]
-    assert [t["label"] for t in web] == ["일반"] and web[0]["evidence"][0]["url"] == "https://www.molit.go.kr/a"
-    assert [t["label"] for t in result["tiers"] if not t["amount"]] == ["저소득", "다자녀", "지급 방식"]
-
-
-def test_web_lookup_is_off_without_key_or_when_disabled_and_failure_is_empty(monkeypatch):
-    from src.generate import web_evidence as we
-    monkeypatch.setattr(we.config, "OPENAI_API_KEY", "k")
-    assert we.lookup("x", ["a"]) == {}                                             # WEB_LOOKUP=0
-    monkeypatch.setenv("WEB_LOOKUP", "1")
-    monkeypatch.setattr(we, "_search", lambda *a: (_ for _ in ()).throw(RuntimeError("no tool")))
-    assert we.lookup("x", ["a"]) == {}
-    assert we.allowed("https://www.gov.kr/x") and we.allowed("https://korea.kr") and not we.allowed("https://evilgo.kr/x") \
-        and not we.allowed("javascript:alert(1)")
-
-
-def test_search_citation_urls_match_despite_tracking_params():
-    from src.generate import web_evidence as we
-    raw = {"items": [{"index": 1, "amount": "월 5만원", "quote": "월 5만원 지급", "url": "https://www.molit.go.kr/a"}]}
-    assert we.validate(raw, {"https://www.molit.go.kr/a/?utm_source=openai"}, 1)
-
-
-def test_page_lookup_reads_official_page_and_requires_verbatim_quote(monkeypatch):
-    from src.generate import web_evidence as we
-    monkeypatch.setenv("WEB_LOOKUP", "1")
-    monkeypatch.setattr(we, "_fetch_text", lambda url: "II유형 참여수당 월 28만4천원 지급 (6개월)")
-    good = lambda p, u: {"items": [{"index": 1, "amount": "월 28만4천원", "quote": "월 28만4천원 지급"}]}
-    got = we.page_lookup("x", ["II유형"], ["https://www.work24.go.kr/p", "https://blog.example.com"], good)
-    assert got[1]["amount"] == "월 28만4천원" and got[1]["url"] == "https://www.work24.go.kr/p"
-    fake = lambda p, u: {"items": [{"index": 1, "amount": "월 50만원", "quote": "월 50만원 지급"}]}      # 본문에 없는 구절
-    assert we.page_lookup("x", ["II유형"], ["https://www.work24.go.kr/p"], fake) == {}
-    assert we.page_lookup("x", ["II유형"], ["https://blog.example.com"], good) == {}                      # 공식 도메인만 읽는다
 
 
 def _click(at, label):

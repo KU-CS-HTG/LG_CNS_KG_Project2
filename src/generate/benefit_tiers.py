@@ -12,13 +12,13 @@ import logging
 import re
 
 from src.common.schema import Chunk
-from src.generate import condition_extractor, web_evidence
+from src.generate import condition_extractor
 
 log = logging.getLogger(__name__)
 
 SOURCE, OUTSIDE = "source", "outside"
 SECTION_ORDER = ("지원대상", "선정기준", "지원내용", "신청방법")
-MAX_TIERS, MAX_NOTES, MAX_WEB_LOOKUP = 8, 3, 5
+MAX_TIERS, MAX_NOTES, MAX_AMOUNT = 8, 3, 80
 MAX_LABEL, MAX_BENEFIT, MAX_NOTE = 40, 300, 200
 MIN_QUOTE = 4
 CACHE_LIMIT = 256
@@ -80,7 +80,7 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
         quote = str(item.get("quote") or "").strip()
         grounded = (item.get("basis") == SOURCE and len(_squash(quote)) >= MIN_QUOTE and _squash(quote) in src_flat
                     and _numbers(f"{label} {benefit}") <= src_numbers)
-        amount = str(item.get("amount") or "").strip()[:web_evidence.MAX_AMOUNT]
+        amount = str(item.get("amount") or "").strip()[:MAX_AMOUNT]
         amount_ok = bool(amount) and grounded and bool(_numbers(amount)) and _numbers(amount) <= src_numbers
         tiers.append({"label": label[:MAX_LABEL], "requires": requires, "benefit": benefit[:MAX_BENEFIT],
                       "quote": quote if grounded else "", "basis": SOURCE if grounded else OUTSIDE,
@@ -88,25 +88,6 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
     notes = [{"text": str(n.get("text") or "").strip()[:MAX_NOTE], "basis": OUTSIDE} for n in (raw.get("notes") or [])[:MAX_NOTES]
              if isinstance(n, dict) and str(n.get("text") or "").strip()]
     return {"tiers": tiers, "notes": notes}
-
-
-def add_web_amounts(result: dict, service_name: str, urls: list[str] | None = None) -> None:
-    """원문에서 금액을 확인하지 못한 항목의 금액을 공식 웹사이트에서 찾아 채운다 (한 번 호출, 검증 통과분만).
-    조회를 못 하면 그대로 둔다 -> 화면은 '금액을 확인하지 못했어요'로 안내한다."""
-    missing = [t for t in result["tiers"] if not t["amount"]][:MAX_WEB_LOOKUP]
-    if not missing:
-        return
-    labels = [t["label"] + " — " + t["benefit"] for t in missing]
-    for kind, finder in (("공식 웹사이트(검색)", lambda ls: web_evidence.lookup(service_name, ls)),
-                         ("공식 페이지(직접 확인)", lambda ls: web_evidence.page_lookup(service_name, ls, urls or []))):
-        pending = [t for t in missing if not t["amount"]]
-        if not pending:
-            break
-        found = finder([labels[missing.index(t)] for t in pending])        # 1차 웹 검색 -> 2차 공식 페이지 직접 읽기
-        for idx, hit in found.items():
-            t = pending[idx - 1]
-            t["amount"], t["amount_basis"] = hit["amount"], "web"
-            t["evidence"] = [{"kind": kind, "quote": hit["quote"], "url": hit["url"]}]
 
 
 def compute(service_id: str, service_name: str, needs: list[str], chunks: list[Chunk] | None = None) -> dict | None:
@@ -129,7 +110,6 @@ def compute(service_id: str, service_name: str, needs: list[str], chunks: list[C
         return None
     if not result["tiers"]:
         return None
-    add_web_amounts(result, service_name, [c.detail_url for c in chunks if c.detail_url])
     if len(_cache) >= CACHE_LIMIT:
         _cache.pop(next(iter(_cache)))
     _cache[key] = result

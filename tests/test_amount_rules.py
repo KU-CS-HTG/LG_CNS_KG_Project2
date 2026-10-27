@@ -1,0 +1,97 @@
+"""제도별 예상 수령액 계산(amount_rules): 규칙 파일 형식, 계산 결과, 카드 화면."""
+import json
+
+import pytest
+
+from src.generate import amount_rules as ar
+
+SID = "149200005007"
+
+
+def base(**kw):
+    v = {i["id"]: i["default"] for i in ar.inputs_for(ar.find(SID))}
+    v.update(kw)
+    return v
+
+
+def test_rules_file_has_sources_and_required_facts():
+    for rule in json.loads(ar.RULES_PATH.read_text(encoding="utf-8"))["rules"]:
+        assert rule["service_ids"] and rule["as_of"] and rule["sources"] and rule["calculator"] in ar.INPUTS
+        assert all(s["url"].startswith("https://") and s["level"] and s["facts"] for s in rule["sources"])
+        assert {"allowance_monthly_won", "months", "median_income_monthly_won"} <= set(rule["facts"])
+    assert ar.find("없는 제도") is None and ar.find("") is None
+
+
+def test_single_household_young_applicant_gets_360만_and_합산_fails_on_assets():
+    out = ar.calculate(ar.find(SID), base(age=26, house_size=4, house_income_man=583, house_asset_eok=6.0, own_income_man=100, own_asset_eok=0.5))
+    single, joint = out["scenarios"]
+    assert single["verdict"] == "해당 가능" and single["amount_won"] == 3_600_000
+    assert "월 60만 원 × 6개월 = 360만 원" in single["lines"][-1]
+    assert joint["verdict"] == "해당 어려움" and joint["amount_won"] is None and "재산" in joint["reasons"][0]
+
+
+def test_dependents_add_up_to_the_monthly_cap():
+    out = ar.calculate(ar.find(SID), base(age=30, own_income_man=100, own_asset_eok=0.1, dep_minor=2, dep_senior=1, dep_disabled=3))
+    assert out["scenarios"][0]["amount_won"] == (600_000 + 400_000) * 6                       # 가산은 월 40만 원까지
+    out = ar.calculate(ar.find(SID), base(age=30, own_income_man=100, own_asset_eok=0.1, dep_minor=1))
+    assert out["scenarios"][0]["amount_won"] == 700_000 * 6
+
+
+def test_income_over_limit_and_age_and_unknown_household_size():
+    over = ar.calculate(ar.find(SID), base(age=30, own_income_man=400, own_asset_eok=0.1))["scenarios"][0]
+    assert over["verdict"] == "해당 어려움" and "월소득" in over["reasons"][0]
+    old = ar.calculate(ar.find(SID), base(age=75, own_income_man=0))["scenarios"][0]
+    assert old["verdict"] == "해당 어려움" and old["amount_won"] is None
+    big = ar.calculate(ar.find(SID), base(age=30, house_size=5, house_income_man=300, house_asset_eok=1.0))["scenarios"][1]
+    assert big["verdict"] == "확인 필요" and big["amount_won"] is None                       # 5인 기준중위소득은 규칙에 없다 -> 단정하지 않는다
+
+
+def test_non_youth_needs_work_history_and_general_track_uses_60_percent():
+    no_work = ar.calculate(ar.find(SID), base(age=45, worked="아니요", own_income_man=50, own_asset_eok=0.1))["scenarios"][0]
+    assert no_work["amount_won"] is None
+    ok = ar.calculate(ar.find(SID), base(age=45, worked="예", own_income_man=100, own_asset_eok=0.1))["scenarios"][0]
+    assert ok["amount_won"] == 3_600_000                                                       # 1인 중위소득 60% = 약 153.8만 원
+    high = ar.calculate(ar.find(SID), base(age=45, worked="예", own_income_man=200, own_asset_eok=0.1))["scenarios"][0]
+    assert high["amount_won"] is None
+
+
+def test_restriction_and_open_issues_are_always_reported():
+    out = ar.calculate(ar.find(SID), base(age=26, restricted="예", joined_before="있어요"))
+    assert len(out["notes"]) == 2 and out["open_issues"] and out["conflicts"] and out["sources"]
+
+
+def test_won_format():
+    assert ar.won(3_600_000) == "360만 원" and ar.won(600_000_000) == "6억 원" and ar.won(3_077_085) == "약 308만 원"
+
+
+def _script():
+    import streamlit as st
+    from app import main as app
+    from src.common.schema import Recommendation
+
+    st.session_state.setdefault("checks", {})
+    st.session_state.setdefault("guides", {})
+    r = Recommendation("국민취업지원제도", "고용노동부", "조건 확인", "취업지원서비스 및 생계안정 소득 지원", "고용센터", service_id="149200005007",
+                       needs_check=["연령 — 15세~69세"])
+    app._card(1, r, "k1")
+
+
+def test_card_shows_amount_form_and_calculated_result(monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    from src.generate import benefit_tiers as bt
+
+    tiers = {"tiers": [{"label": "II유형", "requires": [], "benefit": "참여수당", "quote": "", "basis": "outside", "amount": "", "amount_basis": "", "evidence": []}], "notes": []}
+    monkeypatch.setattr(bt, "compute", lambda *a, **k: tiers)
+    at = AppTest.from_function(_script, default_timeout=30).run()
+    next(b for b in at.button if b.label == "체크 완료").click().run()
+    next(b for b in at.button if "내 조건으로" in b.label).click().run()
+    assert not at.exception and any("예상 수령액 계산" in m.value for m in at.markdown)
+    assert not any("금액을 확인하지 못했어요" in c.value for c in at.caption)               # 규칙이 있는 제도는 항목별 '확인 못 함' 문구를 쓰지 않는다
+    at.number_input(key="amt_k1_age").set_value(26)
+    at.number_input(key="amt_k1_own_income_man").set_value(100)
+    at.number_input(key="amt_k1_own_asset_eok").set_value(0.5)
+    next(b for b in at.button if b.label == "예상 금액 계산").click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert not at.exception and "예상 수령액: 360만 원" in text and "가구원과 합산해 심사하는 경우" in text
+    assert any("자세히 보기 (계산 근거" in e.label for e in at.expander)

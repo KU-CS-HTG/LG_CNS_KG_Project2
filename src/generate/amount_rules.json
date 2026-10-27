@@ -1,0 +1,51 @@
+{
+  "_설명": "제도별 '예상 수령액' 계산 규칙. 사람이 공식 자료를 읽고 정하며, 값이 바뀌면 as_of와 sources를 함께 고친다. 계산은 src/generate/amount_rules.py가 코드로 한다 (LLM 미사용).",
+  "rules": [
+    {
+      "service_ids": ["149200005007"],
+      "name": "국민취업지원제도",
+      "calculator": "kupj",
+      "as_of": "2026-10-27",
+      "status": "초안: 노트(2026-10-27)와 대구 남구 안내문으로 맞춘 값이며, 고용24·고용노동부 원문과의 대조는 아직 안 됨",
+      "facts": {
+        "allowance_monthly_won": 600000,
+        "months": 6,
+        "dependent_monthly_won": 100000,
+        "dependent_monthly_max_won": 400000,
+        "age_min": 15,
+        "age_max": 69,
+        "youth_age_max": 34,
+        "youth_income_pct": 120,
+        "youth_asset_max_won": 500000000,
+        "general_income_pct": 60,
+        "general_asset_max_won": 400000000,
+        "median_income_monthly_won": {"1": 2564238, "2": 4199292, "3": 5359036, "4": 6494738}
+      },
+      "sources": [
+        {"title": "국민취업지원제도 신청 요건 (고용24)", "url": "https://m.work24.go.kr/ua/z/z/1300/selectEmssRqutIntro.do", "level": "공식",
+         "facts": "청년 특례(15~34세, 중위소득 120% 이하, 재산 5억 원 이하, 취업경험 무관), 지급 기간 6개월, 부양가족 가산, 가구원·재산 산정"},
+        {"title": "구직활동지원금 확대 (고용노동부)", "url": "https://www.moel.go.kr/news/achievements/view.do?bbs_seq=20260201211", "level": "공식",
+         "facts": "2026-01-01부터 구직촉진수당 월 60만 원 (기존 50만 원)"},
+        {"title": "청년 3만 명 취업경험 없어도 참여 (고용노동부)", "url": "https://www.moel.go.kr/news/enews/report/enewsView.do?news_seq=19309", "level": "공식",
+         "facts": "취업경험 없는 청년 추가 선발 (2026-04-27부터 선착순, 마감 여부 미확인)"},
+        {"title": "2026년 기준 중위소득 (복지로)", "url": "https://www.bokjiro.go.kr/ssis-tbu/cms/pc/news/promotion/1308418_1118.html", "level": "공식",
+         "facts": "2026년 기준중위소득(월) 1인 2,564,238원 · 2인 4,199,292원 · 3인 5,359,036원 · 4인 6,494,738원"},
+        {"title": "국민취업지원제도 요건 (정책브리핑)", "url": "https://www.korea.kr/news/policyNewsView.do?newsId=148968482", "level": "공식",
+         "facts": "요건·Ⅱ유형 참여수당 (고용24와 금액 설명이 다름)"},
+        {"title": "대구 남구 안내문 (2026.1.)", "url": "https://nam.daegu.kr/cmsh/nam.daegu.kr/images/main/poster260106_01.pdf", "level": "공식(지자체)",
+         "facts": "2026-01-01부터 월 60만 원 6개월, 부양가족 1인당 10만 원 최대 40만 원 (위 값과 일치 확인)"}
+      ],
+      "general_track_note": "Ⅰ유형 일반(최근 2년 100일·800시간 이상 취업경험, 중위소득 60% 이하, 재산 4억 원 이하)의 값은 이 서비스가 수집한 자격 조건(카드 체크리스트)에서 가져왔다.",
+      "conflicts": [
+        "Ⅱ유형 참여수당: 고용24는 기본 15만 원 + 3~10만 원, 정책브리핑은 최대 25만 원 1회 등으로 설명이 달라 금액을 계산하지 않았어요. 담당 기관에서 확인해 주세요.",
+        "청년 연령 하한: 고용24는 15세, 일부 안내는 18세부터라고 적어요. 만 18세 미만이면 고용센터에 확인해 주세요."
+      ],
+      "open_issues": [
+        "취업경험이 없는 청년은 선발형이라 예산에 따라 선발되지 않을 수 있고, 추가 선발은 선착순이라 마감됐을 수 있어요.",
+        "K-Digital Training 등 훈련과의 중복 수급은 공식 자료에서 확인하지 못했어요. 고용센터(☎1350)에 문의해 주세요.",
+        "가구원은 주민등록표 등재 배우자와 1촌 직계존·비속이며, 미등재여도 생계·주거를 함께하면 포함될 수 있어요. 부모님과 같이 살며 생계를 함께하면 단독 가구로 인정되지 않을 수 있어요.",
+        "재산은 가구원 합산이고 부채는 재산 취득 목적 대출의 상환 후 잔액만 인정돼요. 생활비·학자금 대출은 공제되지 않을 수 있어요."
+      ]
+    }
+  ]
+}
