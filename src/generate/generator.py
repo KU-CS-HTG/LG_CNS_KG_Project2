@@ -21,7 +21,7 @@ from src.common import config
 from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.catalog import store as catalog_store
-from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, period_detail, topical, trace
+from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, fit_check, period_detail, topical, trace
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
@@ -160,8 +160,10 @@ def _needs_from(conditions: dict) -> list[str]:
 
 
 def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
-              asked: list[str] | None = None, region: str | None = None) -> Answer:
-    """asked = 질문에서 검증된 '찾는 것' 구절(conditions['help']). 나이·지역 짝이 없을 때 이유 문장에 쓴다."""
+              asked: list[str] | None = None, region: str | None = None,
+              more: Callable[[], dict[str, list[Chunk]]] | None = None) -> Answer:
+    """asked = 질문에서 검증된 '찾는 것' 구절(conditions['help']). 나이·지역 짝이 없을 때 이유 문장에 쓴다.
+    more = 안내할 제도가 모자랄 때 다음 후보 묶음의 근거를 돌려주는 함수 (판정 통과·적합성 점검 뒤 5개가 안 되면 한 번 더 판정한다)."""
     if not evidence:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
 
@@ -176,6 +178,21 @@ def _generate(question: str, evidence: dict[str, list[Chunk]], needs: list[str],
         # 근거 없음이 맞는 질문은 매번 관련 없음으로 판정돼 다시 물어도 그대로였다 (q32~q34, 6번 모두).
         out = _judge(question, evidence, needs)
         recs = _top_or_none(_recommendations(question, evidence, needs, asked, out, checklists, region), evidence)
+    recs = fit_check.drop_unfit(question, recs, asked, evidence)   # 형식상 맞아도 이 사람에게는 맞지 않는 제도를 뺀다 (앞 5개를 고르기 전에 해서 빈자리는 다음 후보가 채운다)
+    if 0 < len(recs) < config.MAX_RECOMMENDATIONS and more is not None:
+        # 거르고 나니 5개가 안 되면 판정하지 못한 다음 후보를 한 번 더 판정해 채운다 (이용 중 제도·특정 대상 제도를 빼고 나니 3개만 남았는데,
+        # 10개 밖에 '구직자 취업지원 서비스 제공' 같은 맞는 제도가 있었다). 첫 묶음이 모두 빠진 경우(범위 밖 질문)에는 채우지 않는다.
+        extra = more()
+        if extra:
+            trace.title(f"안내가 {len(recs)}개뿐이라 다음 후보 {len(extra)}개를 더 판정합니다")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                job = pool.submit(_judge, question, extra, needs)
+                extra_checklists = pool.submit(_extract_checklists, extra).result()
+                extra_out = job.result()
+            extra_recs = fit_check.drop_unfit(question, _recommendations(question, extra, needs, asked, extra_out, extra_checklists, region), asked, extra)
+            have = {r.service_id for r in recs}
+            recs = recs + [r for r in extra_recs if r.service_id not in have]
+            evidence.update(extra)                      # 답변 평가가 같은 근거로 채점하도록 (호출한 쪽의 evidence에도 반영된다)
     if not recs:
         return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True)
     for r in recs[config.MAX_RECOMMENDATIONS:]:
@@ -990,7 +1007,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
                                        k=DISTRICT_CANDIDATES if districts else config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
-    for q in topical.phrase_queries(conditions.get("help"), question):
+    queries = topical.phrase_queries(conditions.get("help"), question)
+    cleaned = topical.without_in_use_clause(question, conditions.get("in_use"))
+    if cleaned:
+        queries.append(cleaned)          # 이용 중인 제도를 말한 절을 뺀 질문으로도 찾는다 (그 제도와 비슷한 제도가 결과를 채우는 것을 피한다)
+    for q in queries:
         # 질문 문장 전체로 검색하면 '정부나 지자체 지원제도가 있어?'·'수원에 살고 있어' 같은 말에 끌려 핵심 주제(대중교통비)와 맞는
         # 전국 제도(K-패스)가 64위로 밀렸다. 핵심어만으로 검색한 결과를 뒤에 더한다 (K-패스: 필터 적용 합산 2위).
         extra = _drop_expired(hybrid.search_with_info(q, filters, k=k).chunks, today)
@@ -1019,8 +1040,15 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
+    if trace.enabled():
+        from src.catalog import check as catalog_check
+        for sid, fields in catalog_check.unapplied(selected, catalog_store.CatalogStore().overlay()):
+            trace.out(f"  ! {sid} {selected[sid][0].service_name}: 제도 목록 관리에서 고친 {', '.join(fields)}이(가) 색인에 아직 없어요 "
+                      "-> python -m src.catalog apply 로 반영하세요 (그 전에는 옛 내용으로 답합니다)")
     _progress(STEP_GENERATE)
-    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"), region)
+    rest = [c for c in chunks if c.service_id not in selected]
+    more = (lambda: evidence_mod.select_evidence(rest, JUDGE_CANDIDATES)) if rest else None
+    answer = _generate(question, selected, _needs_from(conditions), conditions.get("help"), region, more)
     used = dict(result.filters_used)
     if region_relaxed:
         used.pop("region", None)

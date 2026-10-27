@@ -82,3 +82,33 @@ def test_minors_only_programs_go_back_unless_the_question_talks_about_kids(capsy
     out = {"services": [{"service_id": s, "applicable": "확인 필요", "meets_need": True, "matches": [], "needs_check": []} for s in evidence]}
     recs = generator._recommendations("대중교통비를 아낄 수 있는 지원이 있어?", evidence, [], None, out, {})
     assert [r.service_id for r in recs] == ["K1", "C1"]                                          # 둘 다 안내하되 성인 제도가 먼저
+
+
+def test_without_in_use_clause_drops_only_the_clause_about_the_program():
+    q = "나는 지금 K-Digital Training을 전액지원으로 듣고 있는데, 이것 말고도 취업준비생이 받을 수 있는 정부지원제도에 어떤 것들이 있는지 알려줘."
+    assert topical.without_in_use_clause(q, ["K-Digital Training"]) == "이것 말고도 취업준비생이 받을 수 있는 정부지원제도에 어떤 것들이 있는지 알려줘."
+    assert topical.without_in_use_clause(q, []) == "" and topical.without_in_use_clause(q, ["없는 제도"]) == ""      # 바뀐 것이 없으면 ''
+    assert topical.without_in_use_clause("K-Digital Training을 듣고 있어요", ["K-Digital Training"]) == ""         # 절이 하나뿐이면 지울 수 없다
+
+
+def test_answer_flow_searches_the_question_without_the_in_use_clause(monkeypatch, fake_conditions):
+    from src.common.schema import Answer
+    from src.generate import condition_extractor as ce
+    from src.generate import generator
+
+    asked = []
+
+    def fake_search(query, filters, k=5, mode="hybrid_filter"):
+        asked.append(query)
+        hit = chunk("N1", "구직자 취업지원 서비스", "구직자 지원") if query.startswith("이것 말고도") else chunk("M1", "K-디지털 트레이닝 비슷한 훈련", "훈련")
+        return type("R", (), {"chunks": [hit], "filters_used": {}, "relaxed": False})()
+
+    q = "나는 K-Digital Training을 듣고 있는데, 이것 말고도 취업준비생이 받을 수 있는 제도 알려줘."
+    fake_conditions({"conditions": {"in_use": ["K-Digital Training"]}})
+    monkeypatch.setattr(ce, "_chat_json", lambda s, u: {})
+    monkeypatch.setattr(generator.hybrid, "search_with_info", fake_search)
+    monkeypatch.setattr(generator, "_generate", lambda *a, **k: Answer(text="x"))
+    monkeypatch.setattr(generator, "_application_period", lambda sid: "상시신청")
+    monkeypatch.setattr(generator.evidence_mod, "select_evidence", lambda chunks, n: {c.service_id: [c] for c in chunks})
+    _, selected = generator._answer_with_evidence(q)
+    assert any(a.startswith("이것 말고도") for a in asked) and {"M1", "N1"} <= set(selected)
