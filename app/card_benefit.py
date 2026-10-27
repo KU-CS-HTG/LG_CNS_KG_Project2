@@ -57,6 +57,8 @@ def _show_amount(out: dict) -> None:
         st.markdown(f"**{icon} {sc['title']} — {sc['verdict']}**")
         if sc["amount_won"] is not None:
             st.markdown(f"💰 **예상 수령액: {amount_rules.won(sc['amount_won'])}**")
+        elif sc.get("amount_text"):
+            st.markdown(f"💰 **받을 수 있는 금액: {sc['amount_text']}** _(2차 자료 기준)_")
         for line in sc["lines"]:
             st.markdown(f"- {line}")
         for reason in sc["reasons"]:

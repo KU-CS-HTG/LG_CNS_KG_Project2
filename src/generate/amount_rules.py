@@ -165,6 +165,7 @@ def _checks_result(rule: dict, scenario: dict, age_band: str | None = None) -> d
     scenarios = [scenario]
     t2 = rule.get("type2")
     if t2 and age_band == AGE_BANDS[0]:         # Ⅱ유형은 금액을 계산하지 못해도 있다는 것과 자료 간 차이는 보여 준다
-        scenarios.append({"title": t2["title"], "verdict": "확인 필요", "amount_won": None, "lines": t2["lines"], "reasons": []})
+        scenarios.append({"title": t2["title"], "verdict": "해당 가능", "amount_won": None, "amount_text": t2.get("amount_text", ""),
+                          "lines": t2["lines"], "reasons": []})
     return {"scenarios": scenarios, "notes": [], "conflicts": rule["conflicts"], "open_issues": rule["open_issues"], "sources": rule["sources"],
             "as_of": rule["as_of"], "status": rule["status"], "general_track_note": rule.get("general_track_note", "")}

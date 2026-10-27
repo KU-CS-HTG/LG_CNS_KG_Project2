@@ -76,6 +76,14 @@ def test_from_checks_uses_checklist_answers_without_asking_numbers_again():
     assert none["income60"] is None and ar.from_checks(rule, none, ar.AGE_BANDS[0], 0)["scenarios"][0]["amount_won"] is None
 
 
+def test_type2_amounts_are_shown_with_secondary_source_caveat():
+    rule = ar.find(SID)
+    t2 = ar.from_checks(rule, {"income120": True, "asset5": True}, ar.AGE_BANDS[0], 0)["scenarios"][1]
+    text = " ".join(t2["lines"])
+    assert t2["amount_won"] is None and "최대 25만 원" in t2["amount_text"] and "월 2만 원" in text and "2차 자료" in text
+    assert any(s["level"].startswith("2차") for s in rule["sources"])
+
+
 def test_won_format():
     assert ar.won(3_600_000) == "360만 원" and ar.won(600_000_000) == "6억 원" and ar.won(3_077_085) == "약 308만 원"
 
