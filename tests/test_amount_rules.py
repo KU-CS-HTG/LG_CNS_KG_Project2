@@ -68,6 +68,7 @@ def test_from_checks_uses_checklist_answers_without_asking_numbers_again():
     assert flags == {"income60": True, "asset4": True, "worked": False, "income120": True, "asset5": True}
     youth = ar.from_checks(rule, flags, ar.AGE_BANDS[0], 1)["scenarios"][0]
     assert youth["verdict"] == "해당 가능" and youth["amount_won"] == 700_000 * 6
+    assert [x["title"] for x in ar.from_checks(rule, flags, ar.AGE_BANDS[0], 0)["scenarios"]] == ["체크한 조건 기준", "Ⅱ유형 (참고)"]   # Ⅱ유형은 금액 없이 안내
     older = ar.from_checks(rule, flags, ar.AGE_BANDS[1], 0)["scenarios"][0]                  # 35세 이상은 청년 특례 불가, 취업경험도 체크 안 함
     assert older["verdict"] == "해당 어려움" and older["amount_won"] is None
     assert ar.from_checks(rule, flags, None, 0)["scenarios"][0]["verdict"] == "확인 필요"
