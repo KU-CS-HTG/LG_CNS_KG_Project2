@@ -226,19 +226,13 @@ def test_empty_details_draw_nothing_and_preserve_summary(monkeypatch, details):
     assert ui.calls == [] and r == before
 
 
-def test_render_keeps_source_literal_collapsed_and_card_scoped(monkeypatch):
+def test_render_draws_nothing_without_service_id_and_leaves_recommendation_intact(monkeypatch):
     ui = DisplayDouble()
     monkeypatch.setattr(card_benefit, "st", ui)
-    body = "유형 A\n<script>alert('금액')</script> [링크](javascript:alert(1))\n월 50만원 지급"
-    r = rec(benefit_detail=[body, "※ 결석 시 미지급"], citations=[Citation("s", "a", "원문", "https://example.invalid")])
+    r = rec(benefit_detail=["유형 A\n월 50만원 지급", "※ 결석 시 미지급"], citations=[Citation("s", "a", "원문", "https://example.invalid")])
     before = deepcopy(r)
     assert render(r, "first") is None
-    assert render(r, "second") is None
-    assert [c[1]["key"] for c in ui.calls if c[0] == "container"] == ["card_benefit_first", "card_benefit_second"]
-    assert all(c[2] == {"expanded": False} for c in ui.calls if c[0] == "expander")
-    assert [c[1] for c in ui.calls if c[0] == "text"] == [body, "※ 결석 시 미지급"] * 2
-    assert all("기존 요약" not in str(c) for c in ui.calls)
-    assert r == before
+    assert ui.calls == [] and r == before          # 지원내용 원문은 카드 머리의 '원문 확인하기' 링크로 본다
 
 
 def _cards_script():
@@ -258,19 +252,14 @@ def _cards_script():
 def test_actual_streamlit_card_preserves_summary_sources_and_separate_detail_areas():
     at = AppTest.from_function(_cards_script).run()
     assert not at.exception
-    assert len(at.expander) == 2
-    assert all(e.label == "무엇을 받나요 — 자세히 보기" and not e.proto.expanded for e in at.expander)
-    assert "월 20만원" in at.expander[0].text[0].value
-    assert "회당 10만원" not in at.expander[0].text[0].value
-    assert "회당 10만원" in at.expander[1].text[0].value
-    assert "<b>원문 표기</b>" in at.expander[1].text[0].value
+    assert not any("자세히 보기" in e.label for e in at.expander)          # 무엇을 받나요 펼침 영역은 없다
     markup = "\n".join(m.value for m in at.markdown)
     assert "기존 요약 1" in markup and "기존 요약 2" in markup
     assert markup.count("근거 원문 1건 보기") == 2
-    assert "https://example.invalid/source" in markup
+    assert markup.count("원문 확인하기 ↗") == 2                                  # 무엇을 받나요 칸 안의 작은 링크 (새 창)
+    assert 'href="https://example.invalid/source" target="_blank"' in markup
     at.run()
-    assert not at.exception and len(at.expander) == 2
-    assert "월 20만원" in at.expander[0].text[0].value
+    assert not at.exception
 
 
 def test_existing_generator_contract_uses_input_evidence_without_extra_calls(monkeypatch):

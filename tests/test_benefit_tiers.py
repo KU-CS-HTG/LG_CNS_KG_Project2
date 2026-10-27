@@ -27,8 +27,9 @@ RAW = {"tiers": [
 
 
 @pytest.fixture(autouse=True)
-def fresh_cache():
+def fresh_cache(monkeypatch):
     bt._cache.clear()
+    monkeypatch.setenv("WEB_LOOKUP", "0")          # 테스트는 웹 조회를 하지 않는다 (필요한 테스트가 가짜로 바꿔 끼운다)
 
 
 def test_source_text_orders_sections_and_strips_the_name_prefix():
@@ -91,33 +92,85 @@ def _card_script():
     app._card(1, r, "t1")
 
 
-def test_card_panel_shows_matching_support_when_conditions_are_checked(monkeypatch):
+def _amounts(raw_amounts):
+    raw = {"tiers": [{**t, "amount": raw_amounts.get(t["label"], "")} for t in RAW["tiers"]], "notes": []}
+    return bt.clean(raw, bt.source_text(chunks()), len(NEEDS))
+
+
+def test_amount_is_kept_only_when_grounded_in_the_source():
+    out = _amounts({"청년": "지출액의 30%", "다자녀": "지출액의 90%", "지급 방식": "월 10만원"})
+    by = {t["label"]: t for t in out["tiers"]}
+    assert by["청년"]["amount"] == "지출액의 30%" and by["청년"]["amount_basis"] == bt.SOURCE
+    assert by["다자녀"]["amount"] == "" and by["지급 방식"]["amount"] == ""        # 원문에 없는 숫자·근거 없는 항목은 버린다
+
+
+def test_web_amounts_fill_only_verified_items(monkeypatch):
+    from src.generate import web_evidence as we
+    seen = {}
+
+    def fake_search(name, labels):
+        seen["labels"] = labels
+        return ({"items": [
+            {"index": 1, "amount": "월 최대 5만원", "quote": "월 최대 5만원을 환급한다", "url": "https://www.molit.go.kr/a"},
+            {"index": 2, "amount": "월 9만원", "quote": "월 5만원", "url": "https://www.molit.go.kr/a"},            # 숫자가 근거에 없다
+            {"index": 3, "amount": "월 7만원", "quote": "월 7만원", "url": "https://blog.example.com/x"},            # 공식 도메인 아님
+        ]}, {"https://www.molit.go.kr/a", "https://blog.example.com/x"})
+
+    monkeypatch.setenv("WEB_LOOKUP", "1")
+    monkeypatch.setattr(we.config, "OPENAI_API_KEY", "k")
+    monkeypatch.setattr(we, "_search", fake_search)
+    result = _amounts({"청년": "지출액의 30%"})
+    bt.add_web_amounts(result, "K-패스")
+    by = {t["label"]: t for t in result["tiers"]}
+    assert by["청년"]["amount_basis"] == bt.SOURCE and len(seen["labels"]) == 4        # 금액이 이미 있는 항목은 조회하지 않는다
+    web = [t for t in result["tiers"] if t["amount_basis"] == "web"]
+    assert [t["label"] for t in web] == ["일반"] and web[0]["evidence"][0]["url"] == "https://www.molit.go.kr/a"
+    assert [t["label"] for t in result["tiers"] if not t["amount"]] == ["저소득", "다자녀", "지급 방식"]
+
+
+def test_web_lookup_is_off_without_key_or_when_disabled_and_failure_is_empty(monkeypatch):
+    from src.generate import web_evidence as we
+    monkeypatch.setattr(we.config, "OPENAI_API_KEY", "k")
+    assert we.lookup("x", ["a"]) == {}                                             # WEB_LOOKUP=0
+    monkeypatch.setenv("WEB_LOOKUP", "1")
+    monkeypatch.setattr(we, "_search", lambda *a: (_ for _ in ()).throw(RuntimeError("no tool")))
+    assert we.lookup("x", ["a"]) == {}
+    assert we.allowed("https://www.gov.kr/x") and we.allowed("https://korea.kr") and not we.allowed("https://evilgo.kr/x") \
+        and not we.allowed("javascript:alert(1)")
+
+
+def _click(at, label):
+    next(b for b in at.button if b.label == label).click().run()
+
+
+def test_card_flow_requires_check_done_before_showing_support_and_amounts(monkeypatch):
     pytest.importorskip("streamlit")
     from streamlit.testing.v1 import AppTest
 
-    result = bt.clean(RAW, bt.source_text(chunks()), len(NEEDS))
+    result = _amounts({"일반": "지출액의 20%", "청년": "지출액의 30%"})
     monkeypatch.setattr(bt, "compute", lambda *a, **k: result)
     at = AppTest.from_function(_card_script, default_timeout=30).run()
     assert not at.exception
-    assert [c.label for c in at.checkbox if c.key.startswith("chk_t1_")] and any("내 조건으로" in b.label for b in at.button)
-    next(b for b in at.button if "내 조건으로" in b.label).click().run()
-    assert not at.exception
     keys = [c.key for c in at.checkbox if c.key.startswith("chk_t1_")]
-    assert len(keys) == 4                                                       # 체크리스트가 한 번만(칸 안에) 그려진다
-    assert "**지급 방식**" in " ".join(m.value for m in at.markdown)
-    assert any("조건을 더 체크하면 받을 수 있는 지원 4가지" in e.label for e in at.expander)      # 체크 전: 조건이 필요한 지원 4가지가 대기
+    assert len(keys) == 4 and any(b.label == "체크 완료" for b in at.button)
+    assert not any("내 조건으로" in b.label for b in at.button)                   # 체크 완료 전에는 버튼이 없다
     for c in at.checkbox:
         if c.key in (keys[0], keys[1]):
             c.check()
-    at.run()
-    assert any("조건을 더 체크하면 받을 수 있는 지원 2가지" in e.label for e in at.expander)      # 일반·청년이 열리고 저소득·다자녀가 남는다
+    _click(at, "체크 완료")
+    assert not at.exception and any("내 조건으로 받을 수 있는 지원 보기" in b.label for b in at.button)
+    _click(at, "🎁 내 조건으로 받을 수 있는 지원 보기")
     text = " ".join(m.value for m in at.markdown)
     assert "**일반** — 대중교통비의 20% 환급" in text and "**청년** — 대중교통비의 30% 환급" in text
-    assert "**저소득**" in text and any("필요한 조건: 소득" in c.value for c in at.caption)   # 아직 못 받는 지원과 필요한 조건도 안내
-    assert any("원문: 청년층 : 30%" in c.value for c in at.caption)
-    assert any("자료 밖 정보" in m.value for m in at.markdown)                   # 지급 방식은 자료 밖 표시
-    next(b for b in at.button if b.label == "닫기").click().run()
-    assert any("내 조건으로" in b.label for b in at.button) and len([c for c in at.checkbox if c.key.startswith("chk_t1_")]) == 4   # 닫으면 원래 체크리스트
+    assert "💰 **받을 수 있는 금액: 지출액의 30%**" in text
+    assert any("금액을 확인하지 못했어요" in c.value for c in at.caption)                 # 지급 방식은 금액 없음
+    assert any("자세히 보기 (금액 근거)" in e.label for e in at.expander)
+    assert any("조건을 더 충족하면 받을 수 있는 지원 2가지" in e.label for e in at.expander)
+    assert any("자료 밖 정보" in m.value for m in at.markdown)
+    next(c for c in at.checkbox if c.key == keys[2]).check().run()                   # 체크를 바꾸면 결과를 닫는다
+    assert not any("받을 수 있는 금액" in m.value for m in at.markdown) and any("다시 '체크 완료'" in c.value for c in at.caption)
+    _click(at, "체크 완료")
+    assert any("내 조건으로 받을 수 있는 지원 보기" in b.label for b in at.button)
 
 
 def test_card_panel_failure_keeps_the_normal_card(monkeypatch):
@@ -126,6 +179,7 @@ def test_card_panel_failure_keeps_the_normal_card(monkeypatch):
 
     monkeypatch.setattr(bt, "compute", lambda *a, **k: None)
     at = AppTest.from_function(_card_script, default_timeout=30).run()
-    next(b for b in at.button if "내 조건으로" in b.label).click().run()
+    _click(at, "체크 완료")
+    _click(at, "🎁 내 조건으로 받을 수 있는 지원 보기")
     assert not at.exception and any("정리하지 못했어요" in w.value for w in at.warning)
     assert len([c for c in at.checkbox if c.key.startswith("chk_t1_")]) == 4     # 체크리스트는 그대로 있다
