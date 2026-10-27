@@ -17,31 +17,68 @@ def fake(results):
     return lambda system, user: {"results": results}
 
 
+def ev(**texts):
+    """service_id -> 근거 조각 (본문에 texts[service_id]가 들어 있다)."""
+    from src.common.schema import Chunk
+    return {sid: [Chunk(f"{sid}#지원대상", sid, sid, "지원대상", f"{sid}\n{text}")] for sid, text in texts.items()}
+
+
+EVIDENCE = ev(A="광고 분야 종사 예정자를 위한 교육 과정", B="구직촉진수당과 취업 상담", C="맞춤형 프로그램")
+
+
 def test_unfit_recommendations_are_removed_in_order_with_reasons_in_trace(monkeypatch, capsys):
     monkeypatch.setattr(ce, "_chat_json", fake([
-        {"id": "A", "fit": "poor", "reason": "또 다른 훈련이고 광고 직군 전용이라 '이것 말고' 요청에 맞지 않음"},
-        {"id": "B", "fit": "ok", "reason": ""}, {"id": "C", "fit": "ok", "reason": ""}]))
+        {"id": "A", "fit": "poor", "category": "niche", "quote": "광고 분야 종사 예정자", "reason": "광고 직군 전용이라 일반 취업준비생에게 맞지 않음"},
+        {"id": "B", "fit": "ok"}, {"id": "C", "fit": "ok"}]))
     trace.set_enabled(True)
     try:
-        out = fit_check.drop_unfit(Q, RECS, ["취업준비생이 받을 수 있는 정부지원제도"])
+        out = fit_check.drop_unfit(Q, RECS, ["취업준비생이 받을 수 있는 정부지원제도"], EVIDENCE)
     finally:
         trace.set_enabled(None)
     assert [r.service_id for r in out] == ["B", "C"]
     err = capsys.readouterr().err
-    assert "제외   A  글로벌 광고인재 육성" in err and "광고 직군 전용" in err and "유지   B" in err
+    assert "제외   A  글로벌 광고인재 육성" in err and "[niche]" in err and "근거: '광고 분야 종사 예정자'" in err and "유지   B" in err
+
+
+def test_a_verdict_without_a_quote_found_in_the_right_text_is_discarded(monkeypatch, capsys):
+    from src.generate import exclusion
+
+    exclusion.IN_USE_CONTEXT.set([{"이름": "K-디지털 트레이닝", "설명": "신기술 분야 훈련과정 지원 / 국민내일배움카드 발급자"}])
+    try:
+        monkeypatch.setattr(ce, "_chat_json", fake([
+            # 이용 중인 제도 설명에 없는 말로 '중복'이라 한 경우 (K-Digital Training이 취업 지원 서비스를 준다는 구절은 없다)
+            {"id": "B", "fit": "poor", "category": "duplicate", "quote": "취업 지원 서비스를 받고", "reason": "이미 취업 지원 서비스를 받고 있어 중복"},
+            # 전제 조건 중복: 구절이 이용 중인 제도 설명에 있다 -> 인정
+            {"id": "C", "fit": "poor", "category": "duplicate", "quote": "국민내일배움카드 발급자", "reason": "이미 발급받은 카드를 다시 안내하는 것"},
+            # niche인데 근거를 후보 원문에서 못 찾음 / 근거 없음 / 범주 없음
+            {"id": "A", "fit": "poor", "category": "niche", "quote": "해외 취업 전용", "reason": "특정 업종 전용이라 맞지 않음"}]))
+        trace.set_enabled(True)
+        try:
+            out = fit_check.drop_unfit(Q, RECS, None, EVIDENCE)
+        finally:
+            trace.set_enabled(None)
+        assert [r.service_id for r in out] == ["A", "B"]                                  # C만 빠진다
+        assert "근거 구절을 자료에서 확인하지 못해 판정을 버림" in capsys.readouterr().err
+        monkeypatch.setattr(ce, "_chat_json", fake([{"id": "A", "fit": "poor", "reason": "범주와 근거 구절이 없는 판정입니다"},
+                                                     {"id": "B", "fit": "poor", "category": "niche", "quote": "", "reason": "근거 구절이 비어 있는 판정"}]))
+        assert fit_check.drop_unfit(Q, RECS, None, EVIDENCE) == RECS
+    finally:
+        exclusion.IN_USE_CONTEXT.set([])
 
 
 def test_weak_or_unknown_verdicts_are_ignored(monkeypatch):
-    monkeypatch.setattr(ce, "_chat_json", fake([{"id": "A", "fit": "poor", "reason": "별로"},            # 이유가 너무 짧다
-                                                 {"id": "ZZ", "fit": "poor", "reason": "후보에 없는 id라서 무시된다"},
-                                                 {"id": "B", "fit": "maybe", "reason": "형식이 아닌 값입니다 정말로"}]))
-    assert fit_check.drop_unfit(Q, RECS) == RECS
+    monkeypatch.setattr(ce, "_chat_json", fake([
+        {"id": "A", "fit": "poor", "category": "niche", "quote": "광고 분야 종사 예정자", "reason": "별로"},                      # 이유가 너무 짧다
+        {"id": "ZZ", "fit": "poor", "category": "niche", "quote": "광고 분야", "reason": "후보에 없는 id라서 무시된다"},
+        {"id": "B", "fit": "maybe", "category": "niche", "quote": "구직촉진수당", "reason": "형식이 아닌 값입니다 정말로"}]))
+    assert fit_check.drop_unfit(Q, RECS, None, EVIDENCE) == RECS
 
 
 def test_everything_poor_or_failure_or_single_candidate_or_named_program_keeps_all(monkeypatch):
-    all_poor = [{"id": r.service_id, "fit": "poor", "reason": "모두 맞지 않는다고 판정한 경우입니다"} for r in RECS]
+    all_poor = [{"id": r.service_id, "fit": "poor", "category": "niche", "quote": q, "reason": "모두 맞지 않는다고 판정한 경우입니다"}
+                for r, q in zip(RECS, ("광고 분야 종사 예정자", "구직촉진수당", "맞춤형 프로그램"))]
     monkeypatch.setattr(ce, "_chat_json", fake(all_poor))
-    assert fit_check.drop_unfit(Q, RECS) == RECS                                         # 모두 poor면 점검을 믿지 않는다
+    assert fit_check.drop_unfit(Q, RECS, None, EVIDENCE) == RECS                         # 모두 poor면 점검을 믿지 않는다
     assert fit_check.drop_unfit(Q, RECS[:1]) == RECS[:1]                                 # 후보가 하나면 점검하지 않는다
     assert fit_check.drop_unfit("청년희망적금 알려줘", RECS, ["청년희망적금"]) == RECS      # 제도 이름을 콕 집어 물으면 점검하지 않는다
     monkeypatch.setattr(ce, "_chat_json", lambda s, u: (_ for _ in ()).throw(RuntimeError("down")))
@@ -70,11 +107,11 @@ def test_generate_applies_the_check_before_taking_the_top_five(monkeypatch):
     from src.common.schema import Chunk
     from src.generate import generator
 
-    chunks = {r.service_id: [Chunk(f"{r.service_id}#지원내용", r.service_id, r.service_name, "지원내용", f"{r.service_name}\n내용")] for r in RECS}
+    chunks = {r.service_id: [Chunk(f"{r.service_id}#지원대상", r.service_id, r.service_name, "지원대상", f"{r.service_name}\n광고 분야 종사 예정자 내용")] for r in RECS}
     monkeypatch.setattr(generator, "_judge", lambda *a, **k: {})
     monkeypatch.setattr(generator, "_extract_checklists", lambda ev: {})
     monkeypatch.setattr(generator, "_recommendations", lambda *a, **k: list(RECS))
-    monkeypatch.setattr(ce, "_chat_json", fake([{"id": "A", "fit": "poor", "reason": "또 다른 훈련이라 이것 말고 요청에 맞지 않음"}]))
+    monkeypatch.setattr(ce, "_chat_json", fake([{"id": "A", "fit": "poor", "category": "niche", "quote": "광고 분야 종사 예정자", "reason": "광고 직군 전용이라 맞지 않음"}]))
     answer = generator._generate(Q, chunks, [], ["취업준비생이 받을 수 있는 정부지원제도"])
     assert [r.service_id for r in answer.recommendations] == ["B", "C"]
 
