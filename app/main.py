@@ -23,7 +23,7 @@ from streamlit import runtime  # noqa: E402
 
 from app import card_apply, card_benefit, card_period  # noqa: E402
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import generator, guide_evidence, income_calc  # noqa: E402
+from src.generate import generator, guide_evidence, guide_router, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -628,7 +628,8 @@ def main() -> None:
                            "위 제도들의 판정 기준 문서(고시·사업안내)에서 관련 조항을 찾아 원문으로 보여 드려요.")
                           if guide_mode else
                           ("↳ 위 질문에 이어서 묻는 중",
-                           "아래 입력창에 추가 정보나 궁금한 점을 적어 주세요. 앞의 내용과 합쳐서 다시 찾아드려요."))
+                           "아래 입력창에 추가 정보나 궁금한 점을 적어 주세요. 앞의 내용과 합쳐서 다시 찾아드려요. "
+                           "자격 기준을 어떻게 보는지 묻는 질문이면 판정 기준 문서에서 찾아드려요."))
             with st.container(key="replybox"):
                 c1, c2 = st.columns([5, 1], vertical_alignment="center")
                 c1.markdown(f'<div class="fb-title">{title}</div>'
@@ -693,6 +694,14 @@ def _answer_pending() -> None:
     if not asked:
         return
     thread = _thread()
+    # 이어진 질문이 위 제도의 자격 기준 해석을 묻는 것이면 버튼 없이도 판정 기준 문서에서 답한다 (guide_router)
+    if thread and thread[-1].get("follow") and guide_evidence.available() and _guide_targets(thread):
+        with st.spinner("질문을 살펴보고 있어요…"):
+            to_guide = guide_router.is_guide_question(thread[-1]["content"], _guide_targets(thread))
+        if to_guide:
+            thread[-1]["guide"] = True              # 판정 문서 질문으로 기록 (다음 이어진 질문에 합치지 않는다)
+            _answer_guide(thread[-1]["content"])
+            return
     box = st.container(key="fu_pending") if thread and thread[-1].get("follow") else st.container()
     with box, st.chat_message("assistant", avatar="🧭"):
         try:
