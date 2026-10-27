@@ -220,3 +220,35 @@ def test_catalog_check_finds_edits_missing_from_the_index(tmp_path):
     old = {"S1": [Chunk("S1#지원내용", "S1", "n", "지원내용", "n\n구체적인 혜택이 명시되지 않음")],
            "S2": [Chunk("S2#지원내용", "S2", "n", "지원내용", "n\n새 내용입니다 이미 반영됨")], "S3": []}
     assert check.unapplied(old, store.overlay()) == [("S1", ["지원내용"])]                  # 기관은 본문에 안 들어가 보지 않는다
+
+
+def test_duplicate_is_accepted_when_the_in_use_description_names_the_candidate(monkeypatch):
+    """K-디지털 트레이닝의 지원대상이 '국민내일배움카드 발급자'이면 국민내일배움카드는 그 제도의 전제다. LLM이 구절을 후보 원문에서 댔어도 인정한다."""
+    from src.generate import exclusion
+
+    recs = [rec("A", "국민내일배움카드"), rec("B", "구직자 취업지원 서비스 제공"), rec("C", "청년도전지원사업")]
+    evidence = ev(A="○ 국민 누구나", B="구직자 취업지원", C="구직단념청년")
+    exclusion.IN_USE_CONTEXT.set([{"이름": "K-디지털 트레이닝", "설명": "[지원대상] 국민내일배움카드 발급자 [지원내용] 신기술 분야 훈련과정 지원"}])
+    try:
+        monkeypatch.setattr(ce, "_chat_json", fake([
+            {"id": "A", "fit": "poor", "category": "duplicate", "quote": "국민 누구나", "reason": "이미 K-Digital Training으로 같은 카드를 갖고 있음"},
+            {"id": "B", "fit": "poor", "category": "duplicate", "quote": "구직자 취업지원", "reason": "이미 취업 지원 서비스를 받고 있으므로 중복"}]))
+        out = fit_check.drop_unfit(Q, recs, None, evidence)
+    finally:
+        exclusion.IN_USE_CONTEXT.set([])
+    assert [r.service_id for r in out] == ["B", "C"]          # A만 빠진다: B는 후보 이름이 이용 중인 제도 설명에 없고 구절도 거기에 없다
+
+
+def test_verdicts_from_both_passes_are_combined(monkeypatch):
+    answers = iter([{"results": [{"id": "A", "fit": "poor", "category": "niche", "quote": "광고 분야 종사 예정자", "reason": "광고 직군 전용이라 맞지 않음"}]},
+                    {"results": [{"id": "C", "fit": "poor", "category": "mismatch", "quote": "맞춤형 프로그램", "reason": "이름만 겹치고 실제 도움이 다름"}]}])
+    import threading
+    lock = threading.Lock()
+
+    def alternate(system, user):
+        with lock:
+            return next(answers)
+
+    monkeypatch.setattr(ce, "_chat_json", alternate)
+    out = fit_check.drop_unfit(Q, RECS, None, EVIDENCE)
+    assert [r.service_id for r in out] == ["B"]              # 한 번에는 A, 다른 한 번에는 C가 나와도 근거가 확인된 둘 다 반영

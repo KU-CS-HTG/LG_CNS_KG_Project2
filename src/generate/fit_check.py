@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from src.common.schema import Chunk, Recommendation
 from src.generate import benefit_tiers, condition_extractor, exclusion, trace
@@ -25,6 +26,7 @@ MIN_QUOTE = 4
 SECTION_CHARS = 350        # 후보 원문으로 보여 주는 항목별 길이 (지원대상·지원내용)
 FUZZY_MIN = 8              # 이 글자 수 이상인 근거 구절은 조금 다르게 옮겨 적은 것도 인정한다
 FUZZY_RATIO = 0.8          # 근거 구절의 글자 3개 묶음 중 자료에도 있는 비율
+PASSES = 2                 # 같은 점검을 동시에 이 횟수만큼 하고, 근거가 확인된 제외 판정을 합친다 (실행마다 판정이 달라 맞는 제외를 놓치던 문제)
 POOR = "poor"
 CATEGORIES = ("duplicate", "niche", "mismatch")
 
@@ -85,13 +87,19 @@ def _candidate(r: Recommendation, text: str) -> dict:
     return item
 
 
-def _valid(item: dict, candidates: dict[str, str], in_use_text: str) -> bool:
-    """poor 판정이 형식(범주·이유·근거 구절)을 갖췄고 근거 구절이 맞는 자료에 글자 그대로 있는가."""
+def _valid(item: dict, candidates: dict[str, str], in_use_text: str, names: dict[str, str]) -> bool:
+    """poor 판정이 형식(범주·이유·근거 구절)을 갖췄고 근거 구절이 맞는 자료에 있는가.
+    duplicate는 구절이 이용 중인 제도 설명에 있어야 한다. 단, 후보 이름 자체가 이용 중인 제도 설명에 나오면(예: K-디지털 트레이닝의
+    지원대상 '국민내일배움카드 발급자'와 후보 '국민내일배움카드') 그 제도의 전제·구성 요소라는 직접 증거라서 구절을 후보 원문에서 댄 것도 인정한다."""
     quote, reason = _squash(str(item.get("quote") or "")), str(item.get("reason") or "").strip()
     if item.get("category") not in CATEGORIES or len(quote) < MIN_QUOTE or len(reason) < MIN_REASON:
         return False
-    source = in_use_text if item["category"] == "duplicate" else candidates.get(str(item["id"]), "")
-    return _quoted(str(item.get("quote")), source)
+    rid, own = str(item["id"]), candidates.get(str(item["id"]), "")
+    if item["category"] == "duplicate":
+        name = _squash(names.get(rid, ""))
+        named_in_use = len(name) >= MIN_QUOTE and name in _squash(in_use_text)
+        return _quoted(str(item.get("quote")), in_use_text) or (named_in_use and _quoted(str(item.get("quote")), f"{in_use_text} {own}"))
+    return _quoted(str(item.get("quote")), own)
 
 
 def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | None = None,
@@ -105,27 +113,39 @@ def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | Non
     texts = {rid: _text((evidence or {}).get(r.service_id)) for r, rid in zip(recs, ids)}
     in_use = exclusion.IN_USE_CONTEXT.get()
     in_use_text = " ".join(f"{c['이름']} {c['설명']}" for c in in_use)
-    try:
-        payload = {"질문": question, "후보": [_candidate(r, texts[rid]) for r, rid in zip(recs, ids)]}
-        if in_use:
-            payload["이용 중인 제도 설명"] = in_use
-        if exclusion.IN_USE_KINDS.get():
-            payload["이용 중인 제도 종류"] = exclusion.IN_USE_KINDS.get()
-        out = condition_extractor._chat_json(PROMPT, json.dumps(payload, ensure_ascii=False))
-    except Exception as e:      # noqa: BLE001 — 점검이 안 되면 거르지 않는다 (맞는 제도를 잘못 빼는 쪽이 더 나쁘다)
-        log.warning("실제 적합성 점검 실패, 거르지 않고 진행: %s", e)
+    payload = {"질문": question, "후보": [_candidate(r, texts[rid]) for r, rid in zip(recs, ids)]}
+    if in_use:
+        payload["이용 중인 제도 설명"] = in_use
+    if exclusion.IN_USE_KINDS.get():
+        payload["이용 중인 제도 종류"] = exclusion.IN_USE_KINDS.get()
+    body = json.dumps(payload, ensure_ascii=False)
+
+    def ask(_):
+        try:
+            return condition_extractor._chat_json(PROMPT, body)
+        except Exception as e:      # noqa: BLE001 — 점검이 안 되면 거르지 않는다 (맞는 제도를 잘못 빼는 쪽이 더 나쁘다)
+            log.warning("실제 적합성 점검 실패: %s", e)
+            return None
+
+    with ThreadPoolExecutor(max_workers=PASSES) as pool:
+        outs = [o for o in pool.map(ask, range(PASSES)) if isinstance(o, dict)]
+    if not outs:
         return recs
+    names = {rid: r.service_name for r, rid in zip(recs, ids)}
     verdicts: dict[str, str] = {}
     rejected: dict[str, str] = {}
-    for item in out.get("results") or []:
-        if not (isinstance(item, dict) and str(item.get("id")) in ids and item.get("fit") == POOR):
-            continue
-        rid = str(item["id"])
-        if _valid(item, texts, in_use_text):
-            verdicts[rid] = f"[{item['category']}] {str(item['reason']).strip()} (근거: '{str(item['quote']).strip()}')"
-        else:
-            rejected[rid] = (f"근거 구절을 자료에서 확인하지 못해 판정을 버림 [{item.get('category')}] '{str(item.get('quote') or '').strip()}': "
-                             f"{str(item.get('reason') or '').strip()}")
+    for out in outs:
+        for item in out.get("results") or []:
+            if not (isinstance(item, dict) and str(item.get("id")) in ids and item.get("fit") == POOR):
+                continue
+            rid = str(item["id"])
+            if rid in verdicts:
+                continue
+            if _valid(item, texts, in_use_text, names):
+                verdicts[rid] = f"[{item['category']}] {str(item['reason']).strip()} (근거: '{str(item['quote']).strip()}')"
+            else:
+                rejected[rid] = (f"근거 구절을 자료에서 확인하지 못해 판정을 버림 [{item.get('category')}] '{str(item.get('quote') or '').strip()}': "
+                                 f"{str(item.get('reason') or '').strip()}")
     if trace.enabled():
         trace.title("실제 적합성 점검 (키워드·분야는 맞아도 이 사람에게 맞는가)")
         for r, rid in zip(recs, ids):
