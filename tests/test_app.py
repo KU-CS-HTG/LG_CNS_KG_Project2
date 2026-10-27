@@ -28,8 +28,9 @@ def test_scope_marks_local_and_national_agencies_only_when_sure():
     assert "📍 서울 지역" in app._scope_html("서울특별시")
     assert "전국" in app._scope_html("보건복지부") and "전국" in app._scope_html("한국장학재단")
     assert "전국" in app._scope_html("국세청")
-    assert app._scope_html("재단법인용산복지재단") == ""          # 이름만으로 지역을 알 수 없으면 표시하지 않는다
-    assert app._scope_html("(재)인천인재평생교육진흥원") == ""
+    assert "📍 서울 용산구" in app._scope_html("재단법인용산복지재단")   # W5: '구'를 뗀 두 글자 이상 구 이름도 읽는다
+    assert app._scope_html("재단법인행복나눔재단") == ""          # 이름만으로 지역을 알 수 없으면 표시하지 않는다
+    assert "📍 인천 지역" in app._scope_html("(재)인천인재평생교육진흥원")   # W5: 법인 표시를 떼고 시·도를 읽는다
 
 
 def test_days_left_only_for_open_applications_closing_soon():
