@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -116,3 +117,50 @@ def calculate(rule: dict, v: dict) -> dict:
         notes.append("이전 참여 이력이 있으면 재참여 조건이 달라질 수 있어요. 고용센터에 확인해 주세요.")
     return {"scenarios": scenarios, "notes": notes, "conflicts": rule["conflicts"], "open_issues": rule["open_issues"],
             "sources": rule["sources"], "as_of": rule["as_of"], "status": rule["status"], "general_track_note": rule.get("general_track_note", "")}
+
+
+AGE_BANDS = ["만 15~34세 (청년)", "만 35~69세"]
+
+
+def check_flags(rule: dict, items: list[str], checked: set[int]) -> dict[str, bool | None]:
+    """카드 체크리스트(items, 번호는 1부터)에서 규칙이 쓰는 조건(check_patterns)의 체크 여부. 그 조건 항목이 카드에 없으면 None."""
+    out: dict[str, bool | None] = {}
+    for name, pattern in rule.get("check_patterns", {}).items():
+        hits = [i for i, text in enumerate(items, start=1) if re.search(pattern, text)]
+        out[name] = any(i in checked for i in hits) if hits else None
+    return out
+
+
+def from_checks(rule: dict, flags: dict, age_band: str | None, deps: int) -> dict:
+    """체크리스트 답만으로 계산 (소득·재산 숫자를 다시 묻지 않는다). 나이대와 부양가족 수만 추가로 받는다.
+    체크는 스스로 확인한 결과이므로 결과 문구도 '체크한 조건 기준'이라고 밝힌다. 모르는(카드에 없는) 조건은 단정하지 않는다."""
+    f = rule["facts"]
+    youth_tracks = flags.get("income120") and flags.get("asset5")
+    general_tracks = flags.get("worked") and flags.get("income60") and flags.get("asset4")
+    tracks, reasons = [], []
+    if age_band is None:
+        reasons.append("나이대를 선택하면 계산해요.")
+    else:
+        if age_band == AGE_BANDS[0]:
+            if youth_tracks:
+                tracks.append(f"Ⅰ유형 청년 특례 (중위소득 {f['youth_income_pct']}% 이하·재산 {won(f['youth_asset_max_won'])} 이하 체크)")
+            else:
+                reasons.append(f"청년 특례는 '중위소득 {f['youth_income_pct']}% 이하'와 '재산 {won(f['youth_asset_max_won'])} 이하'를 모두 체크해야 해요.")
+        if general_tracks:
+            tracks.append(f"Ⅰ유형 일반 (취업경험·중위소득 {f['general_income_pct']}% 이하·재산 {won(f['general_asset_max_won'])} 이하 체크)")
+        else:
+            reasons.append("Ⅰ유형 일반은 '취업경험', '중위소득 60% 이하', '재산 4억 이하'를 모두 체크해야 해요.")
+    if not tracks:
+        verdict = "확인 필요" if age_band is None else "해당 어려움"
+        return _checks_result(rule, {"title": "체크한 조건 기준", "verdict": verdict, "amount_won": None, "lines": [], "reasons": reasons})
+    add = min(f["dependent_monthly_won"] * deps, f["dependent_monthly_max_won"])
+    monthly = f["allowance_monthly_won"] + add
+    lines = [f"해당 가능한 유형: {' / '.join(tracks)}",
+             f"구직촉진수당 월 {won(f['allowance_monthly_won'])}" + (f" + 부양가족 가산 월 {won(add)} (가족 {deps}명, 최대 월 {won(f['dependent_monthly_max_won'])})" if add else ""),
+             f"월 {won(monthly)} × {f['months']}개월 = {won(monthly * f['months'])}"]
+    return _checks_result(rule, {"title": "체크한 조건 기준", "verdict": "해당 가능", "amount_won": monthly * f["months"], "lines": lines, "reasons": []})
+
+
+def _checks_result(rule: dict, scenario: dict) -> dict:
+    return {"scenarios": [scenario], "notes": [], "conflicts": rule["conflicts"], "open_issues": rule["open_issues"], "sources": rule["sources"],
+            "as_of": rule["as_of"], "status": rule["status"], "general_track_note": rule.get("general_track_note", "")}

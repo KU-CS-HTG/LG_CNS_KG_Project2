@@ -51,27 +51,7 @@ def _tier_line(t: dict, show_amount: bool = True) -> None:
                 st.text(e["quote"])
 
 
-def _amount_form(rule: dict, key: str) -> None:
-    """예상 수령액 계산: 입력값 -> 코드가 계산 (LLM 없음). 계산 결과는 session_state에 두어 다시 그려도 유지한다."""
-    state_key = f"amount_result_{key}"
-    st.markdown("##### 💰 예상 수령액 계산")
-    st.caption("아래 값을 입력하면 받을 수 있는 금액을 계산해 드려요. 단독 가구·가구 합산을 모두 계산해 비교해 보여요.")
-    with st.form(f"amount_form_{key}"):
-        values = {}
-        for spec in amount_rules.inputs_for(rule):
-            wk = f"amt_{key}_{spec['id']}"
-            if spec["type"] == "choice":
-                values[spec["id"]] = st.selectbox(spec["label"], spec["options"], index=spec["options"].index(spec["default"]), key=wk)
-            elif spec["type"] == "float":
-                values[spec["id"]] = st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"], value=spec["default"], step=0.1, key=wk)
-            else:
-                values[spec["id"]] = st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"], value=spec["default"], step=1, key=wk)
-        submitted = st.form_submit_button("예상 금액 계산")
-    if submitted:
-        st.session_state[state_key] = amount_rules.calculate(rule, values)
-    out = st.session_state.get(state_key)
-    if not out:
-        return
+def _show_amount(out: dict) -> None:
     for sc in out["scenarios"]:
         icon = {"해당 가능": "✅", "확인 필요": "❓", "해당 어려움": "⛔"}[sc["verdict"]]
         st.markdown(f"**{icon} {sc['title']} — {sc['verdict']}**")
@@ -95,6 +75,36 @@ def _amount_form(rule: dict, key: str) -> None:
         st.caption(f"확인일 {out['as_of']} · 상태: {out['status']}. 계산 값은 참고용이며 실제 지급액은 담당 기관 심사로 정해져요.")
 
 
+def _amount_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int]) -> None:
+    """예상 수령액. 체크리스트 답으로 바로 계산하고(같은 내용을 다시 묻지 않는다), 체크로 알 수 없는 나이대·부양가족 수만 묻는다.
+    소득·재산을 숫자로 넣어 단독 가구/가구 합산을 비교하는 정밀 계산은 선택 사항(접어 둔 칸)이다. LLM 없음."""
+    st.markdown("##### 💰 예상 수령액")
+    flags = amount_rules.check_flags(rule, list(r.needs_check), set(checked))
+    band = st.radio("나이대", amount_rules.AGE_BANDS, index=None, horizontal=True, key=f"amt_band_{key}")
+    cols = st.columns(3)
+    deps = sum(int(c.number_input(label, min_value=0, max_value=10, value=0, step=1, key=f"amt_{key}_{name}"))
+               for c, (label, name) in zip(cols, (("만 18세 이하 가족 수", "minor"), ("만 70세 이상 가족 수", "senior"), ("중증장애인 가족 수", "disabled"))))
+    _show_amount(amount_rules.from_checks(rule, flags, band, deps))
+    with st.expander("소득·재산을 숫자로 넣어 더 자세히 계산하기 (선택)"):
+        st.caption("단독 가구로 인정되는 경우와 가구원과 합산하는 경우를 나눠 비교해요.")
+        state_key = f"amount_result_{key}"
+        with st.form(f"amount_form_{key}"):
+            values = {}
+            for spec in amount_rules.inputs_for(rule):
+                wk = f"amt_{key}_{spec['id']}"
+                if spec["type"] == "choice":
+                    values[spec["id"]] = st.selectbox(spec["label"], spec["options"], index=spec["options"].index(spec["default"]), key=wk)
+                elif spec["type"] == "float":
+                    values[spec["id"]] = st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"], value=spec["default"], step=0.1, key=wk)
+                else:
+                    values[spec["id"]] = st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"], value=spec["default"], step=1, key=wk)
+            submitted = st.form_submit_button("예상 금액 계산")
+        if submitted:
+            st.session_state[state_key] = amount_rules.calculate(rule, values)
+        if st.session_state.get(state_key):
+            _show_amount(st.session_state[state_key])
+
+
 def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) -> None:
     rule = amount_rules.find(r.service_id)
     groups = benefit_tiers.evaluate(result["tiers"], set(checked))
@@ -111,7 +121,7 @@ def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) 
                 _tier_line(t, show_amount=rule is None)
                 st.caption(f"필요한 조건: {_needs_text(r, t['requires'])}  (아직 체크 안 함: {_needs_text(r, t['missing'])})")
     if rule:
-        _amount_form(rule, key)
+        _amount_form(r, rule, key, checked)
     if result["notes"]:
         st.caption("참고 (자료 밖 일반 정보라 정확하지 않을 수 있어요): " + " / ".join(n["text"] for n in result["notes"]))
     st.caption("체크는 스스로 확인한 결과예요. 금액은 소득·가구 등에 따라 달라질 수 있으니 최종 내용은 담당 기관에서 확인해 주세요.")

@@ -60,6 +60,21 @@ def test_restriction_and_open_issues_are_always_reported():
     assert len(out["notes"]) == 2 and out["open_issues"] and out["conflicts"] and out["sources"]
 
 
+def test_from_checks_uses_checklist_answers_without_asking_numbers_again():
+    rule = ar.find(SID)
+    items = ["연령 — 15세~69세 구직자 중", "소득 — 중위소득 60% 이하", "재산 — 재산 4억 이하", "취업 경험 — 최근 2년 이내 100일 또는 800시간 이상의 취업경험",
+             "소득 — 중위소득 120% 이하", "재산 — 재산 5억원 이하"]
+    flags = ar.check_flags(rule, items, {1, 2, 3, 5, 6})
+    assert flags == {"income60": True, "asset4": True, "worked": False, "income120": True, "asset5": True}
+    youth = ar.from_checks(rule, flags, ar.AGE_BANDS[0], 1)["scenarios"][0]
+    assert youth["verdict"] == "해당 가능" and youth["amount_won"] == 700_000 * 6
+    older = ar.from_checks(rule, flags, ar.AGE_BANDS[1], 0)["scenarios"][0]                  # 35세 이상은 청년 특례 불가, 취업경험도 체크 안 함
+    assert older["verdict"] == "해당 어려움" and older["amount_won"] is None
+    assert ar.from_checks(rule, flags, None, 0)["scenarios"][0]["verdict"] == "확인 필요"
+    none = ar.check_flags(rule, ["연령 — 15세~69세"], {1})
+    assert none["income60"] is None and ar.from_checks(rule, none, ar.AGE_BANDS[0], 0)["scenarios"][0]["amount_won"] is None
+
+
 def test_won_format():
     assert ar.won(3_600_000) == "360만 원" and ar.won(600_000_000) == "6억 원" and ar.won(3_077_085) == "약 308만 원"
 
@@ -72,7 +87,8 @@ def _script():
     st.session_state.setdefault("checks", {})
     st.session_state.setdefault("guides", {})
     r = Recommendation("국민취업지원제도", "고용노동부", "조건 확인", "취업지원서비스 및 생계안정 소득 지원", "고용센터", service_id="149200005007",
-                       needs_check=["연령 — 15세~69세"])
+                       needs_check=["연령 — 15세~69세 구직자 중", "소득 — 중위소득 60% 이하", "재산 — 재산 4억 이하",
+                                    "취업 경험 — 최근 2년 이내 100일 또는 800시간 이상의 취업경험", "소득 — 중위소득 120% 이하", "재산 — 재산 5억원 이하"])
     app._card(1, r, "k1")
 
 
@@ -84,14 +100,20 @@ def test_card_shows_amount_form_and_calculated_result(monkeypatch):
     tiers = {"tiers": [{"label": "II유형", "requires": [], "benefit": "참여수당", "quote": "", "basis": "outside", "amount": "", "amount_basis": "", "evidence": []}], "notes": []}
     monkeypatch.setattr(bt, "compute", lambda *a, **k: tiers)
     at = AppTest.from_function(_script, default_timeout=30).run()
+    for c in at.checkbox:
+        if c.key in {f"chk_k1_{j}" for j in (0, 1, 2, 4, 5)}:                                  # 취업경험만 빼고 체크
+            c.check()
     next(b for b in at.button if b.label == "체크 완료").click().run()
     next(b for b in at.button if "내 조건으로" in b.label).click().run()
-    assert not at.exception and any("예상 수령액 계산" in m.value for m in at.markdown)
+    assert not at.exception and any("예상 수령액" in m.value for m in at.markdown)
     assert not any("금액을 확인하지 못했어요" in c.value for c in at.caption)               # 규칙이 있는 제도는 항목별 '확인 못 함' 문구를 쓰지 않는다
-    at.number_input(key="amt_k1_age").set_value(26)
-    at.number_input(key="amt_k1_own_income_man").set_value(100)
-    at.number_input(key="amt_k1_own_asset_eok").set_value(0.5)
-    next(b for b in at.button if b.label == "예상 금액 계산").click().run()
+    assert any("예상 수령액" in m.value for m in at.markdown) and at.radio(key="amt_band_k1").value is None
+    assert not any("예상 수령액: " in m.value for m in at.markdown)                           # 나이대를 고르기 전에는 금액을 단정하지 않는다
+    at.radio(key="amt_band_k1").set_value("만 15~34세 (청년)").run()
     text = " ".join(m.value for m in at.markdown)
-    assert not at.exception and "예상 수령액: 360만 원" in text and "가구원과 합산해 심사하는 경우" in text
+    assert "예상 수령액: 360만 원" in text and "청년 특례" in text                              # 체크한 조건만으로 바로 계산 (다시 묻지 않음)
+    at.number_input(key="amt_k1_minor").set_value(2).run()
+    assert "예상 수령액: 480만 원" in " ".join(m.value for m in at.markdown)                    # (60만+20만)×6
+    next(b for b in at.button if b.label == "예상 금액 계산").click().run()
+    assert not at.exception and "가구원과 합산해 심사하는 경우" in " ".join(m.value for m in at.markdown)
     assert any("자세히 보기 (계산 근거" in e.label for e in at.expander)
