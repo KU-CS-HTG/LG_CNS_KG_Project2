@@ -120,8 +120,7 @@ def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | Non
         payload["이용 중인 제도 종류"] = exclusion.IN_USE_KINDS.get()
 
     def ask(n):
-        # 회차 번호를 넣어 두 점검의 입력을 다르게 한다: LLM 응답 저장소(llm_cache)는 같은 입력이면 같은 응답을 돌려줘서,
-        # 입력이 같으면 두 번째 점검이 첫 번째를 그대로 베낀다 (두 번 하는 의미가 없어진다).
+        # 회차 번호를 넣어 두 점검을 서로 다른 입력으로 보낸다 (같은 입력이면 같은 답이 나오기 쉬워 두 번 하는 효과가 줄어든다).
         try:
             return condition_extractor._chat_json(PROMPT, json.dumps({**payload, "점검 회차": n + 1}, ensure_ascii=False))
         except Exception as e:      # noqa: BLE001 — 점검이 안 되면 거르지 않는다 (맞는 제도를 잘못 빼는 쪽이 더 나쁘다)
