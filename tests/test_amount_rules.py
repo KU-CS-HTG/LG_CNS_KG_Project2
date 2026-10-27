@@ -68,12 +68,24 @@ def test_from_checks_uses_checklist_answers_without_asking_numbers_again():
     assert flags == {"income60": True, "asset4": True, "worked": False, "income120": True, "asset5": True}
     youth = ar.from_checks(rule, flags, ar.AGE_BANDS[0], 1)["scenarios"][0]
     assert youth["verdict"] == "해당 가능" and youth["amount_won"] == 700_000 * 6
-    assert [x["title"] for x in ar.from_checks(rule, flags, ar.AGE_BANDS[0], 0)["scenarios"]] == ["체크한 조건 기준", "Ⅱ유형 (참고)"]   # Ⅱ유형은 금액 없이 안내
+    assert [x["title"] for x in ar.from_checks(rule, flags, ar.AGE_BANDS[0], 0)["scenarios"]] == ["Ⅰ유형 (구직촉진수당) 추천 — 체크한 조건 기준", "Ⅱ유형 (대안)"]   # Ⅱ유형은 금액 없이 안내
     older = ar.from_checks(rule, flags, ar.AGE_BANDS[1], 0)["scenarios"][0]                  # 35세 이상은 청년 특례 불가, 취업경험도 체크 안 함
     assert older["verdict"] == "해당 어려움" and older["amount_won"] is None
     assert ar.from_checks(rule, flags, None, 0)["scenarios"][0]["verdict"] == "확인 필요"
     none = ar.check_flags(rule, ["연령 — 15세~69세"], {1})
     assert none["income60"] is None and ar.from_checks(rule, none, ar.AGE_BANDS[0], 0)["scenarios"][0]["amount_won"] is None
+
+
+def test_type2_is_alternative_when_type1_ok_and_recommended_when_not():
+    rule = ar.find(SID)
+    ok = ar.from_checks(rule, {"income120": True, "asset5": True}, ar.AGE_BANDS[0], 0)["scenarios"]
+    assert ok[0]["verdict"] == "해당 가능" and ok[1]["verdict"] == "대안" and any("중복" in x for x in ok[1]["reasons"]) and any("선발되지 않으면" in x for x in ok[1]["reasons"])
+    no1 = ar.from_checks(rule, {"income120": False, "asset5": False}, ar.AGE_BANDS[0], 0)["scenarios"]
+    assert no1[0]["verdict"] == "해당 어려움" and no1[1]["title"].startswith("Ⅱ유형 추천") and no1[1]["verdict"] == "해당 가능"
+    older = ar.from_checks(rule, {}, ar.AGE_BANDS[1], 0)["scenarios"]
+    assert older[1]["verdict"] == "확인 필요" and any("고용센터" in x for x in older[1]["reasons"])             # 청년이 아니면 대상 여부를 단정하지 않는다
+    assert len(ar.from_checks(rule, {}, None, 0)["scenarios"]) == 1                                               # 나이대 모르면 Ⅱ유형도 안내하지 않는다
+    assert any("법률" in s["title"] for s in rule["sources"])
 
 
 def test_type2_amounts_are_shown_with_secondary_source_caveat():

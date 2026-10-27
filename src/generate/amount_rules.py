@@ -133,7 +133,8 @@ def check_flags(rule: dict, items: list[str], checked: set[int]) -> dict[str, bo
 
 def from_checks(rule: dict, flags: dict, age_band: str | None, deps: int) -> dict:
     """체크리스트 답만으로 계산 (소득·재산 숫자를 다시 묻지 않는다). 나이대와 부양가족 수만 추가로 받는다.
-    체크는 스스로 확인한 결과이므로 결과 문구도 '체크한 조건 기준'이라고 밝힌다. 모르는(카드에 없는) 조건은 단정하지 않는다."""
+    Ⅰ유형과 Ⅱ유형은 중복할 수 없어서 Ⅰ유형(보상이 큼)부터 판정한다: Ⅰ유형이 되면 Ⅰ유형을 추천하고 Ⅱ유형은 선발되지 않을 때의 대안으로,
+    Ⅰ유형이 안 되면 Ⅱ유형을 안내한다. 체크는 스스로 확인한 결과이므로 '체크한 조건 기준'이라고 밝힌다."""
     f = rule["facts"]
     youth_tracks = flags.get("income120") and flags.get("asset5")
     general_tracks = flags.get("worked") and flags.get("income60") and flags.get("asset4")
@@ -152,20 +153,27 @@ def from_checks(rule: dict, flags: dict, age_band: str | None, deps: int) -> dic
             reasons.append("Ⅰ유형 일반은 '취업경험', '중위소득 60% 이하', '재산 4억 이하'를 모두 체크해야 해요.")
     if not tracks:
         verdict = "확인 필요" if age_band is None else "해당 어려움"
-        return _checks_result(rule, {"title": "체크한 조건 기준", "verdict": verdict, "amount_won": None, "lines": [], "reasons": reasons}, age_band)
+        return _checks_result(rule, {"title": "Ⅰ유형 (구직촉진수당) — 체크한 조건 기준", "verdict": verdict, "amount_won": None, "lines": [], "reasons": reasons}, age_band, False)
     add = min(f["dependent_monthly_won"] * deps, f["dependent_monthly_max_won"])
     monthly = f["allowance_monthly_won"] + add
     lines = [f"해당 가능한 유형: {' / '.join(tracks)}",
              f"구직촉진수당 월 {won(f['allowance_monthly_won'])}" + (f" + 부양가족 가산 월 {won(add)} (가족 {deps}명, 최대 월 {won(f['dependent_monthly_max_won'])})" if add else ""),
              f"월 {won(monthly)} × {f['months']}개월 = {won(monthly * f['months'])}"]
-    return _checks_result(rule, {"title": "체크한 조건 기준", "verdict": "해당 가능", "amount_won": monthly * f["months"], "lines": lines, "reasons": []}, age_band)
+    return _checks_result(rule, {"title": "Ⅰ유형 (구직촉진수당) 추천 — 체크한 조건 기준", "verdict": "해당 가능", "amount_won": monthly * f["months"],
+                                 "lines": lines, "reasons": []}, age_band, True)
 
 
-def _checks_result(rule: dict, scenario: dict, age_band: str | None = None) -> dict:
+def _checks_result(rule: dict, scenario: dict, age_band: str | None = None, type1_ok: bool = False) -> dict:
     scenarios = [scenario]
     t2 = rule.get("type2")
-    if t2 and age_band == AGE_BANDS[0]:         # Ⅱ유형은 금액을 계산하지 못해도 있다는 것과 자료 간 차이는 보여 준다
-        scenarios.append({"title": t2["title"], "verdict": "해당 가능", "amount_won": None, "amount_text": t2.get("amount_text", ""),
-                          "lines": t2["lines"], "reasons": []})
+    if t2 and age_band is not None:
+        exclusive = rule.get("exclusive_note", "")
+        if type1_ok:              # Ⅰ유형이 되면 Ⅱ유형은 선발되지 않을 때의 대안
+            sc = {"title": "Ⅱ유형 (대안)", "verdict": "대안", "reasons": [exclusive, "Ⅰ유형에 선발되지 않으면 Ⅱ유형으로 넘어갈 수 있어요."]}
+        elif age_band == AGE_BANDS[0]:      # Ⅰ유형이 안 되면 Ⅱ유형 안내 (청년은 소득·재산·취업경험 무관)
+            sc = {"title": "Ⅱ유형 추천 — Ⅰ유형 요건을 채우지 못해요", "verdict": "해당 가능", "reasons": [exclusive]}
+        else:                     # 청년이 아니면 Ⅱ유형 대상 여부는 자료로 단정하지 못한다
+            sc = {"title": "Ⅱ유형 (참고)", "verdict": "확인 필요", "reasons": [exclusive, "Ⅱ유형 참여 대상인지는 고용센터(☎1350)에서 확인해 주세요."]}
+        scenarios.append({**sc, "amount_won": None, "amount_text": t2.get("amount_text", ""), "lines": t2["lines"]})
     return {"scenarios": scenarios, "notes": [], "conflicts": rule["conflicts"], "open_issues": rule["open_issues"], "sources": rule["sources"],
             "as_of": rule["as_of"], "status": rule["status"], "general_track_note": rule.get("general_track_note", "")}

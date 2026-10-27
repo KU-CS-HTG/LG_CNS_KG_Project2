@@ -53,7 +53,7 @@ def _tier_line(t: dict, show_amount: bool = True) -> None:
 
 def _show_amount(out: dict) -> None:
     for sc in out["scenarios"]:
-        icon = {"해당 가능": "✅", "확인 필요": "❓", "해당 어려움": "⛔"}[sc["verdict"]]
+        icon = {"해당 가능": "✅", "확인 필요": "❓", "해당 어려움": "⛔", "대안": "🔁"}[sc["verdict"]]
         st.markdown(f"**{icon} {sc['title']} — {sc['verdict']}**")
         if sc["amount_won"] is not None:
             st.markdown(f"💰 **예상 수령액: {amount_rules.won(sc['amount_won'])}**")
