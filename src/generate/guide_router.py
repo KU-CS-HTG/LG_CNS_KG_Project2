@@ -4,7 +4,7 @@
 어떻게 해석하는지 묻는 질문은 보조금24의 짧은 선정기준으로는 답할 수 없고 판정 기준 문서(고시·사업안내)에 있다.
 그런 질문은 버튼을 누르지 않아도 guide_evidence.answer_guide_question으로 보낸다. 나머지(정보 덧붙이기·다른 도움
 찾기)는 지금처럼 질문을 합쳐 다시 추천한다. 판단에 실패하면 다시 추천하는 쪽으로 둔다 (지금 동작과 같다).
-LLM 호출은 condition_extractor._chat_json (같은 질문이면 llm_cache로 같은 판단).
+LLM 호출은 condition_extractor._chat_json (다른 LLM 호출과 같은 모델·설정).
 프롬프트에 예시 문장을 넣지 않는다 (condition_extractor 머리말: 예시를 그대로 따라 함).
 """
 from __future__ import annotations
