@@ -24,8 +24,12 @@ PROMPT = """너는 정부 지원제도 안내 답변의 마지막 점검자다. 
 JSON 객체 하나만 출력한다: {"results": [{"id": 후보 id, "fit": "ok" 또는 "poor", "reason": 한 문장}]}
 
 poor(안내하면 안 됨)로 보는 경우:
-- 사용자가 이미 이용·수강·수급 중이라고 말한 것과 같은 종류라 중복되는 경우, 또는 '이것 말고', '그 외에'처럼 이미 받는 것을 빼고
-  알려 달라는 요청에 맞지 않는 경우.
+- 사용자가 이미 이용·수강·수급 중이라고 말한 제도와 **같은 혜택**을 또 주는 경우(같은 훈련 과정·훈련비·수당 등), 또는 그 제도의
+  전제 조건이나 이미 가진 자격(예: 이미 발급받은 카드)을 다시 안내하는 경우. '이것 말고'의 '이것'에 해당하는 제도도 poor다.
+- 단, 서로 다른 혜택을 주는 제도(예: 훈련을 듣는 사람에게 소득 지원이나 취업 상담을 주는 제도)는 함께 받을 수 있는 경우가 많다.
+  '같은 취업 지원 분야', '이미 취업 관련 제도를 이용 중'이라는 이유만으로 중복이라 하지 않는다. 함께 받을 수 없다는 내용이
+  후보 설명이나 [이용 중인 제도 설명]에 적힌 경우에만 중복이다. 후보의 '종류'가 [이용 중인 제도 종류]와 다르면 중복이 아니다
+  (전제 조건을 다시 안내하는 경우는 제외).
 - 특정 직무·업종·전공·소속(예: 광고, 소상공인, 창업, 해외취업, 특정 학교)에만 해당해, 질문의 일반적인 상황(예: 취업준비생)에
   흔히 적용되지 않는 경우.
 - 지원 내용이 사용자가 실제로 원하는 도움과 다른 경우 (이름이나 낱말만 겹침).
@@ -35,8 +39,12 @@ poor(안내하면 안 됨)로 보는 경우:
 
 
 def _candidate(r: Recommendation) -> dict:
-    return {"id": r.service_id or r.service_name, "이름": r.service_name, "기관": r.agency, "지원내용": r.benefit[:200],
+    item = {"id": r.service_id or r.service_name, "이름": r.service_name, "기관": r.agency, "지원내용": r.benefit[:200],
             "자격 조건": [n[:80] for n in r.needs_check[:6]]}
+    kind = exclusion.CANDIDATE_KINDS.get().get(r.service_id)
+    if kind:
+        item["종류"] = kind
+    return item
 
 
 def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | None = None) -> list[Recommendation]:
@@ -49,6 +57,8 @@ def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | Non
         payload = {"질문": question, "후보": [_candidate(r) for r in recs]}
         if exclusion.IN_USE_CONTEXT.get():
             payload["이용 중인 제도 설명"] = exclusion.IN_USE_CONTEXT.get()
+        if exclusion.IN_USE_KINDS.get():
+            payload["이용 중인 제도 종류"] = exclusion.IN_USE_KINDS.get()
         out = condition_extractor._chat_json(PROMPT, json.dumps(payload, ensure_ascii=False))
     except Exception as e:      # noqa: BLE001 — 점검이 안 되면 거르지 않는다 (맞는 제도를 잘못 빼는 쪽이 더 나쁘다)
         log.warning("실제 적합성 점검 실패, 거르지 않고 진행: %s", e)

@@ -137,3 +137,21 @@ def test_no_refill_when_enough_or_when_the_first_batch_was_all_rejected(monkeypa
     generator, ev, more, calls = _fill_setup(monkeypatch, [], [rec("X", "x")])
     answer = generator._generate(Q, ev("A"), [], None, None, more)
     assert answer.no_evidence and calls["more"] == 0                                         # 범위 밖 질문은 채우지 않고 근거 없음
+
+
+def test_benefit_kinds_are_passed_so_different_kinds_are_not_called_duplicates(monkeypatch):
+    import json
+    from src.generate import exclusion
+
+    exclusion.IN_USE_KINDS.set(["직업훈련"])
+    exclusion.CANDIDATE_KINDS.set({"B": "소득·수당 지원"})
+    seen = []
+    monkeypatch.setattr(ce, "_chat_json", lambda s, u: seen.append(u) or {"results": []})
+    fit_check.drop_unfit(Q, RECS)
+    payload = json.loads(seen[0])
+    assert payload["이용 중인 제도 종류"] == ["직업훈련"]
+    assert next(c for c in payload["후보"] if c["id"] == "B")["종류"] == "소득·수당 지원"
+    assert "종류" not in next(c for c in payload["후보"] if c["id"] == "A")           # 종류를 모르는 후보는 비워 둔다
+    assert "같은 취업 지원 분야" in fit_check.PROMPT and "함께 받을 수 있는" in fit_check.PROMPT
+    exclusion.IN_USE_KINDS.set([])
+    exclusion.CANDIDATE_KINDS.set({})

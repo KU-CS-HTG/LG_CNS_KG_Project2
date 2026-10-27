@@ -1007,7 +1007,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
                                        k=DISTRICT_CANDIDATES if districts else config.DEFAULT_TOP_K * REGION_CANDIDATE_FACTOR)
         seen = {c.service_id for c in result.chunks}
         chunks += _drop_expired([c for c in more.chunks if c.service_id not in seen], today)
-    for q in topical.phrase_queries(conditions.get("help"), question):
+    queries = topical.phrase_queries(conditions.get("help"), question)
+    cleaned = topical.without_in_use_clause(question, conditions.get("in_use"))
+    if cleaned:
+        queries.append(cleaned)          # 이용 중인 제도를 말한 절을 뺀 질문으로도 찾는다 (그 제도와 비슷한 제도가 결과를 채우는 것을 피한다)
+    for q in queries:
         # 질문 문장 전체로 검색하면 '정부나 지자체 지원제도가 있어?'·'수원에 살고 있어' 같은 말에 끌려 핵심 주제(대중교통비)와 맞는
         # 전국 제도(K-패스)가 64위로 밀렸다. 핵심어만으로 검색한 결과를 뒤에 더한다 (K-패스: 필터 적용 합산 2위).
         extra = _drop_expired(hybrid.search_with_info(q, filters, k=k).chunks, today)

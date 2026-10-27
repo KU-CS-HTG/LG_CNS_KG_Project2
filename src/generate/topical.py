@@ -42,6 +42,17 @@ def phrase_queries(help_: list[str] | None, question: str = "", limit: int = 2) 
     return queries
 
 
+def without_in_use_clause(question: str, in_use: list[str] | None) -> str:
+    """이용 중인 제도를 말한 절을 뺀 질문 ('K-Digital Training을 듣고 있는데, 이것 말고도 취업준비생이 … 알려줘' -> '이것 말고도 취업준비생이 … 알려줘').
+    질문 전체로 검색하면 그 제도와 비슷한 제도(훈련)가 검색 결과를 채워 후보가 15개로 바닥났다. 모두 지워지거나 바뀐 것이 없으면 ''."""
+    if not in_use:
+        return ""
+    clauses = re.split(r"(?<=[,，、])\s*", question)
+    kept = [c for c in clauses if not any(n.lower() in c.lower() for n in in_use)]
+    cleaned = " ".join(kept).strip(" ,，、")
+    return cleaned if kept and len(kept) < len(clauses) and len(cleaned) >= 6 else ""
+
+
 def _bigrams(text: str) -> set[str]:
     squashed = re.sub(r"[^0-9A-Za-z가-힣]", "", text)
     return {squashed[i:i + 2] for i in range(len(squashed) - 1)}

@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 # '이 제도의 전제(예: 국민내일배움카드 발급)를 또 안내하는 것'까지 중복으로 볼 수 있게 읽는다. 질문마다 다시 정한다.
 IN_USE_CONTEXT: ContextVar[list] = ContextVar("in_use_context", default=[])
 CONTEXT_CHARS = 700
+# 같은 종류 판정에 쓴 핵심 혜택 종류: 후보별 {service_id: 종류}와 이용 중인 제도들의 종류. 적합성 점검이 '종류가 다르면 중복이 아니다'를
+# 같은 기준으로 쓰게 넘긴다 (국민취업지원제도가 소득 지원이라 유지됐는데 점검이 '취업지원이 겹친다'며 빼던 모순).
+CANDIDATE_KINDS: ContextVar[dict] = ContextVar("candidate_kinds", default={})
+IN_USE_KINDS: ContextVar[list] = ContextVar("in_use_kinds", default=[])
 
 MIN_NAME_CHARS = 4          # 코드 비교에서 이름으로 인정하는 최소 글자 수 ('청년' 같은 짧은 말이 우연히 맞는 것을 막는다)
 SNIPPET_CHARS = 160         # LLM에 보여 주는 제도 설명 길이
@@ -101,6 +105,8 @@ def exclude_in_use(question: str, conditions: dict, chunks: list[Chunk]) -> list
     """이용 중인 제도와 같은 제도·같은 종류의 도움인 제도의 조각을 뺀 목록 (나머지 순서는 그대로).
     이용 중인 제도를 말하지 않았으면 입력을 그대로 돌려준다."""
     IN_USE_CONTEXT.set([])
+    CANDIDATE_KINDS.set({})
+    IN_USE_KINDS.set([])
     names = conditions.get("in_use") or []
     if not names or not chunks:
         return chunks
@@ -137,6 +143,8 @@ def exclude_in_use(question: str, conditions: dict, chunks: list[Chunk]) -> list
                 trace.decision(sid, cs[0].service_name, "유지", f"종류 '{kind}'" + (f": {reason}" if reason else ""))
 
     IN_USE_CONTEXT.set([{"이름": services[sid][0].service_name, "설명": _describe(sid, services[sid])} for sid in same])
+    CANDIDATE_KINDS.set({sid: kr[0] for sid, kr in cand_kind.items() if kr[0] != GENERIC_KIND})
+    IN_USE_KINDS.set(sorted(used_kinds))
     kept = [c for c in chunks if c.service_id not in same and c.service_id not in similar]
     if not kept and similar:       # 같은 종류라서 뺐더니 보여 줄 것이 없으면 도로 돌려준다 (이름이 같은 제도는 계속 뺀다)
         trace.out("  남은 제도가 없어 같은 종류로 뺀 제도를 도로 돌려줍니다")
