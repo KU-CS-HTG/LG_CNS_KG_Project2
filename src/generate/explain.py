@@ -57,6 +57,8 @@ def find_report(question: str, name_part: str, filters: dict, query: str | None 
         chunks = vector_store.get_service_chunks(sid)
         meta = chunks[0].metadata if chunks else {}
         lines.append(f"  {sid}  {name}  (지역 '{meta.get('region') or '-'}', 기한 '{meta.get('deadline') or '-'}', 조각 {len(chunks)}개)")
+        for c in chunks[:4]:
+            lines.append(f"      [{c.section}] " + c.text.replace(chr(10), " ")[:110])      # 색인에 실제로 들어 있는 본문 (수정이 반영됐는지 확인)
         for label, by_mode in ranks.items():
             lines.append(f"      {label}: " + ", ".join(f"{mode} {_rank_text(r, sid)}" for mode, r in by_mode.items()))
     return lines

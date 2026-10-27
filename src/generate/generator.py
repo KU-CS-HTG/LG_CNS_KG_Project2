@@ -1040,6 +1040,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
+    if trace.enabled():
+        from src.catalog import check as catalog_check
+        for sid, fields in catalog_check.unapplied(selected, catalog_store.CatalogStore().overlay()):
+            trace.out(f"  ! {sid} {selected[sid][0].service_name}: 제도 목록 관리에서 고친 {', '.join(fields)}이(가) 색인에 아직 없어요 "
+                      "-> python -m src.catalog apply 로 반영하세요 (그 전에는 옛 내용으로 답합니다)")
     _progress(STEP_GENERATE)
     rest = [c for c in chunks if c.service_id not in selected]
     more = (lambda: evidence_mod.select_evidence(rest, JUDGE_CANDIDATES)) if rest else None

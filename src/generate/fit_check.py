@@ -22,7 +22,9 @@ log = logging.getLogger(__name__)
 
 MIN_REASON = 8
 MIN_QUOTE = 4
-TEXT_CHARS = 500
+SECTION_CHARS = 350        # 후보 원문으로 보여 주는 항목별 길이 (지원대상·지원내용)
+FUZZY_MIN = 8              # 이 글자 수 이상인 근거 구절은 조금 다르게 옮겨 적은 것도 인정한다
+FUZZY_RATIO = 0.8          # 근거 구절의 글자 3개 묶음 중 자료에도 있는 비율
 POOR = "poor"
 CATEGORIES = ("duplicate", "niche", "mismatch")
 
@@ -50,7 +52,26 @@ def _squash(s: str) -> str:
 
 
 def _text(chunks: list[Chunk] | None) -> str:
-    return benefit_tiers.source_text(chunks or [])[:TEXT_CHARS]
+    """후보 원문: 지원대상과 지원내용 앞부분 (이 글을 LLM에 보여 주고, 근거 구절도 이 글에서 대조한다)."""
+    parts: dict[str, list[str]] = {}
+    for c in sorted(chunks or [], key=lambda c: c.chunk_id):
+        parts.setdefault(c.section, []).append(benefit_tiers._body(c))
+    return "\n".join(f"[{s}] " + "".join(parts[s])[:SECTION_CHARS] for s in ("지원대상", "지원내용") if s in parts)
+
+
+def _grams(s: str) -> set[str]:
+    s = re.sub(r"[^0-9A-Za-z가-힣]", "", s)
+    return {s[i:i + 3] for i in range(len(s) - 2)}
+
+
+def _quoted(quote: str, source: str) -> bool:
+    """근거 구절이 자료에 있는가. 공백·기호를 뺀 글자가 그대로 들어 있거나, 8자 이상이면 글자 3개 묶음의 80% 이상이 자료에 있다
+    (LLM이 조사나 띄어쓰기를 조금 바꿔 옮겨도 인정하되, 자료에 없는 말을 지어낸 구절은 걸러진다)."""
+    flat_q, flat_s = _squash(quote), _squash(source)
+    if flat_q in flat_s:
+        return True
+    grams = _grams(quote)
+    return len(flat_q) >= FUZZY_MIN and bool(grams) and len(grams & _grams(source)) / len(grams) >= FUZZY_RATIO
 
 
 def _candidate(r: Recommendation, text: str) -> dict:
@@ -70,7 +91,7 @@ def _valid(item: dict, candidates: dict[str, str], in_use_text: str) -> bool:
     if item.get("category") not in CATEGORIES or len(quote) < MIN_QUOTE or len(reason) < MIN_REASON:
         return False
     source = in_use_text if item["category"] == "duplicate" else candidates.get(str(item["id"]), "")
-    return quote in _squash(source)
+    return _quoted(str(item.get("quote")), source)
 
 
 def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | None = None,
@@ -103,7 +124,8 @@ def drop_unfit(question: str, recs: list[Recommendation], asked: list[str] | Non
         if _valid(item, texts, in_use_text):
             verdicts[rid] = f"[{item['category']}] {str(item['reason']).strip()} (근거: '{str(item['quote']).strip()}')"
         else:
-            rejected[rid] = f"근거 구절을 자료에서 확인하지 못해 판정을 버림: {str(item.get('reason') or '').strip()}"
+            rejected[rid] = (f"근거 구절을 자료에서 확인하지 못해 판정을 버림 [{item.get('category')}] '{str(item.get('quote') or '').strip()}': "
+                             f"{str(item.get('reason') or '').strip()}")
     if trace.enabled():
         trace.title("실제 적합성 점검 (키워드·분야는 맞아도 이 사람에게 맞는가)")
         for r, rid in zip(recs, ids):

@@ -192,3 +192,31 @@ def test_benefit_kinds_are_passed_so_different_kinds_are_not_called_duplicates(m
     assert "같은 취업 지원 분야" in fit_check.PROMPT and "함께 받을 수 있는" in fit_check.PROMPT
     exclusion.IN_USE_KINDS.set([])
     exclusion.CANDIDATE_KINDS.set({})
+
+
+def test_quote_matching_tolerates_small_rewrites_but_not_invented_phrases():
+    src = "[지원내용] 광고 분야 취업을 희망하는 청년에게 광고 관련 교육과정을 제공"
+    assert fit_check._quoted("광고관련교육과정", src)                                   # 띄어쓰기 차이
+    assert fit_check._quoted("광고 분야 취업을 희망하는 청년에게 광고 관련 교육과정을 지원", src)      # 끝말이 조금 다름
+    assert not fit_check._quoted("이미 취업 지원 서비스를 받고 있으므로 중복", src)         # 자료에 없는 말
+    assert not fit_check._quoted("광고", src[:5]) and not fit_check._quoted("해외취업 전용 과정이라서", src)
+
+
+def test_candidate_text_shows_target_and_support_sections_only():
+    from src.common.schema import Chunk
+    chunks = [Chunk("S#지원대상", "S", "n", "지원대상", "n\n" + "가" * 400), Chunk("S#신청방법", "S", "n", "신청방법", "n\n온라인"),
+              Chunk("S#지원내용", "S", "n", "지원내용", "n\n광고 관련 교육과정")]
+    text = fit_check._text(chunks)
+    assert text.startswith("[지원대상] ") and "광고 관련 교육과정" in text and "온라인" not in text and text.count("가") == fit_check.SECTION_CHARS
+
+
+def test_catalog_check_finds_edits_missing_from_the_index(tmp_path):
+    from src.catalog import check
+    from src.catalog.store import CatalogStore
+    from src.common.schema import Chunk
+    store = CatalogStore(tmp_path / "catalog")
+    store.edit_service("kim", "S1", {"support_content": "광고 관련 교육과정을 제공합니다", "agency": "문체부"})
+    store.edit_service("kim", "S2", {"support_content": "새 내용입니다 이미 반영됨"})
+    old = {"S1": [Chunk("S1#지원내용", "S1", "n", "지원내용", "n\n구체적인 혜택이 명시되지 않음")],
+           "S2": [Chunk("S2#지원내용", "S2", "n", "지원내용", "n\n새 내용입니다 이미 반영됨")], "S3": []}
+    assert check.unapplied(old, store.overlay()) == [("S1", ["지원내용"])]                  # 기관은 본문에 안 들어가 보지 않는다
