@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 SOURCE, OUTSIDE = "source", "outside"
 SECTION_ORDER = ("지원대상", "선정기준", "지원내용", "신청방법")
-MAX_TIERS, MAX_NOTES = 8, 3
+MAX_TIERS, MAX_NOTES, MAX_AMOUNT = 8, 3, 80
 MAX_LABEL, MAX_BENEFIT, MAX_NOTE = 40, 300, 200
 MIN_QUOTE = 4
 CACHE_LIMIT = 256
@@ -28,6 +28,7 @@ PROMPT = """너는 정부 지원제도 하나가 '어떤 조건이면 무엇을 
 
 출력 형식:
 {"tiers": [{"label": 짧은 이름, "requires": [체크리스트 번호, ...], "benefit": 이 조건에서 받는 지원(금액·비율·횟수·기간 포함, 한두 문장),
+            "amount": [원문]에 적힌 지급 금액 한 줄(예: "월 20만원, 최대 12개월"). 원문에 금액이 없으면 "",
             "quote": [원문]에서 글자 그대로 복사한 근거 구절 (없으면 ""), "basis": "source" 또는 "outside"}],
  "notes": [{"text": 참고 한 문장}]}
 
@@ -38,6 +39,7 @@ PROMPT = """너는 정부 지원제도 하나가 '어떤 조건이면 무엇을 
 - [원문]에 없지만 네가 확실히 아는 일반 정보(지급 방식·시기·최근 개편·신청 팁)는 basis "outside"로 쓴다.
   확실하지 않으면 쓰지 않는다. 금액·비율·날짜를 추측해 지어내지 않는다.
 - notes는 tier로 담기 어려운 참고(중복 지원 여부, 지급 방식 등)이고 [원문]에 있거나 확실히 아는 것만, 최대 3개.
+- amount는 [원문]에 있는 금액만 쓰고 계산·추측하지 않는다. 금액이 정해져 있지 않거나 원문에 없으면 "".
 - tier는 최대 8개. 한국어 존댓말로 짧게 쓴다."""
 
 _cache: dict[tuple, dict] = {}
@@ -78,8 +80,11 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
         quote = str(item.get("quote") or "").strip()
         grounded = (item.get("basis") == SOURCE and len(_squash(quote)) >= MIN_QUOTE and _squash(quote) in src_flat
                     and _numbers(f"{label} {benefit}") <= src_numbers)
+        amount = str(item.get("amount") or "").strip()[:MAX_AMOUNT]
+        amount_ok = bool(amount) and grounded and bool(_numbers(amount)) and _numbers(amount) <= src_numbers
         tiers.append({"label": label[:MAX_LABEL], "requires": requires, "benefit": benefit[:MAX_BENEFIT],
-                      "quote": quote if grounded else "", "basis": SOURCE if grounded else OUTSIDE})
+                      "quote": quote if grounded else "", "basis": SOURCE if grounded else OUTSIDE,
+                      "amount": amount if amount_ok else "", "amount_basis": SOURCE if amount_ok else "", "evidence": []})
     notes = [{"text": str(n.get("text") or "").strip()[:MAX_NOTE], "basis": OUTSIDE} for n in (raw.get("notes") or [])[:MAX_NOTES]
              if isinstance(n, dict) and str(n.get("text") or "").strip()]
     return {"tiers": tiers, "notes": notes}
