@@ -55,6 +55,7 @@
 - **고치는 파일(이것만)**: `src/generate/benefit_detail.py`(`extract` 구현), `app/card_benefit.py`(`render`에서 `r.benefit_detail`을 "자세히 보기"로), 새 테스트 `tests/test_benefit_detail.py`
 - **고치지 않는 파일**: `generator.py`, `schema.py`, `app/main.py`
 - **참고**: 전체 지원내용 조각은 `vector_store.get_service_chunks(service_id)`
+- **확장(조건별 지원 안내)**: 카드의 "🎁 내 조건으로 받을 수 있는 지원 보기" 버튼을 누르면 `src/generate/benefit_tiers.py`가 제도의 지원 유형·구간(일반/청년/저소득 등)을 LLM으로 한 번 정리하고(근거 구절·숫자는 원문과 코드로 대조, 못 맞추면 '자료 밖 정보'로 표시), 자격 체크리스트를 이 칸 안에 그려 체크한 조건에 맞는 지원만 바로 보여 준다(체크할 때 LLM 호출 없음). 수집 자료에 없는 일반 정보는 '자료 밖 정보(정확하지 않을 수 있어요)'로 구분해 보여 준다. 고친 파일: `app/card_benefit.py`, `app/main.py`(`_draw_checklist` 분리).
 
 ### W3. 실제 신청 링크를 "어떻게 신청하나요"에
 - **문제**: "상세 페이지 열기"가 카드 맨 아래에 있고, 누르면 정부24 상세 페이지만 열려서 실제 신청을 하려면 다른 사이트로 또 가야 한다.

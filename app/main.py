@@ -440,6 +440,21 @@ def _income_calculator() -> None:
         st.caption(income_calc.NOTICE)
 
 
+def _draw_checklist(r: Recommendation, key: str) -> None:
+    """자격 체크리스트(체크 상태는 session_state.checks). 카드 아래 또는 '무엇을 받나요 — 내 조건으로 보기' 칸 안에 그린다."""
+    saved = st.session_state.checks
+    with st.container(key=f"checklist_{key}"):
+        st.markdown('<div class="ck-title">✅ 자격 체크리스트</div>'
+                    '<div class="ck-sub">원문 기준을 보고 해당하는 조건을 체크해 보세요.</div>',
+                    unsafe_allow_html=True)
+        for j, item in enumerate(r.needs_check):
+            k = f"chk_{key}_{j}"
+            st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
+            hint = _calc_hint(item)
+            if hint:
+                st.markdown(hint, unsafe_allow_html=True)
+
+
 def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> None:
     """제도 카드 1장. 확인이 필요한 조건은 자격 체크리스트로 보여 준다 (사용자가 스스로 해당 여부를 체크).
 
@@ -451,19 +466,11 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
     checked = sum(1 for k in keys if saved.get(k))
     with st.container(key=f"card_{key}"):
         st.markdown(_card_head(i, r, checked), unsafe_allow_html=True)
-        card_benefit.render(r, key)     # W2 자리 (app/card_benefit.py)
+        card_benefit.render(r, key, lambda: _draw_checklist(r, key))   # W2 자리 (app/card_benefit.py). 열면 체크리스트를 그 안에 그린다
         card_apply.render(r, key)       # W3 자리 (app/card_apply.py)
         card_period.render(r, key)      # W4 자리 (app/card_period.py)
-        if r.needs_check:
-            with st.container(key=f"checklist_{key}"):
-                st.markdown('<div class="ck-title">✅ 자격 체크리스트</div>'
-                            '<div class="ck-sub">원문 기준을 보고 해당하는 조건을 체크해 보세요.</div>',
-                            unsafe_allow_html=True)
-                for k, item in zip(keys, r.needs_check):
-                    st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
-                    hint = _calc_hint(item)
-                    if hint:
-                        st.markdown(hint, unsafe_allow_html=True)
+        if r.needs_check and not card_benefit.checklist_inside(key):
+            _draw_checklist(r, key)
         _card_guides(r, key, region)
         st.markdown(_card_sources(r), unsafe_allow_html=True)
 
