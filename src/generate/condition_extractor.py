@@ -13,6 +13,7 @@ from datetime import date
 
 from src.common import config
 from src.common.schema import Filters
+from src.generate import llm_cache
 
 log = logging.getLogger(__name__)
 
@@ -123,8 +124,13 @@ _client = None
 
 
 def _chat_json(system: str, user: str) -> dict:
-    """gpt-4o-mini를 JSON 모드로 호출해 dict를 돌려준다. 클라이언트는 처음 쓸 때 만든다."""
+    """gpt-4o-mini를 JSON 모드로 호출해 dict를 돌려준다. 클라이언트는 처음 쓸 때 만든다.
+
+    같은 입력의 응답은 llm_cache에 저장해 다시 쓴다 (같은 질문이면 같은 답)."""
     global _client
+    cached = llm_cache.get(config.GENERATION_MODEL, system, user)
+    if cached is not None:
+        return cached
     if _client is None:
         if not config.OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다 (.env 확인).")
@@ -133,12 +139,14 @@ def _chat_json(system: str, user: str) -> dict:
     resp = _client.chat.completions.create(
         model=config.GENERATION_MODEL,
         temperature=0,
+        seed=llm_cache.SEED,
         response_format={"type": "json_object"},
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
     )
     data = json.loads(resp.choices[0].message.content or "{}")
     if not isinstance(data, dict):
         raise ValueError(f"JSON 객체가 아닌 응답: {data!r}")
+    llm_cache.put(config.GENERATION_MODEL, system, user, data)
     return data
 
 
