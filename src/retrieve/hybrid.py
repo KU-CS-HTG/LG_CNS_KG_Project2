@@ -7,6 +7,8 @@
   3. RRF(Reciprocal Rank Fusion)로 두 순위를 합친다: 점수 = Σ 가중치 / (RRF_K + 순위)
      - 두 검색의 점수 단위(코사인 vs BM25)가 달라 점수를 직접 더하지 않고 순위만 쓴다
   3''. 질문에 지역이 없으면(hybrid_filter) 지자체 제도 점수에서 LOCAL_PENALTY를 뺀다 (전국 제도 우선, 0이면 끔)
+  3'''. 질문에 없는 특정 대상(장애·보훈 등) 전용 제도 점수에서 group_penalty.GROUP_PENALTY를 뺀다 (hybrid_filter, 0이면 끔)
+  3''''. 신청기한 원문으로 마감이 지난 제도를 빼고, 이번 회차가 끝난 반복 모집 제도는 뒤로 (period_rules.py, hybrid_filter)
   3'. 관심 분야가 제도의 분야와 맞으면(`filters.field_matches`) 점수에 FIELD_BOOST를 더한다 (가산점일 뿐 제도를 빼지 않는다.
      분야 이름이 데이터와 달라 하나도 안 맞아도 결과는 그대로 나온다. FIELD_BOOST=0이면 끔)
   4. 같은 서비스의 조각은 가장 높은 것 하나만 남기고(서비스당 1개) 상위 K개를 돌려준다
@@ -27,6 +29,8 @@ from src.common import config
 from src.common.schema import Chunk, Filters
 from src.index import vector_store
 from src.retrieve import filters as filter_rules
+from src.retrieve import group_penalty as group_rules
+from src.retrieve import period_rules
 
 Mode = Literal["vector", "bm25", "hybrid", "hybrid_filter"]
 MODES = ("vector", "bm25", "hybrid", "hybrid_filter")
@@ -101,7 +105,8 @@ def _top_services(ranked: list[tuple[Chunk, float]], k: int) -> tuple[list[Chunk
 
 
 def _run(query: str, k: int, mode: Mode, where: dict | None, wanted_field: str | None = None,
-         local_penalty: float = 0.0) -> tuple[list[Chunk], list[float]]:
+         local_penalty: float = 0.0, group_penalty: float = 0.0, today: str | None = None,
+         period: bool = False) -> tuple[list[Chunk], list[float]]:
     n = max(config.HYBRID_CANDIDATES, k * 5)
     if mode == "vector":
         return _top_services(vector_store.vector_search(query, n, where), k)
@@ -110,6 +115,10 @@ def _run(query: str, k: int, mode: Mode, where: dict | None, wanted_field: str |
     vec = [c for c, _ in vector_store.vector_search(query, n, where)]
     kw = [c for c, _ in vector_store.bm25_search(query, n, where)]
     fused = boost_by_field(rrf([vec, kw], config.HYBRID_WEIGHTS), wanted_field)
+    # 3'''. 질문에 없는 특정 대상(장애·보훈 등) 전용 제도를 뒤로 (group_penalty.py, hybrid_filter에서만)
+    fused = group_rules.penalize_other_group(fused, query, group_penalty)
+    if period:              # 신청기한 원문으로 마감이 지난 제도를 빼고 이번 회차가 끝난 반복 모집은 뒤로 (period_rules.py)
+        fused = period_rules.apply(fused, today)
     return _top_services(penalize_local(fused, local_penalty), k)
 
 
@@ -125,7 +134,8 @@ def search_with_info(query: str, filters: Filters, k: int = config.DEFAULT_TOP_K
     relaxed = False
     while True:
         penalty = 0.0 if current.get("region") else config.LOCAL_PENALTY      # 지역을 모를 때만 지역 제도를 뒤로
-        chunks, scores = _run(query, k, mode, vector_store.build_where(current), current.get("field"), penalty)
+        chunks, scores = _run(query, k, mode, vector_store.build_where(current), current.get("field"), penalty,
+                              group_rules.GROUP_PENALTY, current.get("today"), period=True)
         if chunks:
             return SearchResult(chunks, scores, current, relaxed)
         softer = filter_rules.relax(current)
