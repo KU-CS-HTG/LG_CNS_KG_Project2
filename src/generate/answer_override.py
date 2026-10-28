@@ -24,6 +24,8 @@ _NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 MAX_BENEFIT, MAX_HOW, MAX_NEEDS, MAX_NEED_LEN = 600, 600, 8, 120
 MAX_AMOUNTS, MAX_LABEL, MAX_TEXT, MAX_COND, MAX_NOTES, MAX_NOTE = 8, 40, 160, 120, 3, 200
 LEVELS = ("공식", "2차")
+LAYOUT_MODES, LAYOUT_ORDERS = ("side", "stack"), ("benefit_first", "apply_first")
+MIN_LEFT, MAX_LEFT = 20, 80
 
 _preview = threading.local()          # 규칙 관리 화면의 '입력 후' 미리보기 전용 (저장하지 않은 구성)
 _cache: dict[str, tuple] = {}
@@ -66,12 +68,18 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             problems.append("금액 안내에는 자료에서 그대로 복사한 근거 구절이 필요해요.")
         if source["level"] not in LEVELS:
             problems.append("자료 등급(공식/2차)을 골라 주세요.")
-    if not (benefit or how or needs or notes or amounts):
+    lay = data.get("layout") or {}
+    layout = {"mode": lay.get("mode", "side"), "order": lay.get("order", "benefit_first"), "left_pct": lay.get("left_pct", 50)}
+    if layout["mode"] not in LAYOUT_MODES or layout["order"] not in LAYOUT_ORDERS or not (
+            isinstance(layout["left_pct"], int) and not isinstance(layout["left_pct"], bool) and MIN_LEFT <= layout["left_pct"] <= MAX_LEFT):
+        problems.append(f"카드 배치가 올바르지 않아요 (왼쪽 칸 너비는 {MIN_LEFT}~{MAX_LEFT}%).")
+    default_layout = layout == {"mode": "side", "order": "benefit_first", "left_pct": 50}
+    if not (benefit or how or needs or notes or amounts) and default_layout:
         problems.append("바꿀 내용을 하나 이상 써 주세요.")
     if problems:
         return None, problems
     return {"benefit_text": benefit, "how_to_apply": how, "needs_check": needs, "notes": notes, "amounts": amounts,
-            "source": source if amounts else {}}, []
+            "source": source if amounts else {}, **({} if default_layout else {"layout": layout})}, []
 
 
 def overrides(folder: Path | None = None) -> dict[str, dict]:

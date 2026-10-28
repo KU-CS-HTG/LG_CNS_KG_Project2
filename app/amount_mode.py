@@ -28,6 +28,7 @@ from src.generate import amount_candidates, amount_from_url, amount_manual, amou
 
 SHOW_ROWS = 500
 SECTIONS = (("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"), ("신청방법", "how_to_apply"))
+STATES = ("아직 처리 안 한 제도", "처리한 제도만 (다시 수정)", "전체")
 PAY_TYPES = {"정액 (정해진 금액을 지급)": "fixed", "비용의 일정 비율 (한도 있음)": "percent"}
 LEVEL_LABELS = {"공식 (정부·공공기관 원문)": "공식", "2차 (신뢰할 만한 요약 자료)": "2차"}
 
@@ -210,6 +211,25 @@ def _lines(text: str) -> list[str]:
     return [l.strip() for l in (text or "").splitlines() if l.strip()]
 
 
+LAYOUT_MODES = {"나란히 (좌우)": "side", "위아래": "stack"}
+LAYOUT_ORDERS = {"무엇을 받나요 먼저": "benefit_first", "어떻게 신청하나요 먼저": "apply_first"}
+
+
+def _layout_controls(sid: str, saved: dict) -> dict:
+    """'무엇을 받나요'·'어떻게 신청하나요' 두 칸의 위치(배치·순서)와 크기(왼쪽 칸 너비). 기본(좌우 50:50)이면 저장하지 않는다."""
+    st.markdown("**카드 배치** — 두 칸을 나란히 둘지, 순서와 너비를 정해요 (③에서 바로 확인).")
+    c1, c2, c3 = st.columns([2, 2, 3])
+    modes, orders = list(LAYOUT_MODES), list(LAYOUT_ORDERS)
+    mode_key, order_key, left_key = f"am_{sid}_lmode", f"am_{sid}_lorder", f"am_{sid}_lleft"
+    mode = LAYOUT_MODES[c1.radio("배치", modes, key=mode_key, **({} if mode_key in st.session_state else {
+        "index": next((i for i, k in enumerate(modes) if LAYOUT_MODES[k] == saved.get("mode")), 0)}))]
+    order = LAYOUT_ORDERS[c2.radio("먼저 보일 칸", orders, key=order_key, **({} if order_key in st.session_state else {
+        "index": next((i for i, k in enumerate(orders) if LAYOUT_ORDERS[k] == saved.get("order")), 0)}))]
+    left = int(c3.slider("왼쪽 칸 너비 (%) — 오른쪽 칸은 나머지", answer_override.MIN_LEFT, answer_override.MAX_LEFT, step=5, key=left_key,
+                         disabled=mode == "stack", **_init(left_key, int(saved.get("left_pct") or 50))))
+    return {"mode": mode, "order": order, "left_pct": 50 if mode == "stack" else left}
+
+
 def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tuple[dict, dict]:
     """② 답변 구성 입력 -> (override용 입력, 계산 규칙 폼). 기본값과 같은 칸은 '바꾸지 않음'(빈 값)으로 둔다."""
     base = amount_manual.preview_recommendation(service, [])
@@ -218,6 +238,7 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     benefit = st.text_area("🎁 무엇을 받나요", key=f"am_{sid}_benefit", height=100, **_init(f"am_{sid}_benefit", benefit_default))
     how_default = saved.get("how_to_apply") or base.how_to_apply
     how = st.text_area("📝 어떻게 신청하나요", key=f"am_{sid}_how", height=80, **_init(f"am_{sid}_how", how_default))
+    layout = _layout_controls(sid, saved.get("layout") or {})
     needs_default = "\n".join(saved.get("needs_check") or base_needs)
     needs = st.text_area("✅ 자격 체크리스트 (한 줄에 하나. 예: 주택 — 무주택 청년)", key=f"am_{sid}_cneeds", height=100, **_init(f"am_{sid}_cneeds", needs_default))
 
@@ -238,7 +259,7 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     raw = {"benefit_text": benefit.strip() if benefit.strip() != base.benefit.strip() else "",
            "how_to_apply": how.strip() if how.strip() != base.how_to_apply.strip() else "",
            "needs_check": _lines(needs) if _lines(needs) != base_needs else [],
-           "amounts": amounts, "notes": _lines(notes), "source": source}
+           "amounts": amounts, "notes": _lines(notes), "source": source, "layout": layout}
     return raw, source
 
 
@@ -322,7 +343,8 @@ def render() -> None:
         editor = st.text_input("입력자 이름 (영문·숫자, 입력 후 Enter)", placeholder="예: taegyu", key="amount_editor").strip()
         scope_label = st.radio("보여줄 제도", ["금액이 원문에 없는 제도", "모든 제도"], key="am_scope")
         include_local = st.checkbox("지자체 제도도 보기", key="am_local")
-        show_done = st.checkbox("처리한 제도도 보기 (규칙 저장·확인 완료)", key="am_done")
+        state_label = st.radio("처리 상태", list(STATES), key="am_state",
+                               help="처리 = 규칙 저장 · 답변 구성 저장 · 확인 완료. 처리한 제도는 '처리한 제도만'에서 다시 열어 고칠 수 있어요.")
         text = st.text_input("검색 (서비스명·소관기관·ID)", key="am_q")
         st.caption("수요 = 검수 기록에서 '좋음·부분'으로 판정된 횟수예요. 수요가 많은 제도부터 규칙을 만드세요.")
     services = _services()
@@ -331,8 +353,9 @@ def render() -> None:
         return
     done_map = amount_manual.reviewed()
     rows = amount_manual.needs_official(list(services.values()), _demand(), scope="no_amount" if scope_label.startswith("금액이") else "all",
-                                        include_local=include_local, text=text, done=set(done_map), show_done=show_done)
-    st.caption(f"사람이 공식 자료를 넣어야 하는 제도 {len(rows):,}개" + (f" (앞 {SHOW_ROWS}개만 표시)" if len(rows) > SHOW_ROWS else "")
+                                        include_local=include_local, text=text, done=set(done_map),
+                                        show_done=state_label == STATES[2], only_done=state_label == STATES[1])
+    st.caption(("처리한 제도 " if state_label == STATES[1] else "사람이 공식 자료를 넣어야 하는 제도 ") + f"{len(rows):,}개" + (f" (앞 {SHOW_ROWS}개만 표시)" if len(rows) > SHOW_ROWS else "")
                + " · 표에서 제도를 클릭하면 아래가 열려요")
     view = rows[:SHOW_ROWS]
     table = [{"ID": r["service_id"], "서비스명": r["service_name"], "소관기관": r["agency"], "수요": r["demand"],

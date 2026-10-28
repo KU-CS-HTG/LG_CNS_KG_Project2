@@ -151,7 +151,9 @@ def test_page_hides_reviewed_services_and_can_restore(tmp_path, monkeypatch):
     next(b for b in at.button if "지금 답변 그대로 OK" in b.label).click().run()
     assert not at.exception and any("제도 1개" in c.value for c in at.caption)           # 확인 완료한 제도는 목록에서 빠진다
     assert at.session_state["amount_sel_id"] is None and set(am.reviewed()) == {"S50"}
-    at.sidebar.checkbox[1].check().run()                                                  # '처리한 제도도 보기'
+    at.sidebar.radio[1].set_value("처리한 제도만 (다시 수정)").run()                     # '처리한 제도만'
+    assert any("처리한 제도 1개" in c.value for c in at.caption)
+    at.sidebar.radio[1].set_value("전체").run()
     assert any("제도 2개" in c.value for c in at.caption)
     at.session_state["amount_sel_id"] = "S50"
     at.run()
@@ -294,7 +296,7 @@ def test_page_compose_previews_then_saves_a_real_answer(tmp_path, monkeypatch):
     assert (tmp_path / "overrides" / "kim.jsonl").is_file()
     at.run()
     assert at.session_state["amount_sel_id"] is None                                       # 처리한 제도는 목록에서 빠진다
-    at.sidebar.checkbox[1].check().run()                                                   # '처리한 제도도 보기'
+    at.sidebar.radio[1].set_value("처리한 제도만 (다시 수정)").run()                      # '처리한 제도만'
     at.session_state["amount_sel_id"] = "S50"
     at.run()                                                                              # 다시 열면 저장한 구성이 ②에 불러와진다
     assert any("직접 구성한 답변이 저장돼 있어요" in i.value for i in at.info)
@@ -423,3 +425,70 @@ def test_card_shows_saved_override_in_the_real_answer(tmp_path, monkeypatch):
     assert "**보증 한도** — 최대 30억원" in text and any("안내: 선발형" in c.value for c in at.caption)
     assert not any("금액을 확인하지 못했어요" in c.value for c in at.caption)               # 담당자 금액이 있으면 '확인 못 함' 문구를 쓰지 않는다
     assert any("자세히 보기 (금액 근거)" in e.label for e in at.expander)
+
+
+# --- 카드 배치(위치·크기)와 줄바꿈 깨짐, '처리한 제도만 보기' -----------------------------------------------------------------
+def _rec(**kw):
+    from src.common.schema import Citation, Recommendation
+    base = dict(service_name="가상", agency="기관", reason="이유", benefit="첫 줄\n\n둘째 줄", how_to_apply="○ 온라인 신청\n\n○ 방문 신청 / 신청기한: 상시신청",
+                citations=[Citation("가상", "기관", "인용\n\n문단", "https://www.gov.kr/x")], service_id="S50", benefit_detail=["지원내용 1\n\n지원내용 2"])
+    base.update(kw)
+    return Recommendation(**base)
+
+
+def test_card_head_has_no_blank_lines_so_markdown_cannot_split_the_grid():
+    import re
+    from app import main as app
+    head = app._card_head(1, _rec(), 0).strip()
+    assert not re.search(r"\n[ \t]*\n", head)                                     # 빈 줄이 있으면 markdown이 HTML 블록을 끊어 두 칸이 위아래로 깨졌다
+    assert head.count('class="box"') == 2 and "&#10;" in head and "둘째 줄" in head
+    assert not re.search(r"\n[ \t]*\n", app._card_sources(_rec()))
+
+
+def test_card_layout_follows_the_saved_override(tmp_path, monkeypatch):
+    from app import main as app
+    from src.generate import answer_override as ao
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    assert 'style="--cols:1fr 1fr"' in app._card_head(1, _rec(), 0) or "--cols:50fr 50fr" in app._card_head(1, _rec(), 0)       # 기본: 좌우 50:50
+    ao.save("S50", "kim", {"layout": {"mode": "side", "order": "apply_first", "left_pct": 35}}, tmp_path)
+    head = app._card_head(1, _rec(), 0)
+    assert "--cols:35fr 65fr" in head and head.index("어떻게 신청하나요") < head.index("무엇을 받나요")        # 신청 칸이 왼쪽(35%), 받나요 칸이 오른쪽(65%)
+    ao.save("S50", "kim", {"layout": {"mode": "stack", "order": "benefit_first", "left_pct": 50}}, tmp_path)
+    assert "--cols:1fr" in app._card_head(1, _rec(), 0)
+    assert "--cols:50fr 50fr" in app._card_head(1, _rec(service_id="다른"), 0)                                 # 다른 제도는 그대로
+
+
+def test_layout_validation_and_default_layout_is_not_saved():
+    from src.generate import answer_override as ao
+    ok, _ = ao.validate({"benefit_text": "x", "layout": {"mode": "side", "order": "benefit_first", "left_pct": 50}})
+    assert "layout" not in ok                                                       # 기본 배치는 저장하지 않는다
+    only_layout, problems = ao.validate({"layout": {"mode": "stack", "order": "benefit_first", "left_pct": 50}})
+    assert problems == [] and only_layout["layout"]["mode"] == "stack"               # 배치만 바꿔도 저장할 수 있다
+    for bad in ({"mode": "grid"}, {"order": "x"}, {"left_pct": 10}, {"left_pct": 85}, {"left_pct": "50"}):
+        assert ao.validate({"benefit_text": "x", "layout": bad})[0] is None
+
+
+def test_needs_official_only_done_lists_processed_services(tmp_path, monkeypatch):
+    kupj = {**NOMONEY, "service_id": "149200005007", "service_name": "국민취업지원제도"}
+    rows = am.needs_official([NOMONEY, kupj, {**NOMONEY, "service_id": "S60", "service_name": "확인한 지원"}], done={"S60"}, only_done=True)
+    assert {(r["service_id"], r["state"]) for r in rows} == {("149200005007", "규칙 저장"), ("S60", "확인 완료")}
+    assert [r["service_id"] for r in am.needs_official([NOMONEY, kupj], only_done=False)] == ["S50"]
+
+
+def test_page_layout_controls_preview_and_save(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.generate import answer_override as ao
+    _setup_page(tmp_path, monkeypatch)
+    at = _open_page(tmp_path)
+    assert not any(b.label == "이 구성을 실제 답변으로 저장" for b in at.button)
+    at.radio(key="am_S50_lorder").set_value("어떻게 신청하나요 먼저").run()
+    at.slider(key="am_S50_lleft").set_value(35).run()
+    assert not at.exception
+    html = " ".join(m.value for m in at.markdown)
+    assert "--cols:35fr 65fr" in html                                                # 바꾸는 즉시 ③ 미리보기 카드에 반영
+    assert "--cols:50fr 50fr" in html                                                # ① 지금 카드는 그대로
+    at.radio(key="am_S50_lmode").set_value("위아래").run()
+    assert at.slider(key="am_S50_lleft").disabled and "--cols:1fr" in " ".join(m.value for m in at.markdown)
+    at.radio(key="am_S50_lmode").set_value("나란히 (좌우)").run()
+    next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
+    assert ao.find("S50")["layout"] == {"mode": "side", "order": "apply_first", "left_pct": 35}

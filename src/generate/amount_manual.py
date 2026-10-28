@@ -53,10 +53,10 @@ def mark_reviewed(service_id: str, editor: str, note: str = "", *, undo: bool = 
 
 
 def needs_official(services: list[dict], demand: dict[str, int] | None = None, *, scope: str = "no_amount",
-                   include_local: bool = False, text: str = "", done: set[str] | frozenset = frozenset(), show_done: bool = False) -> list[dict]:
+                   include_local: bool = False, text: str = "", done: set[str] | frozenset = frozenset(), show_done: bool = False, only_done: bool = False) -> list[dict]:
     """사람이 공식 자료를 넣어야 하는 제도 목록. scope='no_amount'는 지원내용에 금액·비율이 없어 초안을 만들 수 없는 제도,
     'all'은 금액이 있는 제도도 포함한다(원문 금액을 공식 값으로 고치고 싶을 때).
-    이미 처리한 제도(규칙을 저장했거나 done에 든 '지금 답변 그대로 OK')는 기본으로 뺀다 (show_done=True면 state와 함께 뒤에 보인다).
+    이미 처리한 제도(규칙을 저장했거나 done에 든 '지금 답변 그대로 OK')는 기본으로 뺀다 (show_done=True면 state와 함께 뒤에 보이고, only_done=True면 처리한 제도만 보인다).
     수요 많은 제도·전국 제도가 앞이다."""
     demand, text = demand or {}, text.strip().lower()
     overridden = answer_override.overrides()
@@ -72,7 +72,7 @@ def needs_official(services: list[dict], demand: dict[str, int] | None = None, *
         sid = s.get("service_id", "")
         has_rule = amount_rules.find(sid) is not None
         state = "규칙 저장" if has_rule else "답변 구성 저장" if sid in overridden else "확인 완료" if sid in done else ""
-        if state and not show_done:
+        if (state and not (show_done or only_done)) or (only_done and not state):
             continue
         rows.append({"service_id": sid, "service_name": s.get("service_name", ""), "agency": agency, "field": s.get("field", ""),
                      "demand": demand.get(sid, 0), "local": local, "has_rule": has_rule, "state": state,
