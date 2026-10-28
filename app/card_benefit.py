@@ -77,10 +77,33 @@ def _show_amount(out: dict) -> None:
         st.caption(f"확인일 {out['as_of']} · 상태: {out['status']}. 계산 값은 참고용이며 실제 지급액은 담당 기관 심사로 정해져요.")
 
 
+def _generic_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int]) -> None:
+    """범용 규칙(JSON만으로 만든 규칙): 체크리스트로 알 수 있는 입력은 채우고 나머지만 묻고, 값이 바뀔 때마다 바로 계산한다."""
+    values = amount_rules.auto_flags(rule, list(r.needs_check), set(checked))
+    if values:
+        st.caption("체크리스트 답으로 채운 항목: " + ", ".join(f"{s['label']} → {'예' if values[s['id']] else '아니요'}" for s in rule["inputs"] if s["id"] in values))
+    for spec in rule["inputs"]:
+        if spec["id"] in values:
+            continue
+        wk, label, kind = f"amt_{key}_{spec['id']}", spec["label"], spec["type"]
+        if kind == "bool":
+            picked = st.radio(label, ["예", "아니요"], index=None, horizontal=True, key=wk)
+            values[spec["id"]] = None if picked is None else picked == "예"
+        elif kind == "choice":
+            values[spec["id"]] = st.selectbox(label, spec["options"], index=None, key=wk)
+        else:
+            step = 1 if kind == "int" else 0.1
+            values[spec["id"]] = st.number_input(label, min_value=spec.get("min"), max_value=spec.get("max"), value=None, step=step, key=wk)
+    _show_amount(amount_rules.generic_calculate(rule, values))
+
+
 def _amount_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int]) -> None:
     """예상 수령액. 체크리스트 답으로 바로 계산하고(같은 내용을 다시 묻지 않는다), 체크로 알 수 없는 나이대·부양가족 수만 묻는다.
     소득·재산을 숫자로 넣어 단독 가구/가구 합산을 비교하는 정밀 계산은 선택 사항(접어 둔 칸)이다. LLM 없음."""
     st.markdown("##### 💰 예상 수령액")
+    if rule["calculator"] == "generic":
+        _generic_form(r, rule, key, checked)
+        return
     flags = amount_rules.check_flags(rule, list(r.needs_check), set(checked))
     band = st.radio("나이대", amount_rules.AGE_BANDS, index=None, horizontal=True, key=f"amt_band_{key}")
     cols = st.columns(3)

@@ -16,7 +16,7 @@ def base(**kw):
 
 def test_rules_file_has_sources_and_required_facts():
     for rule in json.loads(ar.RULES_PATH.read_text(encoding="utf-8"))["rules"]:
-        assert rule["service_ids"] and rule["as_of"] and rule["sources"] and rule["calculator"] in ar.INPUTS
+        assert rule["service_ids"] and rule["as_of"] and rule["sources"] and rule["calculator"] in (*ar.INPUTS, "generic")
         assert all(s["url"].startswith("https://") and s["level"] and s["facts"] for s in rule["sources"])
         assert {"allowance_monthly_won", "months", "median_income_monthly_won"} <= set(rule["facts"])
     assert ar.find("없는 제도") is None and ar.find("") is None

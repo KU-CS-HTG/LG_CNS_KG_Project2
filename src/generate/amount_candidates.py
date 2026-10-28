@@ -128,6 +128,14 @@ def load_active(db_path: Path) -> list[dict]:
         con.close()
 
 
+def load_raw(raw_path: Path) -> list[dict]:
+    """수집 원본(`data/raw/serviceList.json`, 공공데이터 API 응답 목록)을 DB payload와 같은 이름의 dict로 바꿔 읽는다. DB가 없을 때의 대안."""
+    items = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+    return [{"service_id": x.get("서비스ID", ""), "service_name": x.get("서비스명", ""), "agency": x.get("소관기관명", ""),
+             "support_content": x.get("지원내용", ""), "support_target": x.get("지원대상", ""), "selection_criteria": x.get("선정기준", ""),
+             "how_to_apply": x.get("신청방법", ""), "detail_url": x.get("상세조회URL", "")} for x in items]
+
+
 def rank(services: list[dict], demand: dict[str, int] | None = None) -> list[dict]:
     demand = demand or {}
     rows = []
@@ -157,12 +165,14 @@ def _table(rows: list[dict]) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="예상 수령액 규칙을 만들 만한 제도 후보를 찾는다 (읽기 전용)")
     ap.add_argument("--db", default=str(config.DB_PATH), help="services.db 경로 (기본: data/services.db)")
+    ap.add_argument("--raw", help="DB 대신 수집 원본 serviceList.json을 읽는다")
     ap.add_argument("--events", default=str(config.ROOT / "reviews" / "events"), help="검수 이벤트 폴더 (수요 계산)")
     ap.add_argument("--top", type=int, default=30, help="표에 보일 후보 수")
     ap.add_argument("--kind", choices=KINDS, help="이 유형만")
     ap.add_argument("--json", help="전체 후보를 이 JSON 파일로 저장")
     args = ap.parse_args(argv)
-    rows = rank(load_active(Path(args.db)), demand_counts(Path(args.events)))
+    services = load_raw(Path(args.raw)) if args.raw else load_active(Path(args.db))
+    rows = rank(services, demand_counts(Path(args.events)))
     if args.kind:
         rows = [r for r in rows if r["kind"] == args.kind]
     if args.json:
