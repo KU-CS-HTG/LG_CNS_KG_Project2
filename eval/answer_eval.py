@@ -10,6 +10,7 @@
     python -m eval.answer_eval                       # eval/questions.jsonl 전체, 결과를 eval/results/에 저장
     python -m eval.answer_eval --limit 5 --no-save   # 앞 5문항만 빠르게
     python -m eval.answer_eval --guides              # 판정 기준 문서 근거 평가 (eval/guide_questions.jsonl, LLM 없음)
+    python -m eval.answer_eval --guides --interpret  # 위 + 이어진 질문의 답 문장을 LLM으로 써서 단정 표현·해석 성공률도 센다
 전제: 검색 색인이 있어야 한다 (python -m src.index.vector_store ...). 질문 하나에 LLM을 최대 4번 부른다
 (조건 추출·생성·Faithfulness·Correctness). 답변 평가는 정답 서비스(relevant_service_ids)가 없어도 expected_answer로 채점한다.
 정답 서비스가 있으면 '정답 제도를 안내했는가'(service_hit·service_recall)도 코드로 잰다 (색인 밖 정답은 분모에서 뺌).
@@ -291,8 +292,19 @@ def guide_score(q: dict, cits: list, hits: list, text: str = "", region: str | N
     return row
 
 
-def guide_evaluate(questions: list[dict]) -> dict:
-    """판정 근거 질문마다 카드 근거(find_guides) 또는 후속 질문 답(answer_guide_question)을 만들어 채점한다."""
+def _service_name(service_id: str) -> str:
+    """색인에 있는 제도 이름 (없거나 색인을 못 읽으면 '')."""
+    try:
+        from src.index import vector_store
+        chunks = vector_store.get_service_chunks(service_id)
+    except Exception:  # 색인 없음: 이름 없이 평가한다
+        return ""
+    return chunks[0].service_name if chunks else ""
+
+
+def guide_evaluate(questions: list[dict], interpret: bool = False) -> dict:
+    """판정 근거 질문마다 카드 근거(find_guides) 또는 후속 질문 답(answer_guide_question)을 만들어 채점한다.
+    interpret=True면 이어진 질문의 답 문장을 LLM으로 쓴다 (guide_answer, 기본은 LLM 없이 고정 안내 문장)."""
     from src.common.schema import Recommendation
     from src.generate import guide_evidence
 
@@ -312,9 +324,13 @@ def guide_evaluate(questions: list[dict]) -> dict:
                 cits = guide_evidence.find_guides(ids[0] if ids else "", "", [q.get("item") or q["question"]], region)
                 text = ""
             else:
-                recs = [Recommendation("", "", "", "", "", service_id=sid) for sid in ids]
-                ans = guide_evidence.answer_guide_question(q["question"], recs, region)
+                # 앱처럼 카드의 제도 이름을 함께 준다 (guide_evidence가 이름을 붙여 한 번 더 찾는다)
+                recs = [Recommendation(_service_name(sid), "", "", "", "", service_id=sid) for sid in ids]
+                ans = guide_evidence.answer_guide_question(q["question"], recs, region, interpret=interpret)
                 cits, text = ans.citations, ans.text
+                if interpret and cits:
+                    row["interpreted"] = 1.0 if ans.interpreted else 0.0
+                    row["answer"] = text
             row.update(guide_score(q, cits, hits, text, region))
         except Exception as e:  # 한 문항이 실패해도 나머지는 계속
             row["error"] = f"{type(e).__name__}: {e}"
@@ -334,7 +350,7 @@ def guide_evaluate(questions: list[dict]) -> dict:
         "counts": {"total": len(rows), "scored": len(ok), "errors": len(rows) - len(ok)},
         "metrics": {"guide_hit": mean("guide_hit"), "guide_recall": mean("guide_recall"),
                     "phrase_in_quote": mean("phrase_in_quote"), "quote_accuracy": mean("quote_accuracy"),
-                    "no_guide_correctness": mean("no_guide_correct"),
+                    "no_guide_correctness": mean("no_guide_correct"), "interpreted": mean("interpreted"),
                     "assertive": sum(r["assertive"] for r in ok), "region_leak": sum(r["region_leak"] for r in ok)},
         "questions": rows,
     }
@@ -348,7 +364,8 @@ def format_guide_report(result: dict) -> str:
              f"정답 근거 1개 이상 {fmt(m['guide_hit'])}  |  정답 근거 회수율 {fmt(m['guide_recall'])}"
              f"  |  보인 문구에 정답 문구 {fmt(m['phrase_in_quote'])}  |  원문 일치 {fmt(m['quote_accuracy'])}",
              f"근거 없음 질문 정확도 {fmt(m['no_guide_correctness'])}  |  단정 표현 {m['assertive']}건"
-             f"  |  다른 지역 문서 {m['region_leak']}건", "", "놓친 문항:"]
+             f"  |  다른 지역 문서 {m['region_leak']}건"
+             + (f"  |  해석 답 성공 {fmt(m['interpreted'])}" if m.get("interpreted") is not None else ""), "", "놓친 문항:"]
     low = [r for r in result["questions"] if "error" in r or r.get("guide_hit", 1) < 1 or r.get("no_guide_correct", 1) < 1]
     for r in low:
         detail = r.get("error") or f"보인 쪽 {r['pages']}"
@@ -367,6 +384,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out-dir", default=str(RESULTS_DIR), help="결과 JSON 저장 폴더")
     ap.add_argument("--no-save", action="store_true", help="결과 파일을 저장하지 않는다")
     ap.add_argument("--guides", action="store_true", help="판정 기준 문서 근거 평가 (LLM 없이, B의 guide_store 필요)")
+    ap.add_argument("--interpret", action="store_true", help="--guides와 함께: 이어진 질문의 답 문장을 LLM으로 써서 채점")
     args = ap.parse_args(argv)
 
     if args.guides:
@@ -375,7 +393,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit("판정 기준 문서 검색(src.index.guide_store)이 없습니다. B의 색인이 준비된 뒤 실행하세요.")
         path = Path(args.questions or GUIDE_QUESTIONS_PATH)
         questions = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        result = guide_evaluate(questions[: args.limit])
+        result = guide_evaluate(questions[: args.limit], interpret=args.interpret)
         print(format_guide_report(result))
         _save(result, args, "guide_eval")
         return

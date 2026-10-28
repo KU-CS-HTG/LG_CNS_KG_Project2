@@ -10,6 +10,8 @@
 - 사용자 지역과 다른 지역 문서는 근거로 쓰지 않는다. 개정 예고 내용은 '개정 예고'로 구분한다.
 
 속도: 답변을 만들 때는 부르지 않고, 사용자가 카드에서 판정 기준을 볼 때만 카드당 1번 검색한다 (app/main.py).
+이어진 질문(answer_guide_question)은 검증을 통과한 조항으로 guide_answer가 자연스러운 답을 쓰고, 화면은 그 아래에
+조항 원문을 접어 둔다. 답 쓰기에 실패하거나 코드 검사에 걸리면 고정 안내 문장 + 원문으로 되돌아간다.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from dataclasses import dataclass, field
 
 from src.common.regions import normalize_region
 from src.common.schema import Citation, GuideChunk, Recommendation
-from src.generate import condition_extractor
+from src.generate import condition_extractor, guide_answer
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +36,8 @@ MIN_KEYWORD_HITS = 2          # 검색어 핵심 낱말이 조각에 이만큼(�
 GUIDE_NOTICE = ("판정 기준 문서는 자격 해석을 돕는 자료예요. 금액·기한은 위 제도 안내(보조금24) 기준이고, "
                 "다르면 담당 기관에 확인해 주세요. 최종 자격은 담당 기관에서 판단해요.")
 NO_GUIDE_MESSAGE = "이 조건과 관련된 판정 기준 문서를 찾지 못했어요. 담당 기관에 확인해 주세요."
-NO_GUIDE_ANSWER = "질문과 관련된 판정 기준 조항을 찾지 못했어요. 담당 기관(주민센터·고용센터 등)에 확인해 주세요."
+NO_GUIDE_ANSWER = ("판정 기준 문서에서 이 질문에 대한 내용을 찾을 수 없어요. 담당 기관(주민센터·고용센터 등)에 확인해 주세요. "
+                   "다른 제도를 찾으시려면 '비슷한 제도 알려줘'처럼 물어봐 주세요.")
 FOUND_GUIDE_ANSWER = "판정 기준 문서에서 질문과 관련된 조항 {n}건을 찾았어요. 해당 여부를 단정하지 않으니 아래 원문을 직접 확인해 주세요."
 DRAFT_MARK = "개정 예고"
 _DRAFT_RE = re.compile(r"행정\s*예고|개정\s*예고|개정안")
@@ -45,7 +48,7 @@ _GENERIC_ITEMS = ("자격 요건 충족 여부",)       # 확인할 조건을 �
 # 조건 문구에 흔한 낱말 (어느 조항에나 나와 관련도 판단에 쓰지 않는다)
 _STOPWORDS = {"이하", "이상", "미만", "초과", "이내", "기준", "조건", "여부", "확인", "원문", "해당", "대상", "지원",
               "경우", "포함", "등의", "또는", "그리고", "필요", "자격", "요건",
-              "같은", "어떻게", "무엇", "어디", "언제", "얼마", "정말", "제가", "저는", "우리",   # 후속 질문의 흔한 말
+              "같은", "어떻게", "무엇", "어디", "언제", "얼마", "정말", "제가", "저는", "우리", "중간",   # 후속 질문의 흔한 말
               # 판정 문서 어디에나 나와 관련도를 가르지 못하는 말. '청년'은 넣지 않는다: 청년 특례를 묻는 질문에서는
               # 핵심 낱말이라 빼면 정답 조항(국민취업지원제도 청년 소득 기준)을 놓쳤다
               "동안", "기간", "방법", "신청", "사람"}
@@ -86,20 +89,36 @@ class GuideAnswer:
     text: str
     citations: list[Citation] = field(default_factory=list)
     no_evidence: bool = False
+    interpreted: bool = False      # text가 조항을 읽고 쓴 답이면 True (False면 고정 안내 문장)
 
 
 def answer_guide_question(question: str, recs: list[Recommendation], region: str | None = None,
-                          k: int = GUIDE_K) -> GuideAnswer:
+                          k: int = GUIDE_K, interpret: bool = False, context: str = "") -> GuideAnswer:
     """후속 질문('부모님과 따로 살면 같은 가구예요?')에 화면에 나온 제도들의 판정 기준 문서 조항으로 답한다.
 
-    검색 1번, find_guides와 같은 검증(지역·관련도·원문 일부·중복). 답 문장은 고정 문구만 쓰고 조항 원문을 보여 준다:
-    LLM이 조항을 풀어 쓰면 '해당됩니다'처럼 자격을 단정하거나 조건을 바꿔 쓸 수 있어서다 (CLAUDE.md 판정 문서 규칙)."""
+    검색 1번, find_guides와 같은 검증(지역·관련도·원문 일부·중복). 검증을 통과한 조항만 guide_answer.explain에 줘서
+    질문에 맞는 답을 쓰고([1]·[2]는 citations 순서), 코드가 근거 번호·근거 구절·단정 표현을 검사한다. interpret=False
+    이거나 답 쓰기에 실패하면 고정 안내 문장(FOUND_GUIDE_ANSWER) + 조항 원문. 앱은 interpret=True, 판정 문서 평가는
+    기본 LLM 없이 (--interpret로 켬). context: 사용자가 앞서 한 말 (그 처지에 맞는 기준을 골라 답하게)."""
     ids = list(dict.fromkeys(r.service_id for r in recs if r.service_id))
-    terms = _doc_terms(question)
-    hits = _search(" ".join([question, *terms]), ids or None, region, k)
-    cits = _verified(hits, _keywords(question), region, k)
-    if not cits:
+    query = " ".join([question, *_doc_terms(question), *_search_terms(question)])
+    hits = _search(query, ids or None, region, k)
+    # 제도 이름을 붙여 한 번 더 찾고 번갈아 합친다: '참여할 수 있나요?'처럼 무엇에 참여하는지 질문에 없으면 이름이
+    # 있어야 요건 쪽이 올라오고, 이름만 붙이면 '따로 살면 같은 가구예요?'에서 제도의 일반 쪽이 가구 조항을 밀어냈다
+    names = list(dict.fromkeys(_program_name(r.service_name) for r in recs if r.service_id and r.service_name))
+    if names:
+        hits = _interleave(hits, _search(" ".join([*names, query]), ids or None, region, k))
+    pairs = _verified_pairs(hits, _keywords(question), region, k)
+    if not pairs:
         return GuideAnswer(text=NO_GUIDE_ANSWER, no_evidence=True)
+    cits = [c for c, _ in pairs]
+    if interpret:
+        names = list(dict.fromkeys(r.service_name for r in recs if r.service_name))
+        text = guide_answer.explain(question, names, [(c.service_name, c.page, g.text) for c, g in pairs], context)
+        if text == guide_answer.NOT_ANSWERED:      # 조항을 읽어 보니 질문에 답하지 않는다: 엉뚱한 원문을 붙이지 않는다
+            return GuideAnswer(text=NO_GUIDE_ANSWER, no_evidence=True)
+        if text:
+            return GuideAnswer(text=text, citations=cits, interpreted=True)
     return GuideAnswer(text=FOUND_GUIDE_ANSWER.format(n=len(cits)), citations=cits)
 
 
@@ -122,7 +141,12 @@ def question_region(question: str) -> str | None:
 def _verified(hits: list, keywords: list[str], region: str | None, k: int) -> list[Citation]:
     """검색 결과를 코드로 검증해 Citation(kind="guide")으로: 다른 지역 문서·제도 연혁·관련 없는 조각·같은 문서
     같은 쪽은 뺀다."""
-    out: list[Citation] = []
+    return [c for c, _ in _verified_pairs(hits, keywords, region, k)]
+
+
+def _verified_pairs(hits: list, keywords: list[str], region: str | None, k: int) -> list[tuple[Citation, GuideChunk]]:
+    """_verified와 같고 조각 원문(GuideChunk)도 함께 (이어진 질문의 답은 인용문보다 넓은 조항 본문을 읽고 쓴다)."""
+    out: list[tuple[Citation, GuideChunk]] = []
     seen: set[tuple[str, int]] = set()
     for g in hits:
         if not isinstance(g, GuideChunk) or not _region_ok(g.scope, region) or _is_history(g):
@@ -132,9 +156,22 @@ def _verified(hits: list, keywords: list[str], region: str | None, k: int) -> li
         if not quote or key in seen:
             continue
         seen.add(key)
-        out.append(Citation(service_name=_doc_label(g), agency=g.publisher, quote=quote,
-                            detail_url=g.source_url, kind="guide", page=g.page))
+        out.append((Citation(service_name=_doc_label(g), agency=g.publisher, quote=quote,
+                             detail_url=g.source_url, kind="guide", page=g.page), g))
     return out[:k]
+
+
+def _interleave(first: list, second: list) -> list:
+    """두 검색 결과를 번갈아 합친다 (같은 조각은 한 번만, 순서는 first가 먼저)."""
+    out, seen = [], set()
+    for i in range(max(len(first), len(second))):
+        for hits in (first, second):
+            g = hits[i] if i < len(hits) else None
+            key = getattr(g, "chunk_id", id(g))
+            if g is not None and key not in seen:
+                seen.add(key)
+                out.append(g)
+    return out
 
 
 def _is_history(g: GuideChunk) -> bool:
@@ -185,11 +222,39 @@ _DOC_TERMS = (
     (re.compile(r"일한\s*(?:경험|적)|일해\s*본"), "취업경험"),
     (re.compile(r"따로\s*(?:살|사)"), "주거를 달리"),
     (re.compile(r"아르바이트|알바"), "근로소득"),
+    # '제가 버는 돈이 많으면 부모님이랑 가구를 나눌 수 있나요?': 핵심 낱말이 '부모'·'가구'뿐이라 별도가구 사용대차
+    # 사례(130쪽)가 올라왔고, LLM이 그걸 '소득이 많으면 별도가구로 인정'으로 넓혀 썼다 (정답: 188쪽·기초 16쪽 가구 분리)
+    (re.compile(r"버는\s*돈|번\s*돈|수입|월급|돈을?\s*벌"), "소득"),
+    (re.compile(r"가구를?\s*(?:나누|나눌|나눠|분리|따로)|가구\s*분리"), "가구분리"),
+    # '중간에 취업하면 어떻게 돼요?': 매뉴얼은 '취업지원 종료'(주 30시간 미만 불완전 취업자는 계속 참여, 114쪽)로 적는다
+    (re.compile(r"(?:취업|취직)(?:하면|했|을\s*하면|이\s*되면)|(?:일자리를?|일을?)\s*구하면"), "종료"),
+    # '중간에 일을 구하면 생계급여가 끊겨요?': 기초생활보장 사업안내는 '종료'가 아니라 '급여중지'(변동사항을 반영해
+    # 급여중지·급여변경, 30·43쪽)로 적어, '종료'만 붙이면 관련 쪽이 검증을 통과하지 못해 '찾을 수 없어요'가 나왔다
+    (re.compile(r"끊기|끊겨|끊어|끊길|중단|못\s*받게|안\s*나오"), "급여중지"),
 )
 
 
 def _doc_terms(text: str) -> list[str]:
     return [term for pattern, term in _DOC_TERMS if pattern.search(text or "")]
+
+
+# 검색어에만 덧붙이는 문서 말 (관련도 확인 낱말에는 넣지 않는다). '일한 경험이 없어도 참여할 수 있나요?'는 '취업경험'만
+# 붙이면 매뉴얼의 '일경험 프로그램'(인턴 사업) 쪽이 올라오고 참여 요건 쪽(10·23쪽)이 밀렸다. '받을 수 있나요'처럼
+# 흔한 말에 붙이면 '전세사기 피해 … 보상받을 수 있나요?'(근거 없음 문항)에 엉뚱한 조항이 붙어 넣지 않았다
+_SEARCH_TERMS = (
+    (re.compile(r"일한\s*(?:경험|적)|일해\s*본"), "요건 지원대상"),
+    # 취업하면 소득이 바뀐다: 기초생활보장은 '소득 변동'을 확인해 '급여변경'·'급여중지'에 반영한다
+    (re.compile(r"(?:취업|취직)(?:하면|했|을\s*하면|이\s*되면)|(?:일자리를?|일을?)\s*구하면"), "소득 변동 급여변경"),
+)
+
+
+def _search_terms(text: str) -> list[str]:
+    return [term for pattern, term in _SEARCH_TERMS if pattern.search(text or "")]
+
+
+def _program_name(name: str) -> str:
+    """검색어에 붙일 제도 이름 ('주거급여 (맞춤형 급여)' -> '주거급여')."""
+    return re.sub(r"\s*\([^)]*\)", "", name or "").strip()
 
 
 # 질문의 나이 ('30살', '25 살', '19세') -> 판정 문서의 표기 '30세'. 숫자는 명사가 아니라 빠졌고
