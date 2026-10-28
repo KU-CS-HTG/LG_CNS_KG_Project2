@@ -1,0 +1,74 @@
+{
+  "format_version": 1,
+  "note": "판정 기준 문서 목록 (CLAUDE.md 데이터 절). PDF 원본은 data/guides/에 두고 커밋하지 않는다. sha256이 다르면 파싱을 멈춘다. service_ids는 사람이 문서를 읽고 정한다 (2026-10-27 확정: eval/guide_questions.jsonl의 사람이 정한 service_ids와 문서 범위 기준. 중위소득 보도자료는 공통 문서로 두지 않고 기초생활보장 급여·주거급여에만 연결). official_source_id는 src/ingest/official_sources.json(A-1)의 source_id.",
+  "documents": [
+    {
+      "doc_id": "housing-guide-2026",
+      "file": "2026년 주거급여 사업안내 (1).pdf",
+      "title": "2026년 주거급여 사업안내",
+      "publisher": "국토교통부",
+      "year": 2026,
+      "source_url": "https://www.molit.go.kr/USR/policyTarget/dtl.jsp?idx=1065",
+      "kogl": "미확인",
+      "scope": "전국",
+      "service_ids": ["336000000096"],
+      "official_source_id": "housing-guide-2026",
+      "sha256": "255bfaec8b84c7bb5ee3a6d008ca10e018f6f9752a0e9e4d9d3f0a17b78a8dba"
+    },
+    {
+      "doc_id": "housing-selection-2026",
+      "file": "2026년_주거급여_선정기준_및_최저보장수준(제정문).pdf",
+      "title": "2026년 주거급여 선정기준 및 최저보장수준 (국토교통부고시 제2025-506호)",
+      "publisher": "국토교통부",
+      "year": 2026,
+      "source_url": "https://www.molit.go.kr/USR/I0204/m_45/dtl.jsp?idx=18653",
+      "kogl": "미확인",
+      "scope": "전국",
+      "service_ids": ["336000000096"],
+      "official_source_id": "housing-selection-2026",
+      "sha256": "aa1780e8e622b9d92958cca880adfdf429bd69ba5415848a0ce67fefc62ef152"
+    },
+    {
+      "doc_id": "common-guide-2026",
+      "file": "★2026년+국민기초생활보장+사업안내(홈페이지).pdf",
+      "title": "2026년 국민기초생활보장 사업안내",
+      "publisher": "보건복지부",
+      "year": 2026,
+      "source_url": "https://www.mohw.go.kr/board.es?act=view&bid=0009&list_no=1489764&mid=a10402000000",
+      "kogl": "미확인",
+      "scope": "전국",
+      "service_ids": ["WII000001410", "999000000043", "134200000003", "SBA000000050", "SD0000002014", "336000000096"],
+      "service_ids_note": "생계·의료·교육·장제·해산급여. 주거급여(336000000096)는 주거급여 사업안내가 보장가구 구성·소득인정액 산정을 이 문서에 맡긴다 (official_sources.json relations)",
+      "official_source_id": "common-guide-2026",
+      "sha256": "2c9a698db1dbf1deac1e5c7dbe82ad5f726ae90d9f5e70ba2c59c9a88fcf99dd"
+    },
+    {
+      "doc_id": "median-income-2026",
+      "file": "[7.31.목.위원회종료(별도안내)이후]2026년도+기준+중위소득+6.51%+역대+최대로+인상.pdf",
+      "title": "2026년도 기준 중위소득 6.51% 인상 (보도자료)",
+      "publisher": "보건복지부",
+      "year": 2026,
+      "source_url": "https://www.mohw.go.kr/board.es?act=view&bid=0027&list_no=1487098&mid=a10503010100",
+      "source_url_note": "보건복지부 보도자료 2025-07-31 게시 (2026년도 기준 중위소득). 2027년도 기준(2026-07-28, list_no=1491453)과 다른 문서",
+      "kogl": "미확인",
+      "scope": "전국",
+      "service_ids": ["WII000001410", "999000000043", "134200000003", "336000000096"],
+      "official_source_id": "",
+      "sha256": "e9c627b40fe50537777f1b63fea1a5abda706ea3f3c3e2a1286f5d7d135d5f18"
+    },
+    {
+      "doc_id": "employment-manual-2026",
+      "file": "★국민취업지원제도업무매뉴얼(2026.1).pdf",
+      "title": "국민취업지원제도 업무매뉴얼 (2026.1)",
+      "publisher": "고용노동부",
+      "year": 2026,
+      "source_url": "https://www.moel.go.kr/policy/policydata/view.do?bbs_seq=20251201817",
+      "source_url_note": "고용노동부 정책자료 게시글 (다운로드 기록 ReferrerUrl, 같은 sha256 확인)",
+      "kogl": "미확인",
+      "scope": "전국",
+      "service_ids": ["149200005007"],
+      "official_source_id": "",
+      "sha256": "043a82b04849e1a0342e103b1c3b409cf6a903620438432d1976957b06e1eb04"
+    }
+  ]
+}
