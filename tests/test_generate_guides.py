@@ -211,8 +211,9 @@ def test_guide_question_answers_with_original_clauses_only(fake_guides):
             Recommendation("이름만", "기관", "", "", "")]                     # service_id 없는 카드는 빼고 찾는다
     fake_guides.results = [gchunk("basic#p52-1", 52, TEXT_FAMILY), gchunk("basic#p60-1", 60, TEXT_UNRELATED)]
     ans = guide_evidence.answer_guide_question("부모님과 따로 살면 같은 가구예요?", recs, region="서울")
-    assert fake_guides.calls == [{"query": "부모님과 따로 살면 같은 가구예요? 주거를 달리", "service_ids": ["SVC1", "SVC2"],
-                                  "region": "서울", "k": guide_evidence.GUIDE_K}]
+    query = "부모님과 따로 살면 같은 가구예요? 주거를 달리"
+    assert fake_guides.calls == [{"query": q, "service_ids": ["SVC1", "SVC2"], "region": "서울", "k": guide_evidence.GUIDE_K}
+                                 for q in (query, "생계급여 주거급여 " + query)]   # 제도 이름을 붙여 한 번 더 (이름만 카드는 빼고)
     assert not ans.no_evidence and [c.page for c in ans.citations] == [52]       # 관련 없는 조항은 뺀다
     assert "따로 살더라도" in ans.citations[0].quote
     assert ans.text == guide_evidence.FOUND_GUIDE_ANSWER.format(n=1)
@@ -239,10 +240,11 @@ def _main_script():
     app.main()
 
 
-def test_follow_up_guide_question_flow(fake_guides):
+def test_follow_up_guide_question_flow(fake_guides, monkeypatch):
     pytest.importorskip("streamlit")
     from streamlit.testing.v1 import AppTest
     fake_guides.results = [gchunk("basic#p52-1", 52, TEXT_FAMILY)]
+    monkeypatch.setattr("src.generate.guide_answer.explain", lambda *a, **k: None)   # 실제 LLM을 부르지 않게
     at = AppTest.from_function(_main_script).run(timeout=30)
     [ask_guide] = [b for b in at.button if "판정 기준으로 물어보기" in b.label]
     ask_guide.click().run(timeout=30)

@@ -23,7 +23,7 @@ from streamlit import runtime  # noqa: E402
 
 from app import card_apply, card_benefit, card_period  # noqa: E402
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import generator, guide_evidence, income_calc  # noqa: E402
+from src.generate import generator, guide_evidence, guide_router, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -389,17 +389,19 @@ def _save_check(key: str) -> None:
     st.session_state.checks[key] = bool(st.session_state.get(key))
 
 
-def _guides_html(cits: list) -> str:
-    """판정 기준 문서 근거 상자: 문서명(연도)·발행 기관·쪽, 원문 일부, 원문 링크, API 우선 안내."""
+def _guides_html(cits: list, numbered: bool = False) -> str:
+    """판정 기준 문서 근거 상자: 문서명(연도)·발행 기관·쪽, 원문 일부, 원문 링크, API 우선 안내.
+    numbered면 문서 앞에 [1]·[2] (이어진 질문 답 문장의 근거 번호와 같은 순서)."""
     head = '<div class="guide-title">📘 판정 기준 문서</div>'
     if not cits:
         return f'<div class="guide-box">{head}<div class="guide-sub">{_e(guide_evidence.NO_GUIDE_MESSAGE)}</div></div>'
     items = []
-    for c in cits:
+    for i, c in enumerate(cits, 1):
         url = _safe_url(c.detail_url)
         link = f' <a href="{_e(url)}" target="_blank" rel="noopener">원문 ↗</a>' if url else ""
         page = f" · {c.page}쪽" if c.page else ""
-        items.append(f'<div class="guide-doc">{_e(c.service_name)} · {_e(c.agency)}{page}{link}</div>'
+        num = f"[{i}] " if numbered else ""
+        items.append(f'<div class="guide-doc">{num}{_e(c.service_name)} · {_e(c.agency)}{page}{link}</div>'
                      f'<div class="quote">{_e(c.quote)}</div>')
     return (f'<div class="guide-box">{head}{"".join(items)}'
             f'<div class="guide-sub">{_e(guide_evidence.GUIDE_NOTICE)}</div></div>')
@@ -591,9 +593,15 @@ def _render_thread(thread: list[dict]) -> None:
 
 
 def _render_guide_answer(answer) -> None:
-    """판정 기준 문서로 답한 후속 질문 (guide_evidence.GuideAnswer): 고정 안내 문장 + 조항 원문."""
+    """판정 기준 문서로 답한 후속 질문 (guide_evidence.GuideAnswer): 조항을 읽고 쓴 답(또는 고정 안내 문장),
+    그 아래 근거 조항 원문 카드. 답을 쓴 경우 카드는 접어 두고 사용자가 펼쳐 출처를 본다 (번호는 답의 [1]·[2])."""
     st.markdown(f'<div class="reason">{_e(answer.text)}</div>', unsafe_allow_html=True)
-    if answer.citations:
+    if not answer.citations:
+        return
+    if getattr(answer, "interpreted", False):
+        with st.expander(f"📘 판정 기준 문서 원문 보기 ({len(answer.citations)}건)", expanded=False):
+            st.markdown(_guides_html(answer.citations, numbered=True), unsafe_allow_html=True)
+    else:                                   # 답을 쓰지 못했으면 원문이 곧 답이라 펼쳐 둔다
         st.markdown(_guides_html(answer.citations), unsafe_allow_html=True)
 
 
@@ -655,7 +663,8 @@ def main() -> None:
                            "위 제도들의 판정 기준 문서(고시·사업안내)에서 관련 조항을 찾아 원문으로 보여 드려요.")
                           if guide_mode else
                           ("↳ 위 질문에 이어서 묻는 중",
-                           "아래 입력창에 추가 정보나 궁금한 점을 적어 주세요. 앞의 내용과 합쳐서 다시 찾아드려요."))
+                           "아래 입력창에 추가 정보나 궁금한 점을 적어 주세요. 앞의 내용과 합쳐서 다시 찾아드려요. "
+                           "자격 기준을 어떻게 보는지 묻는 질문이면 판정 기준 문서에서 찾아드려요."))
             with st.container(key="replybox"):
                 c1, c2 = st.columns([5, 1], vertical_alignment="center")
                 c1.markdown(f'<div class="fb-title">{title}</div>'
@@ -720,6 +729,16 @@ def _answer_pending() -> None:
     if not asked:
         return
     thread = _thread()
+    # 이어진 질문이 위 제도의 자격 기준 해석을 묻는 것이면 버튼 없이도 판정 기준 문서에서 답한다 (guide_router)
+    if thread and thread[-1].get("follow") and guide_evidence.available() and _guide_targets(thread):
+        with st.spinner("질문을 살펴보고 있어요…"):
+            to_guide = guide_router.is_guide_question(thread[-1]["content"], _guide_targets(thread))
+        if to_guide:
+            thread[-1]["guide"] = True              # 판정 문서 질문으로 기록 (다음 이어진 질문에 합치지 않는다)
+            # 관련 조항이 없어도 다시 추천하지 않고 '찾을 수 없어요'로 답한다: 기준을 물었는데 제도 카드가 나오면
+            # 질문에 답하지 않은 것이다. 다른 제도를 찾는 질문은 guide_router가 search로 보낸다
+            _answer_guide(thread[-1]["content"])
+            return
     box = st.container(key="fu_pending") if thread and thread[-1].get("follow") else st.container()
     with box, st.chat_message("assistant", avatar="🧭"):
         try:
@@ -741,12 +760,15 @@ def _answer_pending() -> None:
 
 
 def _answer_guide(question: str) -> None:
-    """판정 기준 문서 후속 질문에 답한다: 이 주제에 나온 제도들의 판정 문서에서 검색 1번 (LLM 호출 없음)."""
+    """판정 기준 문서 후속 질문에 답한다: 이 주제에 나온 제도들의 판정 문서에서 검색, 찾은 조항으로 답 쓰기.
+    관련 조항이 없거나 조항이 질문에 답하지 않으면 '찾을 수 없어요' 안내 (guide_evidence.NO_GUIDE_ANSWER)."""
     thread = _thread()
     region = guide_evidence.question_region(" ".join(m["content"] for m in thread if m["role"] == "user"))
-    with st.container(key="fu_pending"), st.chat_message("assistant", avatar="🧭"):
-        with st.spinner("판정 기준 문서에서 관련 조항을 찾고 있어요…"):
-            answer = guide_evidence.answer_guide_question(question, _guide_targets(thread), region)
+    earlier = " ".join(m["content"] for m in thread[:-1] if m["role"] == "user")   # 앞서 말한 처지 (나이·가구 등)
+    with st.container(key="fu_pending_guide"), st.chat_message("assistant", avatar="🧭"):
+        with st.spinner("판정 기준 문서에서 관련 조항을 찾아 읽고 있어요…"):
+            answer = guide_evidence.answer_guide_question(question, _guide_targets(thread), region,
+                                                         interpret=True, context=earlier)
     thread.append({"role": "assistant", "content": answer, "guide": True})
     st.rerun()
 
