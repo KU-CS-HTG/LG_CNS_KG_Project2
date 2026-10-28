@@ -22,7 +22,7 @@ from app import card_benefit  # noqa: E402
 from app import main as app_main  # noqa: E402
 from app.catalog_mode import pick_selected  # noqa: E402
 from src.common import config  # noqa: E402
-from src.generate import amount_candidates, amount_manual, amount_rules, benefit_tiers  # noqa: E402
+from src.generate import amount_candidates, amount_from_url, amount_manual, amount_rules, benefit_tiers  # noqa: E402
 
 SHOW_ROWS = 500
 SECTIONS = (("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"), ("신청방법", "how_to_apply"))
@@ -133,6 +133,48 @@ def _review_controls(sid: str, editor: str, done: dict | None) -> None:
         st.rerun()
 
 
+def _apply_fill(sid: str, form: dict) -> None:
+    """AI가 채운 폼 값을 입력 위젯에 넣는다 (폼 위젯을 그리기 전에 불러야 한다)."""
+    pay_label = {v: k for k, v in PAY_TYPES.items()}
+    level_label = {v: k for k, v in LEVEL_LABELS.items()}
+    st.session_state[f"am_{sid}_n"] = len(form["variants"])
+    for i, v in enumerate(form["variants"], 1):
+        p = f"am_{sid}_{i}"
+        st.session_state.update({f"{p}_name": v["name"], f"{p}_pay": pay_label[v["pay_type"]], f"{p}_amount": int(v["amount_won"]),
+                                 f"{p}_rate": float(v["rate_pct"]), f"{p}_cap": int(v["cap_won"]), f"{p}_months": int(v["months"]),
+                                 f"{p}_amin": int(v["age_min"]), f"{p}_amax": int(v["age_max"]), f"{p}_median": int(v["median_pct"]),
+                                 f"{p}_house": bool(v["no_house"])})
+    src = form["source"]
+    st.session_state.update({f"am_{sid}_stitle": src["title"], f"am_{sid}_surl": src["url"], f"am_{sid}_level": level_label[src["level"]],
+                             f"am_{sid}_quote": src["quote"], f"am_{sid}_note": form.get("note", "")})
+
+
+def _autofill(sid: str, service: dict) -> None:
+    """공식 자료 주소를 넣으면 AI가 본문에서 값을 찾아 아래 폼을 채운다. 사람은 자료와 대조해 세부 내용만 고친다."""
+    st.markdown("**🤖 공식 자료 주소로 폼 채우기** (선택)")
+    c1, c2 = st.columns([5, 1.4])
+    url = c1.text_input("공식 자료 주소", key=f"am_{sid}_aiurl", placeholder="https://… (제도를 설명하는 공식 페이지)", label_visibility="collapsed")
+    if c2.button("자료에서 채우기", key=f"am_{sid}_aibtn", disabled=not url.strip()):
+        with st.spinner("자료를 읽고 값을 찾는 중… (몇 초 걸려요)"):
+            result = amount_from_url.fill_form(service, url)
+        st.session_state[f"am_{sid}_aires"] = {**{k: result.get(k) for k in ("ok", "message", "issues", "title", "text")}, "url": url}
+        if result["ok"]:
+            _apply_fill(sid, result["form"])
+    res = st.session_state.get(f"am_{sid}_aires")
+    if not res:
+        return
+    if res["ok"]:
+        st.info(f"🤖 {res['message']} 아래 값은 AI가 자료에서 채운 것이에요. 자료와 대조해 틀린 곳만 고쳐 주세요.")
+    else:
+        st.warning(res["message"])
+    for issue in res["issues"]:
+        st.warning(issue)
+    if res.get("text"):
+        with st.expander("AI가 읽은 자료 본문 (대조용)"):
+            st.caption(f"{res.get('title') or ''} · {res['url']}")
+            st.text(res["text"][:8000])
+
+
 def _detail(service: dict, editor: str, done: dict | None = None) -> None:
     sid = service["service_id"]
     st.session_state.setdefault("checks", {})
@@ -153,6 +195,7 @@ def _detail(service: dict, editor: str, done: dict | None = None) -> None:
 
     st.subheader("② 공식 자료 입력")
     st.caption("공식 자료에서 읽은 금액·조건을 입력하세요. 입력하는 대로 아래 ③이 바로 바뀌어요.")
+    _autofill(sid, service)
     form = _form(sid)
     rule, problems = amount_manual.form_to_rule(service, form, editor)
 
