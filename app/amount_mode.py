@@ -24,7 +24,7 @@ from app import card_benefit  # noqa: E402
 from app import main as app_main  # noqa: E402
 from app.catalog_mode import pick_selected  # noqa: E402
 from src.common import config  # noqa: E402
-from src.generate import amount_candidates, amount_from_url, amount_manual, amount_rules, answer_override, benefit_tiers  # noqa: E402
+from src.generate import amount_candidates, amount_from_url, amount_manual, amount_rules, answer_override, benefit_tiers, page_fetch  # noqa: E402
 
 SHOW_ROWS = 500
 SECTIONS = (("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"), ("신청방법", "how_to_apply"))
@@ -176,17 +176,32 @@ def _apply_fill(sid: str, form: dict) -> None:
         st.session_state[f"am_{sid}_notes"] = form["note"]
 
 
+def _take_result(sid: str, result: dict, url: str) -> None:
+    st.session_state[f"am_{sid}_aires"] = {**{k: result.get(k) for k in ("ok", "message", "issues", "title", "text")}, "url": url}
+    if result["ok"]:
+        _apply_fill(sid, result["form"])
+
+
 def _autofill(sid: str, service: dict) -> None:
-    """공식 자료 주소를 넣으면 AI가 본문에서 값을 찾아 아래 폼을 채운다. 사람은 자료와 대조해 세부 내용만 고친다."""
+    """공식 자료 주소를 넣으면 AI가 본문에서 값을 찾아 아래 폼을 채운다. 사람은 자료와 대조해 세부 내용만 고친다.
+    접속이 막히는 사이트(네트워크 제한·접근 차단·보안문자·로그인)는 본문을 직접 붙여넣어 같은 방식으로 채운다."""
     st.markdown("**🤖 공식 자료 주소로 폼 채우기** (선택)")
     c1, c2 = st.columns([5, 1.4])
     url = c1.text_input("공식 자료 주소", key=f"am_{sid}_aiurl", placeholder="https://… (제도를 설명하는 공식 페이지)", label_visibility="collapsed")
     if c2.button("자료에서 채우기", key=f"am_{sid}_aibtn", disabled=not url.strip()):
         with st.spinner("자료를 읽고 값을 찾는 중… (몇 초 걸려요)"):
             result = amount_from_url.fill_form(service, url)
-        st.session_state[f"am_{sid}_aires"] = {**{k: result.get(k) for k in ("ok", "message", "issues", "title", "text")}, "url": url}
-        if result["ok"]:
-            _apply_fill(sid, result["form"])
+        _take_result(sid, result, url)
+    with st.expander("접속이 안 되는 사이트라면 — 본문을 직접 붙여넣기"):
+        st.caption("브라우저에서 그 페이지를 열어 본문을 복사해 붙여넣으면 같은 방식으로 채워요 (접속 제한·보안문자·로그인이 필요한 페이지도 돼요). 위 '공식 자료 주소'가 출처로 남아요.")
+        pasted_title = st.text_input("자료 제목", key=f"am_{sid}_aipt")
+        pasted = st.text_area("본문 붙여넣기", key=f"am_{sid}_aip", height=160)
+        if st.button("붙여넣은 본문으로 채우기", key=f"am_{sid}_aipb", disabled=not (url.strip() and pasted.strip())):
+            with st.spinner("본문에서 값을 찾는 중…"):
+                result = amount_from_url.fill_from_text(service, url, pasted_title.strip(), pasted)
+            if result["ok"]:
+                page_fetch.save_snapshot(page_fetch.page_from_text(url, pasted_title.strip(), pasted))      # 나중에 근거 구절을 대조할 수 있게 남긴다
+            _take_result(sid, result, url)
     res = st.session_state.get(f"am_{sid}_aires")
     if not res:
         return

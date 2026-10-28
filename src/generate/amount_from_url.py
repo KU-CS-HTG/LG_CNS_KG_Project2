@@ -6,16 +6,13 @@ AI가 쓴 값은 코드가 페이지 본문과 대조한다: 근거 구절은 �
 저장(규칙 파일에 쓰기)은 여전히 사람이 폼을 확인하고 누른다."""
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
-import socket
-from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-from src.generate import amount_draft
+from src.generate import amount_draft, page_fetch
 
-MAX_PAGE_CHARS, MAX_BYTES, FETCH_TIMEOUT, MAX_VARIANTS = 15000, 3_000_000, 15, 4
+MAX_PAGE_CHARS, MAX_VARIANTS = 15000, 4
 OFFICIAL_SUFFIXES = (".go.kr", ".gov.kr", "korea.kr")      # 이 도메인이면 자료 등급을 '공식'으로 미리 고른다 (그 밖은 사람이 고른다)
 
 PROMPT = """너는 정부 지원제도 공식 안내 페이지에서 '예상 수령액 규칙'에 필요한 값을 찾아 폼 값으로 옮긴다. JSON 객체 하나만 출력한다.
@@ -37,82 +34,15 @@ PROMPT = """너는 정부 지원제도 공식 안내 페이지에서 '예상 수
 - 금액이 없거나 계산할 수 없는 제도면 variants를 빈 배열로 둔다."""
 
 
-class _Text(HTMLParser):
-    BLOCK = {"p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "table", "section", "ul", "dd", "dt"}
-
-    def __init__(self):
-        super().__init__()
-        self.parts, self.skip, self.title, self._in_title = [], 0, "", False
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style", "noscript"):
-            self.skip += 1
-        elif tag == "title":
-            self._in_title = True
-        elif tag in self.BLOCK:
-            self.parts.append("\n")
-        elif tag in ("td", "th"):
-            self.parts.append(" | ")
-
-    def handle_endtag(self, tag):
-        if tag in ("script", "style", "noscript") and self.skip:
-            self.skip -= 1
-        elif tag == "title":
-            self._in_title = False
-        elif tag in self.BLOCK:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if self._in_title:
-            self.title += data.strip()
-        elif not self.skip and data.strip():
-            self.parts.append(data)
-
-
-def html_to_text(html: str) -> tuple[str, str]:
-    """HTML -> (제목, 본문 글). 표 칸은 ' | '로, 줄은 줄바꿈으로 남기고 공백을 정리한다."""
-    parser = _Text()
-    parser.feed(html or "")
-    lines = [re.sub(r"[ \t\xa0]+", " ", l).strip(" |") for l in "".join(parser.parts).splitlines()]
-    return parser.title, "\n".join(l for l in lines if l)
-
-
-def check_url(url: str) -> str:
-    """주소 문제 설명(없으면 ''). http(s)만, 내부망·로컬 주소는 막는다."""
-    parts = urlparse((url or "").strip())
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        return "주소는 https://로 시작해야 해요."
-    host = parts.hostname
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return ""                          # 이름 풀이 실패는 접속 단계에서 알려 준다
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            return "내부망·로컬 주소는 읽을 수 없어요."
-    return ""
+html_to_text = page_fetch.html_to_text
+check_url = page_fetch.check_url
 
 
 def fetch_page(url: str) -> tuple[str, str]:
-    """(제목, 본문 글). 실패하면 RuntimeError(사람이 읽을 수 있는 이유)."""
-    import requests
-    problem = check_url(url)
-    if problem:
-        raise RuntimeError(problem)
-    try:
-        resp = requests.get(url, timeout=FETCH_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
-        resp.raise_for_status()
-        body = resp.raw.read(MAX_BYTES + 1, decode_content=True)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"자료를 열지 못했어요 ({type(exc).__name__}). 주소가 맞는지, 이 PC에서 접속되는지 확인해 주세요.") from exc
-    if len(body) > MAX_BYTES:
-        raise RuntimeError("페이지가 너무 커서 읽지 않았어요.")
-    encoding = resp.encoding if resp.encoding and resp.encoding.lower() != "iso-8859-1" else (resp.apparent_encoding or "utf-8")
-    title, text = html_to_text(body.decode(encoding, errors="replace"))
-    if len(text) < 30:
-        raise RuntimeError("페이지에서 읽을 글이 거의 없어요. 화면을 스크립트로 그리는 페이지일 수 있어요 — 본문을 직접 복사해 입력해 주세요.")
-    return title, text[:MAX_PAGE_CHARS]
+    """(제목, 본문 글). 읽은 기록을 남기고, 실패하면 원인과 해결 방법을 담은 RuntimeError(page_fetch.FetchError)."""
+    page = page_fetch.fetch(url)
+    page_fetch.save_snapshot(page)
+    return page.title, page.text[:MAX_PAGE_CHARS]
 
 
 def default_level(url: str) -> str:
@@ -159,11 +89,22 @@ def _clean_variant(v: dict, nums: set[float], flat: str, issues: list[str]) -> d
 
 def fill_form(service: dict, url: str, chat_json=None, fetch=None) -> dict:
     """주소의 페이지를 읽어 폼 값을 만든다 -> {ok, message, issues, title, text, form(ok일 때)}. 폼 형식은 amount_manual.form_to_rule이 받는 것과 같다."""
-    chat_json = chat_json or __import__("src.generate.condition_extractor", fromlist=["_chat_json"])._chat_json
     try:
         title, text = (fetch or fetch_page)(url)
     except RuntimeError as exc:
         return {"ok": False, "message": str(exc), "issues": [], "title": "", "text": ""}
+    return fill_from_text(service, url, title, text, chat_json)
+
+
+def fill_from_text(service: dict, url: str, title: str, text: str, chat_json=None) -> dict:
+    """이미 읽은(또는 사람이 브라우저에서 복사해 붙여넣은) 본문으로 폼 값을 만든다. 접속이 막힌 사이트에 쓴다.
+    근거 구절·숫자는 이 본문과 대조한다. url은 출처 주소로 남는다 (https://…여야 한다)."""
+    chat_json = chat_json or __import__("src.generate.condition_extractor", fromlist=["_chat_json"])._chat_json
+    text = (text or "").strip()[:MAX_PAGE_CHARS]
+    if not url.strip().startswith(("https://", "http://")):
+        return {"ok": False, "message": "출처로 남길 자료 주소(https://…)를 입력해 주세요.", "issues": [], "title": title, "text": text}
+    if len(text) < 30:
+        return {"ok": False, "message": "본문이 너무 짧아요. 자료 본문을 더 붙여넣어 주세요.", "issues": [], "title": title, "text": text}
     user = json.dumps({"제도 이름": service.get("service_name", ""), "수집 데이터 지원내용(참고)": (service.get("support_content") or "")[:600],
                        "페이지 본문": text}, ensure_ascii=False)
     try:
@@ -171,12 +112,12 @@ def fill_form(service: dict, url: str, chat_json=None, fetch=None) -> dict:
     except Exception as exc:     # noqa: BLE001 — 키 없음·네트워크·JSON 오류를 화면에 알린다
         return {"ok": False, "message": f"AI 호출에 실패했어요: {exc!r}", "issues": [], "title": title, "text": text}
     if raw.get("page_matches_service") is not True:
-        return {"ok": False, "message": "이 페이지는 선택한 제도와 다른 내용일 수 있어요: " + str(raw.get("match_reason") or "이유 없음"),
+        return {"ok": False, "message": "이 자료는 선택한 제도와 다른 내용일 수 있어요: " + str(raw.get("match_reason") or "이유 없음"),
                 "issues": [], "title": title, "text": text}
     nums, flat, issues = amount_draft.source_numbers(text), amount_draft._squash(text), []
     variants = [c for v in (raw.get("variants") or [])[:MAX_VARIANTS] if isinstance(v, dict) and (c := _clean_variant(v, nums, flat, issues))]
     if not variants:
-        return {"ok": False, "message": "페이지에서 계산에 쓸 금액·조건을 확인하지 못했어요. 직접 입력해 주세요.", "issues": issues, "title": title, "text": text}
+        return {"ok": False, "message": "자료에서 계산에 쓸 금액·조건을 확인하지 못했어요. 직접 입력해 주세요.", "issues": issues, "title": title, "text": text}
     quotes = "\n".join(dict.fromkeys(v["quote"] for v in variants))
     form = {"variants": [{k: v[k] for k in v if k != "quote"} for v in variants],
             "source": {"title": title or service.get("service_name", ""), "url": url.strip(), "level": default_level(url), "quote": quotes},
