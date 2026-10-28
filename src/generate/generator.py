@@ -1037,6 +1037,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     districts = _find_districts(question, region)
     _progress(STEP_SEARCH)
     result = hybrid.search_with_info(question, filters, k=k)
+    if getattr(result, "below_floor", False):
+        # 가장 가까운 제도도 유사도 하한 미달 (hybrid.MIN_SIMILARITY, '해외 주식 손실 보전'): 핵심어로 다시 찾으면 엉뚱한 제도가
+        # 후보가 되어 판정 LLM을 두 번(약 20번 호출) 부르고도 근거 없음이었다. 다시 찾지 않고 바로 근거 없음으로 답한다
+        trace.out("  -> 가장 가까운 제도도 유사도 하한 미달: 다시 찾지 않고 근거 없음으로 답합니다")
+        return Answer(text=f"{NO_EVIDENCE_MESSAGE}\n{SCOPE_NOTICE}", no_evidence=True), {}
     today = date.fromisoformat(filters.get("today") or date.today().isoformat())
     trace.listing("검색 결과", result.chunks)
     chunks = _drop_expired(result.chunks, today)
