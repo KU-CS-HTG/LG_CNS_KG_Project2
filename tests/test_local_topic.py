@@ -52,6 +52,24 @@ def test_topic_already_covered_keeps_national_first(searched):
     assert searched == []
 
 
+def test_phrase_partly_covered_is_covered(searched):
+    """'면접 보러 다닐 때 교통비': '면접'이 앞쪽 후보에 있으면 '교통비'가 없어도 작동하지 않는다 (한부모가족 자녀 교통비가 들어왔다)."""
+    front = NATIONAL + [chunk("N5", "구직자 면접 지원", "면접 정장 대여")]
+    assert local_topic.local_candidates(front, ["면접 보러 다닐 때 교통비"], {}) == ([], [])
+    assert searched == []
+
+
+def test_local_program_needs_topic_in_its_name(monkeypatch):
+    """본문에만 주제어가 있는 지자체 제도는 넣지 않는다 ('자립해야'에 한부모가족 자립지원이 걸렸다)."""
+    body_only = chunk("L9", "청년 생활 안정 지원", "반려동물 양육 가구 포함", region="부산")
+
+    class Result:
+        chunks = [body_only, PET_GYEONGGI]
+    monkeypatch.setattr(hybrid, "search_with_info", lambda *a, **k: Result)
+    added, _ = local_topic.local_candidates(NATIONAL, ["반려동물 병원비"], {})
+    assert [c.service_id for c in added] == ["L2"]
+
+
 def test_region_given_or_no_topic_does_nothing(searched):
     assert local_topic.local_candidates(NATIONAL, ["반려동물 병원비"], {"region": "서울"}) == ([], [])
     assert local_topic.local_candidates(NATIONAL, ["받을 수 있는 지원"], {}) == ([], [])
@@ -74,3 +92,7 @@ def test_notice_asks_for_region():
     text = local_topic.notice(["반려동물"])
     assert "'반려동물'" in text and "지역" in text
     assert "'반려동물 병원비 지원'" in local_topic.notice(["병원비"], ["생계급여", "반려동물 병원비 지원"])
+    # 안내된 지자체 제도 이름에 없는 주제(생활비)는 문구에 넣지 않는다
+    text = local_topic.notice(["생활비", "부족해요", "반려동물", "병원비"], ["생활비가 부족해요", "반려동물 병원비도"],
+                              ["돌봄 취약가구 반려동물 의료서비스 등 지원"])
+    assert "'반려동물 병원비도'" in text and "생활비" not in text

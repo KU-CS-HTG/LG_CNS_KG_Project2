@@ -1099,7 +1099,9 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     chunks = exclusion.exclude_in_use(question, conditions, chunks)   # W1 자리 (src/generate/exclusion.py)
     # 핵심 주제어가 본문에 있는 제도를 판정 후보 앞으로. 찾는 도움이 없는 넓은 질문은 처지 핵심어로 ('귀농' 질문의 실업크레딧이 1번 카드였다)
     chunks = topical.prioritize(chunks, conditions.get("help") or ([situation_q] if situation_q else None))
-    selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
+    # 넣은 지자체 제도(local_topic)만큼 판정 자리를 늘린다: 10자리 안에서 3자리를 차지하자 '면접 교통비' 질문의 정답
+    # (원래 판정 후보)이 밀려 안내되지 못했다 (답변 평가 q03). 원래 후보 10개는 그대로 판정받는다
+    selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES + len(local_added))
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
     if trace.enabled():
@@ -1117,11 +1119,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     notice = _relaxed_notice(filters, used) if (result.relaxed or region_relaxed) else ""
     if notice and not answer.no_evidence:
         answer.text = f"{notice}\n\n{answer.text}"
-    # 주제가 지자체 제도에만 있었고(local_topic) 지자체 제도를 안내했으면 지역을 되묻는다. 넣은 제도가 판정에서 빠지고
-    # 원래 후보의 지자체 제도가 안내돼도 같다 ('반려동물 병원비' 단독 질문: 안내 5개가 모두 다른 지역 지자체 제도)
-    by_sid = {c.service_id: c for c in chunks}
-    if local_terms and any(r.service_id in by_sid and retrieve_filters.is_local(by_sid[r.service_id]) for r in answer.recommendations):
-        answer.text = f"{local_topic.notice(local_terms, conditions.get('help'))}\n\n{answer.text}"
+    # 주제가 지자체 제도에만 있어 넣은 제도(local_topic)가 안내됐으면 지역을 되묻는다. 원래 후보의 지자체 제도까지 보면
+    # '면접 교통비' 질문에 넣은 제도는 모두 빠졌는데 '교통비 관련 지원은 지역마다…'가 붙었다
+    shown = [r.service_name for r in answer.recommendations if r.service_id in {c.service_id for c in local_added}]
+    if shown:
+        answer.text = f"{local_topic.notice(local_terms, conditions.get('help'), shown)}\n\n{answer.text}"
     return answer, selected
 
 
