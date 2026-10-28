@@ -23,8 +23,11 @@ def test_needs_official_lists_services_without_amounts_first_by_demand():
     assert [r["service_id"] for r in am.needs_official([NOMONEY, MONEY, LOCAL], include_local=True)] == ["S50", "S52"]
     assert {r["service_id"] for r in am.needs_official([NOMONEY, MONEY], scope="all")} == {"S50", "S51"}
     assert [r["service_id"] for r in am.needs_official([NOMONEY, MONEY], scope="all", text="수당")] == ["S51"]
-    kupj = am.needs_official([{**NOMONEY, "service_id": "149200005007", "service_name": "국민취업지원제도"}, NOMONEY])
-    assert [r["has_rule"] for r in kupj] == [False, True]                    # 이미 규칙이 있으면 뒤로
+    kupj_svc = {**NOMONEY, "service_id": "149200005007", "service_name": "국민취업지원제도"}
+    assert [r["service_id"] for r in am.needs_official([kupj_svc, NOMONEY])] == ["S50"]            # 규칙을 저장한 제도는 기본 목록에서 빠진다
+    shown = am.needs_official([kupj_svc, NOMONEY], show_done=True)
+    assert [(r["service_id"], r["state"]) for r in shown] == [("S50", ""), ("149200005007", "규칙 저장")]    # 보기를 켜면 뒤에 상태와 함께
+    assert am.needs_official([NOMONEY], done={"S50"}) == [] and am.needs_official([NOMONEY], done={"S50"}, show_done=True)[0]["state"] == "확인 완료"
 
 
 def test_form_to_rule_builds_a_valid_generic_rule():
@@ -111,6 +114,47 @@ def test_preview_helpers_are_deterministic_and_use_source_text():
     assert r.citations[0].detail_url == "https://www.gov.kr/x" and "상시" in r.how_to_apply
     t = am.preview_tiers(NOMONEY)["tiers"][0]
     assert t["quote"] in NOMONEY["support_content"] and t["amount"] == "" and t["basis"] == "source"
+
+
+def test_reviewed_events_use_latest_record_and_validate_names(tmp_path):
+    am.mark_reviewed("S50", "kim", "현물 서비스", reviewed_dir=tmp_path)
+    am.mark_reviewed("S51", "lee", reviewed_dir=tmp_path)
+    assert set(am.reviewed(tmp_path)) == {"S50", "S51"} and am.reviewed(tmp_path)["S50"]["note"] == "현물 서비스"
+    am.mark_reviewed("S50", "lee", undo=True, reviewed_dir=tmp_path)                    # 다른 사람이 나중에 되돌리면 빠진다
+    assert set(am.reviewed(tmp_path)) == {"S51"}
+    (tmp_path / "kim.jsonl").open("a", encoding="utf-8").write("깨진 줄\n")
+    assert set(am.reviewed(tmp_path)) == {"S51"} and am.reviewed(tmp_path / "없음") == {}
+    for bad in ("", "../x", "김"):
+        with pytest.raises(ValueError):
+            am.mark_reviewed("S50", bad, reviewed_dir=tmp_path)
+
+
+def test_page_hides_reviewed_services_and_can_restore(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    import app.amount_mode as page
+
+    rules = tmp_path / "rules.json"
+    rules.write_text(json.dumps({"rules": []}), encoding="utf-8")
+    monkeypatch.setattr(ar, "RULES_PATH", rules)
+    monkeypatch.setattr(am, "REVIEWED_DIR", tmp_path / "reviewed")
+    monkeypatch.setattr(page, "_services", lambda: {"S50": NOMONEY, "S54": {**NOMONEY, "service_id": "S54", "service_name": "다른 지원"}})
+    monkeypatch.setattr(page, "_demand", lambda: {})
+    at = AppTest.from_file(str(_page(tmp_path)), default_timeout=30).run()
+    assert any("제도 2개" in c.value for c in at.caption)
+    at.session_state["amount_sel_id"] = "S50"
+    at.sidebar.text_input[0].set_value("kim")
+    at.run()
+    next(b for b in at.button if "지금 답변 그대로 OK" in b.label).click().run()
+    assert not at.exception and any("제도 1개" in c.value for c in at.caption)           # 확인 완료한 제도는 목록에서 빠진다
+    assert at.session_state["amount_sel_id"] is None and set(am.reviewed()) == {"S50"}
+    at.sidebar.checkbox[1].check().run()                                                  # '처리한 제도도 보기'
+    assert any("제도 2개" in c.value for c in at.caption)
+    at.session_state["amount_sel_id"] = "S50"
+    at.run()
+    assert any("확인 완료 — kim" in s.value for s in at.success)
+    next(b for b in at.button if b.label == "다시 확인 필요로 되돌리기").click().run()
+    assert am.reviewed() == {}
 
 
 def _page(tmp_path):

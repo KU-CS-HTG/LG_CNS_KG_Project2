@@ -108,7 +108,23 @@ def _form(sid: str) -> dict:
     return {"variants": variants, "source": {"title": title, "url": url, "level": level, "quote": quote}, "note": note}
 
 
-def _detail(service: dict, editor: str) -> None:
+def _review_controls(sid: str, editor: str, done: dict | None) -> None:
+    """'지금 답변 그대로 OK'(규칙이 필요 없음)를 기록하면 목록에서 빠진다. 기록은 입력자별 파일에 쌓인다."""
+    if done:
+        st.success(f"확인 완료 — {done['by']} · {done['at'][:10]}" + (f" · {done['note']}" if done.get("note") else ""))
+        if st.button("다시 확인 필요로 되돌리기", key=f"am_{sid}_undo", disabled=not editor):
+            amount_manual.mark_reviewed(sid, editor, undo=True)
+            st.rerun()
+        return
+    c1, c2 = st.columns([3, 2])
+    note = c1.text_input("확인 메모 (선택: 예 '현물 서비스라 금액 없음')", key=f"am_{sid}_rnote")
+    c2.write("")
+    if c2.button("✅ 지금 답변 그대로 OK (목록에서 숨기기)", key=f"am_{sid}_ok", disabled=not editor):
+        amount_manual.mark_reviewed(sid, editor, note)
+        st.rerun()
+
+
+def _detail(service: dict, editor: str, done: dict | None = None) -> None:
     sid = service["service_id"]
     st.session_state.setdefault("checks", {})
     st.session_state.setdefault("guides", {})
@@ -118,6 +134,7 @@ def _detail(service: dict, editor: str) -> None:
                 + ("" if existing["calculator"] == "generic" else " · 코드로 계산하는 규칙이라 이 화면에서는 바꿀 수 없어요."))
     with st.expander("제도 세부 내용 (수집 원문)", expanded=True):
         _content(service)
+    _review_controls(sid, editor, done)
 
     st.subheader("① 지금 답변에 나오는 모습")
     st.caption("이 제도가 답변으로 제시될 때 사용자가 보는 카드예요. 지원 유형 정리는 원문 첫 줄로 대신한 시뮬레이션이에요.")
@@ -158,19 +175,21 @@ def render() -> None:
         st.session_state["amount_editor"] = editor
         scope_label = st.radio("보여줄 제도", ["금액이 원문에 없는 제도", "모든 제도"], key="am_scope")
         include_local = st.checkbox("지자체 제도도 보기", key="am_local")
+        show_done = st.checkbox("처리한 제도도 보기 (규칙 저장·확인 완료)", key="am_done")
         text = st.text_input("검색 (서비스명·소관기관·ID)", key="am_q")
         st.caption("수요 = 검수 기록에서 '좋음·부분'으로 판정된 횟수예요. 수요가 많은 제도부터 규칙을 만드세요.")
     services = _services()
     if not services:
         st.warning("제도 데이터를 읽지 못했어요 (data/services.db 또는 data/raw/serviceList.json). python -m src.datapack install 로 데이터 팩을 설치하세요.")
         return
+    done_map = amount_manual.reviewed()
     rows = amount_manual.needs_official(list(services.values()), _demand(), scope="no_amount" if scope_label.startswith("금액이") else "all",
-                                        include_local=include_local, text=text)
+                                        include_local=include_local, text=text, done=set(done_map), show_done=show_done)
     st.caption(f"사람이 공식 자료를 넣어야 하는 제도 {len(rows):,}개" + (f" (앞 {SHOW_ROWS}개만 표시)" if len(rows) > SHOW_ROWS else "")
                + " · 표에서 제도를 클릭하면 아래가 열려요")
     view = rows[:SHOW_ROWS]
     table = [{"ID": r["service_id"], "서비스명": r["service_name"], "소관기관": r["agency"], "수요": r["demand"],
-              "규칙": "✅" if r["has_rule"] else "", "사유": r["reason"]} for r in view]
+              "상태": r["state"], "사유": r["reason"]} for r in view]
     current = st.session_state.get("amount_sel_id")
     try:
         event = st.dataframe(table, hide_index=True, height=300, key="am_table", on_select="rerun", selection_mode="single-row")
@@ -181,12 +200,14 @@ def render() -> None:
             ids = [r["service_id"] for r in view]
             current = st.selectbox("제도 선택", ids, index=ids.index(current) if current in ids else 0, key="am_pick",
                                    format_func=lambda i: f"{services[i].get('service_name', '')}  ·  {i}")
+    if current not in {r["service_id"] for r in view}:      # 처리해서 목록에서 빠진 제도는 선택을 푼다
+        current = None
     st.session_state["amount_sel_id"] = current
     st.divider()
     if not current or current not in services:
         st.info("조건에 맞는 제도가 없어요." if not view else "위 표에서 제도를 클릭하면 내용과 답변 화면을 볼 수 있어요.")
         return
-    _detail(services[current], editor)
+    _detail(services[current], editor, done_map.get(current))
 
 
 def main() -> None:
