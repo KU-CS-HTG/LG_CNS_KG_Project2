@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -32,12 +34,36 @@ INPUTS = {
 }
 
 
-@lru_cache(maxsize=1)
-def _load() -> list[dict]:
+@lru_cache(maxsize=4)
+def _read(mtime_ns: int) -> list[dict]:
     return json.loads(RULES_PATH.read_text(encoding="utf-8"))["rules"]
 
 
+def _load() -> list[dict]:
+    """규칙 파일 내용. 파일이 바뀌면(수정 시각이 달라지면) 앱을 다시 띄우지 않아도 새 규칙을 읽는다."""
+    return _read(RULES_PATH.stat().st_mtime_ns)
+
+
+_load.cache_clear = _read.cache_clear
+
+_preview = threading.local()          # 규칙 관리 화면의 미리보기 전용 (이 화면을 그리는 스레드에서만 보인다)
+
+
+@contextmanager
+def preview_rule(rule: dict | None):
+    """이 블록 안에서는 find()가 저장하지 않은 규칙(rule)을 돌려준다 (규칙 관리 화면의 '입력 후' 미리보기)."""
+    previous = getattr(_preview, "rule", None)
+    _preview.rule = rule
+    try:
+        yield
+    finally:
+        _preview.rule = previous
+
+
 def find(service_id: str) -> dict | None:
+    pending = getattr(_preview, "rule", None)
+    if pending is not None and service_id and service_id in pending["service_ids"]:
+        return pending
     return next((r for r in _load() if service_id and service_id in r["service_ids"]), None)
 
 
@@ -46,11 +72,14 @@ def inputs_for(rule: dict) -> list[dict]:
 
 
 def won(n: int) -> str:
-    """원 -> '6억 원' / '360만 원' / '약 308만 원' / '1,234원'."""
+    """원 -> '6억 원' / '360만 원' / '11만 6천 원' / '약 308만 원'(천 원 단위로 떨어지지 않는 큰 금액) / '1,234원'."""
     if n % 100_000_000 == 0 and n >= 100_000_000:
         return f"{n // 100_000_000:,}억 원"
-    if n % MAN == 0:
-        return f"{n // MAN:,}만 원"
+    man, rest = divmod(n, MAN)
+    if rest == 0:
+        return f"{man:,}만 원"
+    if rest % 1000 == 0:
+        return f"{man:,}만 {rest // 1000}천 원" if man else f"{rest // 1000}천 원"
     return f"약 {round(n / MAN):,}만 원" if n >= MAN else f"{n:,}원"
 
 

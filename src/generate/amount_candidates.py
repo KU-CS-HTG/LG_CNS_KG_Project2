@@ -50,9 +50,9 @@ LOCAL_PENALTY = 25
 MAX_SENTENCES, MAX_SENTENCE_LEN = 4, 160
 
 
-def _support_percents(line: str) -> list[str]:
-    """줄에서 지원 비율(%)만: '중위소득 60% 이하'처럼 소득·재산 기준을 말하는 %는 뺀다."""
-    if not _SUPPORT_WORD_RE.search(line):
+def _support_percents(line: str, context: str = "") -> list[str]:
+    """줄에서 지원 비율(%)만: '중위소득 60% 이하'처럼 소득·재산 기준을 말하는 %는 뺀다. 지원·환급 같은 말이 그 줄이나 지원내용 어딘가에 있어야 한다."""
+    if not _SUPPORT_WORD_RE.search(line) and not _SUPPORT_WORD_RE.search(context):
         return []
     return [m.group() for m in _PERCENT_RE.finditer(line) if not re.search(r"소득|재산|자산|이하|이상|미만|초과", line[max(0, m.start() - 10):m.end() + 4])]
 
@@ -66,11 +66,11 @@ def analyze(service: dict) -> dict | None:
     """제도 하나의 금액 구조를 분석한다. 지원내용에 금액·비율이 없으면 None (현물·서비스 제도)."""
     content = service.get("support_content") or ""
     lines = _lines(content)
-    amount_lines = [l for l in lines if _AMOUNT_RE.search(l) or _support_percents(l)]
+    amount_lines = [l for l in lines if _AMOUNT_RE.search(l) or _support_percents(l, content)]
     if not amount_lines:
         return None
     amounts = {re.sub(r"\s+", "", m) for l in amount_lines for m in _AMOUNT_RE.findall(l)}
-    percents = {re.sub(r"\s+", "", m) for l in amount_lines for m in _support_percents(l)}
+    percents = {re.sub(r"\s+", "", m) for l in amount_lines for m in _support_percents(l, content)}
     conditional = [l for l in amount_lines if _CONDITION_RE.search(l)]
     text_all = " ".join([content, service.get("selection_criteria") or "", service.get("support_target") or ""])
     if _DISCOUNT_NAME_RE.search(service.get("service_name") or ""):

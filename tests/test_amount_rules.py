@@ -97,6 +97,7 @@ def test_type2_amounts_are_shown_with_secondary_source_caveat():
 
 
 def test_won_format():
+    assert ar.won(696_000) == "69만 6천 원" and ar.won(116_000) == "11만 6천 원" and ar.won(5_000) == "5천 원" and ar.won(1_234) == "1,234원"
     assert ar.won(3_600_000) == "360만 원" and ar.won(600_000_000) == "6억 원" and ar.won(3_077_085) == "약 308만 원"
 
 
