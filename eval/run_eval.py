@@ -32,7 +32,7 @@ from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from pathlib import Path
 
-from eval import metrics
+from eval import bad_reasons, metrics
 from src.common import config
 
 QUESTIONS_PATH = config.EVAL_DIR / "questions.jsonl"
@@ -119,6 +119,7 @@ def run_experiment(experiment: str, questions: Sequence[dict], search_fn: Search
                 "relevant": sorted(relevant), "retrieved": ids, "first_hit_rank": hit_rank,
                 "filters": q.get("filters", {}), "filters_used": used, "relaxed": relaxed}
         if "relevance" in q:                       # 검수 저장소 시험지: 등급과 판정 정보 (docs/REVIEW_STORE.md)
+            row["question_id"] = q.get("question_id")   # 나쁨 사유를 검수 저장소에서 찾는 열쇠 (eval/bad_reasons.py)
             row["relevance"] = q["relevance"]
             row["judged"] = sorted(set(q["relevance"]) | set(q.get("hard_negatives", [])) | set(q.get("unsure", [])))
             row["hard_negatives"] = list(q.get("hard_negatives", []))
@@ -178,6 +179,8 @@ def format_report(result: dict) -> str:
         for kk in cfg["ks"]:
             extra = f"   bad {g[f'bad_rate@{kk}']:.3f}  unjudged {g[f'unjudged_rate@{kk}']:.3f}" if f"bad_rate@{kk}" in g else ""
             lines.append(f"  K={kk:<2d}  Precision {g[f'precision@{kk}']:.3f}   nDCG {g[f'ndcg@{kk}']:.3f}{extra}")
+    if result.get("bad_reasons"):
+        lines.append(bad_reasons.format_summary(result["bad_reasons"]))
     if result["targets"]:
         goals = ", ".join(f"{name} {'달성' if ok else '미달'}(목표 {metrics.TARGETS[name]:.2f})" for name, ok in result["targets"].items())
         lines.append(f"  잠정 목표(Top-5): {goals}")
@@ -280,6 +283,8 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"{name}은 아직 구현되지 않았습니다 (src/retrieve/baseline.py)")
         except ValueError as e:
             raise SystemExit(f"{e}\n샘플로 먼저 시험하려면: python -m eval.run_eval --experiment all --questions tests/fixtures/sample_eval_questions.jsonl --no-save")
+        if any(r.get("hard_negatives") for r in result["questions"]):   # 검수 시험지: 상위 K개 나쁨 판정의 사유별 집계 (R1)
+            result["bad_reasons"] = bad_reasons.summarize(result["questions"], args.k, *bad_reasons.review_lookups())
         print(format_report(result) + "\n")
         if not args.no_save:
             print(f"  저장: {save_result(result, args.out_dir)}\n")
