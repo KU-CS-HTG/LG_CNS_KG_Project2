@@ -43,6 +43,7 @@ LOGIN_HINTS = ("로그인이 필요", "로그인 후 이용", "로그인 후 확
 HINTS = {
     "network": "이 실행 환경에서 그 사이트에 접속되지 않아요(네트워크 허용 목록 또는 이 PC의 네트워크 문제). 클라우드 환경이면 환경 설정의 'Network access'에서 도메인을 허용하고, "
                "아니면 이 PC에서 직접 실행하거나 브라우저에서 본문을 복사해 붙여넣어 주세요.",
+    "timeout": "응답이 너무 늦어요 (사이트가 느리거나 외부 접속을 늦추는 중일 수 있어요). 시간 제한을 늘려 다시 시도하거나(--timeout 60) 브라우저에서 열어 본문을 복사해 붙여넣어 주세요.",
     "blocked": "사이트가 자동 접근을 막았어요(403·429 등). 우회하지 않아요. 브라우저에서 직접 열어 본문을 복사해 붙여넣어 주세요.",
     "captcha": "보안문자(CAPTCHA)가 나와요. 자동으로 풀지 않아요. 브라우저에서 직접 열어 본문을 복사해 붙여넣어 주세요.",
     "login": "로그인이 필요한 페이지예요. 브라우저에서 로그인해 본문을 복사해 붙여넣어 주세요.",
@@ -54,7 +55,7 @@ HINTS = {
 
 
 class FetchError(RuntimeError):
-    """cause: network | blocked | captcha | login | robots | empty | too_big | other"""
+    """cause: network | timeout | blocked | captcha | login | robots | empty | too_big | other"""
 
     def __init__(self, cause: str, detail: str = ""):
         self.cause = cause
@@ -162,12 +163,23 @@ def robots_allows(url: str, get=None) -> bool:
     return True if rp is None else rp.can_fetch(USER_AGENT, url)
 
 
+def _get_with_retry(get, url: str):
+    """시간 초과면 제한을 두 배로 늘려 한 번만 다시 시도한다 (느린 사이트용). 그 밖의 오류는 그대로 올린다."""
+    import requests
+    try:
+        return get(url, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, stream=True)
+    except requests.Timeout:
+        return get(url, timeout=TIMEOUT * 2, headers={"User-Agent": USER_AGENT}, stream=True)
+
+
 def _classify(exc: Exception) -> str:
     import requests
     if isinstance(exc, requests.HTTPError) and exc.response is not None:
         code = exc.response.status_code
         return "blocked" if code in (401, 403, 429) else "other"
-    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+    if isinstance(exc, requests.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.ConnectionError):
         return "network"
     return "other"
 
@@ -225,7 +237,7 @@ def fetch(url: str, *, browser: bool = False, get=None, render=None, sleep=time.
         _check_text(html, text)
         return Page(url, url, title, text, 200, "text/html", fetched_at, "browser", hashlib.sha256(html.encode("utf-8")).hexdigest())
     try:
-        resp = get(url, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, stream=True)
+        resp = _get_with_retry(get, url)
         resp.raise_for_status()
         body = resp.raw.read(MAX_BYTES + 1, decode_content=True)
     except requests.RequestException as exc:
@@ -272,10 +284,27 @@ def page_from_text(url: str, title: str, text: str) -> Page:
                 hashlib.sha256(text.encode("utf-8")).hexdigest())
 
 
+def _norm(text: str) -> str:
+    """대조용 정규화: 공백·표 칸 구분선(|)·보이지 않는 문자를 없앤다 (표를 읽을 때 칸 사이에 ' | '가 들어가므로)."""
+    return re.sub(r"[\s|\u200b\u00a0\ufeff]+", "", text or "")
+
+
 def quote_in_text(text: str, quote: str) -> bool:
-    """근거 구절이 본문에 (공백을 무시하고) 글자 그대로 있는가."""
-    q = re.sub(r"\s+", "", quote or "")
-    return len(q) >= 4 and q in re.sub(r"\s+", "", text or "")
+    """근거 구절이 본문에 (공백·표 구분선을 무시하고) 글자 그대로 있는가."""
+    q = _norm(quote)
+    return len(q) >= 4 and q in _norm(text)
+
+
+def diagnose(text: str, quote: str) -> dict:
+    """구절이 본문에 없을 때 어디까지 같은지 보여 준다: {matched_ratio, matched, missing_from, page_context}.
+    사람이 구절을 다듬어 옮겼는지(항목 이름 추가·줄 바꿈·요약), 본문이 달라졌는지 가늠하는 데 쓴다."""
+    import difflib
+    q, t = _norm(quote), _norm(text)
+    if not q or not t:
+        return {"matched_ratio": 0.0, "matched": "", "missing_from": quote[:60], "page_context": ""}
+    m = difflib.SequenceMatcher(None, t, q, autojunk=False).find_longest_match(0, len(t), 0, len(q))
+    return {"matched_ratio": round(m.size / len(q), 2), "matched": q[m.b:m.b + m.size][:60],
+            "missing_from": q[m.b + m.size:m.b + m.size + 40], "page_context": t[max(0, m.a - 20):m.a + m.size + 40]}
 
 
 # --- 명령 ---------------------------------------------------------------------------------------------------------------------
@@ -287,7 +316,7 @@ def check_hosts(hosts=OFFICIAL_HOSTS, get=None, sleep=time.sleep) -> list[tuple[
     for host in hosts:
         _wait(host, sleep)
         try:
-            resp = get(f"https://{host}/", timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, stream=True)
+            resp = _get_with_retry(get, f"https://{host}/")
             out.append((host, "ok" if resp.status_code < 400 else ("blocked" if resp.status_code in (401, 403, 429) else "other"), f"HTTP {resp.status_code}"))
         except requests.RequestException as exc:
             out.append((host, _classify(exc), type(exc).__name__))
@@ -314,13 +343,15 @@ def verify_overrides(refresh: bool = False, fetcher=None, folder: Path | None = 
                 results.append({"service_id": sid, "status": "unreachable", "url": src["url"], "detail": exc.cause})
                 continue
         ok = quote_in_text(page.text, src.get("quote", ""))
-        results.append({"service_id": sid, "status": "ok" if ok else "missing", "url": src["url"], "detail": page.fetched_at[:10]})
+        diag = {} if ok else diagnose(page.text, src.get("quote", ""))
+        results.append({"service_id": sid, "status": "ok" if ok else "missing", "url": src["url"], "detail": page.fetched_at[:10], "diagnosis": diag})
     return results
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="공식 자료 페이지 읽기·접속 확인·근거 구절 대조 (우회하지 않음)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--timeout", type=int, help="요청 시간 제한(초, 기본 15). 느린 사이트는 늘린다")
     sub.add_parser("check", help="공식 사이트 접속 가능 여부를 원인별로 확인")
     f = sub.add_parser("fetch", help="페이지를 읽어 저장")
     f.add_argument("urls", nargs="+")
@@ -329,14 +360,18 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("verify", help="저장한 답변 구성의 근거 구절을 페이지 본문과 대조")
     v.add_argument("--refresh", action="store_true", help="저장한 기록을 쓰지 않고 다시 읽는다")
     args = ap.parse_args(argv)
+    if args.timeout:
+        global TIMEOUT
+        TIMEOUT = args.timeout
     if args.cmd == "check":
         rows = check_hosts()
         for host, status, detail in rows:
             print(f"{'✅' if status == 'ok' else '⛔'} {host:22s} {status:8s} {detail}")
-        bad = [r for r in rows if r[1] == "network"]
-        if bad:
-            print(f"\n{len(bad)}개 사이트에 접속되지 않아요 -> {HINTS['network']}")
-        return 0 if all(r[1] == "ok" for r in rows) else 1
+        causes = dict.fromkeys(r[1] for r in rows if r[1] != "ok")
+        for cause in causes:
+            hosts = ", ".join(r[0] for r in rows if r[1] == cause)
+            print(f"\n[{cause}] {hosts}\n  -> {HINTS[cause]}")
+        return 0 if not causes else 1
     if args.cmd == "fetch":
         code = 0
         for url in args.urls:
@@ -353,6 +388,12 @@ def main(argv: list[str] | None = None) -> int:
     mark = {"ok": "✅ 본문에 있음", "missing": "❌ 본문에 없음", "unreachable": "⏭ 읽지 못함", "no_source": "- 출처 없음(금액 안내 없음)"}
     for r in results:
         print(f"{mark[r['status']]:18s} {r['service_id']:14s} {r['url']} {r['detail']}")
+        if r["status"] == "missing":
+            d = r["diagnosis"]
+            print(f"    구절의 {int(d['matched_ratio'] * 100)}%까지 같고, 그 뒤부터 달라요 -> 구절에서 본문에 없는 부분: '{d['missing_from']}'\n"
+                  f"    본문에서 가장 비슷한 곳: '{d['page_context']}'")
+        if r["status"] == "unreachable":
+            print(f"    -> {HINTS.get(r['detail'], '')}")
     return 0 if all(r["status"] in ("ok", "no_source") for r in results) else 1
 
 

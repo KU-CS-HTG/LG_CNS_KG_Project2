@@ -77,7 +77,7 @@ def test_failures_are_classified_by_cause_and_never_worked_around():
             pf.fetch(url, get=getter({"/a": val}), sleep=lambda s: None)
         causes[name] = e.value.cause
         assert pf.HINTS[e.value.cause] in str(e.value)                                  # 원인과 해결 방법이 함께 나온다
-    assert causes == {"network": "network", "network2": "network", "blocked": "blocked", "blocked2": "blocked", "other": "other"}
+    assert causes == {"network": "network", "network2": "timeout", "blocked": "blocked", "blocked2": "blocked", "other": "other"}
 
 
 def test_captcha_login_and_empty_pages_stop_automation():
@@ -126,6 +126,36 @@ def test_quote_check_ignores_spacing_but_not_wording():
     text = "재취업을 위해서 직업안정기관의 소개에 따라\n거주지로부터 25km가 넘는 지역에서 구직활동을 하는 경우"
     assert pf.quote_in_text(text, "소개에 따라 거주지로부터 25km가 넘는 지역에서")
     assert not pf.quote_in_text(text, "소개에 따라 거주지로부터 30km가 넘는 지역에서") and not pf.quote_in_text(text, "짧")
+
+
+def test_timeout_is_its_own_cause_and_retries_once_with_a_longer_limit():
+    calls = []
+
+    def get(url, **kw):
+        calls.append(kw["timeout"])
+        if url.endswith("/robots.txt"):
+            return Resp(status=404)
+        if len(calls) < 3:
+            raise requests.ReadTimeout("slow")
+        return Resp(HTML.encode())
+    page = pf.fetch("https://www.example.go.kr/a", get=get, sleep=lambda s: None)
+    assert page.title == "안내" and calls[-2:] == [pf.TIMEOUT, pf.TIMEOUT * 2]               # 첫 시도가 늦으면 두 배로 한 번 더
+    pf._robots.clear()
+    with pytest.raises(pf.FetchError) as e:
+        pf.fetch("https://www.example.go.kr/a", get=getter({"/a": requests.ReadTimeout("slow")}), sleep=lambda s: None)
+    assert e.value.cause == "timeout" and "--timeout" in str(e.value)                       # 허용 목록 문제로 오해하지 않게 따로 안내
+    rows = pf.check_hosts(("slow.kr", "dead.kr"), get=getter({"slow.kr/": requests.ReadTimeout("t"), "dead.kr/": requests.ConnectionError("dns")}), sleep=lambda s: None)
+    assert [(h, s) for h, s, _ in rows] == [("slow.kr", "timeout"), ("dead.kr", "network")]
+
+
+def test_quote_check_ignores_table_separators_and_diagnose_shows_where_it_diverges():
+    page = "구분 | 내용 | 금액 | 조건\n단기 | 밀착상담, 사례관리 | 이수 시 50만원 | 5주 이상"
+    assert pf.quote_in_text(page, "밀착상담, 사례관리\n이수 시 50만원\n5주 이상")                      # 표 칸 구분선·줄바꿈은 무시
+    reformatted = "단기\n내용: 밀착상담, 사례관리\n금액: 이수 시 50만원\n조건: 5주 이상 프로그램 참여"       # 사람이 항목 이름을 붙여 다듬은 구절
+    assert not pf.quote_in_text(page, reformatted)
+    d = pf.diagnose(page, reformatted)
+    assert 0 < d["matched_ratio"] < 1 and d["missing_from"] and "단기" in d["page_context"] or d["matched"]
+    assert pf.diagnose("", "구절")["matched_ratio"] == 0.0
 
 
 def test_check_hosts_reports_each_cause():
