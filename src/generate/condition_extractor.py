@@ -13,7 +13,6 @@ from datetime import date
 
 from src.common import config
 from src.common.schema import Filters
-from src.generate import llm_cache
 
 log = logging.getLogger(__name__)
 
@@ -124,13 +123,8 @@ _client = None
 
 
 def _chat_json(system: str, user: str) -> dict:
-    """gpt-4o-mini를 JSON 모드로 호출해 dict를 돌려준다. 클라이언트는 처음 쓸 때 만든다.
-
-    같은 입력의 응답은 llm_cache에 저장해 다시 쓴다 (같은 질문이면 같은 답)."""
+    """gpt-4o-mini를 JSON 모드로 호출해 dict를 돌려준다. 클라이언트는 처음 쓸 때 만든다."""
     global _client
-    cached = llm_cache.get(config.GENERATION_MODEL, system, user)
-    if cached is not None:
-        return cached
     if _client is None:
         if not config.OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다 (.env 확인).")
@@ -139,14 +133,12 @@ def _chat_json(system: str, user: str) -> dict:
     resp = _client.chat.completions.create(
         model=config.GENERATION_MODEL,
         temperature=0,
-        seed=llm_cache.SEED,
         response_format={"type": "json_object"},
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
     )
     data = json.loads(resp.choices[0].message.content or "{}")
     if not isinstance(data, dict):
         raise ValueError(f"JSON 객체가 아닌 응답: {data!r}")
-    llm_cache.put(config.GENERATION_MODEL, system, user, data)
     return data
 
 
@@ -259,7 +251,26 @@ def _normalize_conditions(raw: dict, today: date | None = None, question: str | 
                 picked.append(name)
         if picked:
             out["in_use"] = picked[:MAX_IN_USE]
+    # 이미 이용 중이라고 한 제도 이름만 있는 구절은 '찾는 도움'이 아니다. 남겨 두면 그 제도와 비슷한 제도가 '원하는 도움'으로 올라와
+    # 'K-Digital Training을 듣고 있는데 이것 말고…' 질문에 또 다른 훈련이 안내됐다.
+    if out.get("in_use") and out.get("help"):
+        kept = [h for h in out["help"] if not _only_names(h, out["in_use"])]
+        if kept:
+            out["help"] = kept
+        else:
+            out.pop("help")
     return out
+
+
+def _only_names(phrase: str, names: list[str]) -> bool:
+    """구절에서 이용 중인 제도 이름을 빼고 의미 있는 말이 남지 않으면 True."""
+    rest = phrase.lower()
+    for name in names:
+        rest = rest.replace(name.lower(), "")
+    rest = re.sub(r"[^0-9a-z가-힣]", "", rest)
+    for g in _GENERIC_HELP:
+        rest = rest.replace(g, "")
+    return len(rest) < 2
 
 
 def _normalize_region(value) -> str | None:

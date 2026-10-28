@@ -96,6 +96,9 @@ Commands, verified sources, unresolved currency and A-2/A-3 evaluation plan:
 `docs/OFFICIAL_DOCUMENTS_A1.md`. No label changes or automatic human-review approval.
 
 ## 답변 생성 규칙 (사전기획서 6장·8장 기준)
+- **실제 적합성 점검(`fit_check.py`)**: 판정 통과 후보를 답변 직전에 한 번 더 읽어 이미 이용 중인 제도와 같은 혜택·전제 조건(duplicate), 특정 직무·업종 전용(niche), 이름만 겹침(mismatch)만 뺀다. **빼는 모든 판정에는 자료에서 글자 그대로 복사한 근거 구절을 요구하고 코드가 대조한다**(duplicate는 이용 중인 제도 설명, 나머지는 후보 원문). 근거를 못 대면 판정을 버리고 제도를 둔다. 서로 다른 혜택은 병행 가능으로 보고 같은 분야라는 이유로 빼지 않는다. 안내가 5개 미만이면 다음 후보를 한 번 더 판정해 채운다(첫 묶음이 모두 빠진 질문은 근거 없음 유지).
+- "내 조건으로 받을 수 있는 지원"(`benefit_tiers.py`)은 원문에 근거가 있는 항목과 수집 자료 밖 일반 정보를 구분해, 후자는 항상 "자료 밖 정보(정확하지 않을 수 있어요)"로 표시한다 (자료 밖 정보 사용은 팀 결정). 자격 체크리스트의 "체크 완료" 후에만 열리고, 금액은 원문에 있을 때만 근거 구절과 함께 보여 준다(웹 검색으로 금액을 찾지 않는다).
+- **예상 수령액(`amount_rules.py`·`amount_rules.json`)**: 금액 규칙이 있는 제도(현재 국민취업지원제도)만 코드가 계산한다(LLM 없음). 규칙은 사람이 공식 자료로 정하고 출처 등급(공식/2차)·확인일·자료 간 불일치·남은 변수를 함께 적으며, 화면에 그대로 표시한다. 2차 자료 값은 "2차 자료 기준"으로 표시하고 담당 기관 확인을 안내한다. 자료끼리 다르면 하나를 골라 단정하지 않는다. Ⅰ유형·Ⅱ유형은 중복 수령 불가라 Ⅰ유형을 먼저 판정한다. 규칙 값은 공식 원문 대조 전 '초안'이다.
 - 검색된 근거 안에서만 답한다. 근거가 없으면 모른다고 답하고 담당 기관·공식 사이트 확인을 안내한다.
 - 자격이 불명확하거나 정형 조건 값이 비어 있으면 단정하지 않고 "확인 필요"로 표시한다.
 - 모든 답변에 서비스명·소관기관·근거 문구·상세 링크를 붙이고, "최종 신청 자격은 담당 기관에서 확인" 안내를 넣는다.
@@ -134,6 +137,7 @@ python -m src.datapack status          # 팀 공용 데이터 팩(DB·색인)이
 python -m app.main                     # C: 앱 실행
 python -m eval.rag_compare             # C: 일반 LLM(검색 없음) vs 우리 서비스, 같은 채점기로 비교 (발표용)
 python -m eval.rag_compare --demo      # C: 시연 후보(eval/demo_questions.jsonl) 두 답을 채점 없이 나란히 .md로
+python -m app.catalog_mode             # 제도 목록 관리 웹 화면 (추가·수정·숨김·삭제). 숨김은 답변에 바로, 추가·수정은 python -m src.catalog apply 후 반영 (docs/CATALOG.md)
 python -m app.review_mode              # B: 검수 화면 (후보 판정·답변 메모 -> reviews/events/)
 python -m src.generate.explain "질문"   # 답변 선정 과정을 터미널에 출력 (제도를 고른·뺀 이유). 앱에서는 RAG_TRACE=1 환경변수로 같은 추적을 켠다 (색인·OPENAI_API_KEY 필요)
 python -m pytest -rs                   # 테스트 (미구현은 skip. tests/fixtures 샘플로 A 없이 B, B 없이 C 검증 가능)

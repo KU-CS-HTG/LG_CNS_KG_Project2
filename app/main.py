@@ -98,6 +98,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .box { border-radius:12px; padding:.65rem .8rem; border:1px solid var(--line); }
 .box .k { font-size:.78rem; font-weight:700; opacity:.6; margin-bottom:.2rem; }
 .box .v { font-size:.92rem; line-height:1.55; }
+.src-detail { margin-top:.4rem; }
+.src-detail summary { display:inline-block; cursor:pointer; list-style:none; font-size:.74rem; font-weight:600; color:var(--accent);
+  border:1px solid var(--accent); border-radius:999px; padding:.05rem .55rem; }
+.src-detail summary::-webkit-details-marker { display:none; }
+.src-detail .src-text { white-space:pre-wrap; font-size:.8rem; line-height:1.5; margin-top:.45rem; padding:.45rem .6rem; border-radius:8px;
+  background:var(--accent-soft); }
+.src-detail a.src-more { display:inline-block; margin-top:.35rem; font-size:.74rem; text-decoration:none !important; color:var(--accent) !important; }
 .deadline { display:inline-block; margin-top:.35rem; font-size:.78rem; font-weight:600; opacity:.8; }
 .upcoming { color:var(--accent); background:var(--accent-soft); padding:.05rem .45rem; border-radius:999px; }
 .closed { color:var(--warn); background:var(--warn-soft); padding:.05rem .45rem; border-radius:999px; }
@@ -298,6 +305,18 @@ def _md(s: str) -> str:
     return re.sub(r"([\\`*_\[\]<>#~|$])", r"\\\1", s)
 
 
+def _benefit_source_link(r: Recommendation) -> str:
+    """'지원내용' 원문이 있는 제도에는 무엇을 받나요 칸 안에 '원문 확인하기'를 작게 붙인다.
+    누르면 그 자리에서 수집한 지원내용 원문이 펼쳐진다 (외부 페이지로 보내지 않는다). 상세 페이지 링크는 원문 아래에 따로 둔다."""
+    blocks = [b for b in r.benefit_detail if b.strip()]
+    if not blocks:
+        return ""
+    url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
+    body = "".join(f'<div class="src-text">{_e(b)}</div>' for b in blocks)
+    link = f'<a class="src-more" href="{_e(url)}" target="_blank" rel="noopener">상세 페이지에서 보기 ↗</a>' if url else ""
+    return f'<details class="src-detail"><summary>원문 확인하기</summary>{body}{link}</details>'
+
+
 def _card_head(i: int, r: Recommendation, checked: int) -> str:
     how, _, deadline = r.how_to_apply.partition(" / 신청기한: ")
     return f"""
@@ -308,7 +327,7 @@ def _card_head(i: int, r: Recommendation, checked: int) -> str:
 </div>
 <div class="reason">{_e(r.reason)}</div>
 <div class="grid">
-  <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div></div>
+  <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div>{_benefit_source_link(r)}</div>
   <div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e(how)}</div>
     {_deadline_html(deadline)}</div>
 </div>"""
@@ -440,6 +459,22 @@ def _income_calculator() -> None:
         st.caption(income_calc.NOTICE)
 
 
+def _draw_checklist(r: Recommendation, key: str) -> None:
+    """자격 체크리스트(체크 상태는 session_state.checks). 카드 아래 또는 '무엇을 받나요 — 내 조건으로 보기' 칸 안에 그린다."""
+    saved = st.session_state.checks
+    with st.container(key=f"checklist_{key}"):
+        st.markdown('<div class="ck-title">✅ 자격 체크리스트</div>'
+                    '<div class="ck-sub">원문 기준을 보고 해당하는 조건을 모두 체크한 뒤 \'체크 완료\'를 눌러 주세요.</div>',
+                    unsafe_allow_html=True)
+        for j, item in enumerate(r.needs_check):
+            k = f"chk_{key}_{j}"
+            st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
+            hint = _calc_hint(item)
+            if hint:
+                st.markdown(hint, unsafe_allow_html=True)
+        st.button("체크 완료", key=f"chk_done_{key}", on_click=card_benefit.mark_done, args=(key, len(r.needs_check)))
+
+
 def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> None:
     """제도 카드 1장. 확인이 필요한 조건은 자격 체크리스트로 보여 준다 (사용자가 스스로 해당 여부를 체크).
 
@@ -451,19 +486,11 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
     checked = sum(1 for k in keys if saved.get(k))
     with st.container(key=f"card_{key}"):
         st.markdown(_card_head(i, r, checked), unsafe_allow_html=True)
-        card_benefit.render(r, key)     # W2 자리 (app/card_benefit.py)
         card_apply.render(r, key)       # W3 자리 (app/card_apply.py)
         card_period.render(r, key)      # W4 자리 (app/card_period.py)
         if r.needs_check:
-            with st.container(key=f"checklist_{key}"):
-                st.markdown('<div class="ck-title">✅ 자격 체크리스트</div>'
-                            '<div class="ck-sub">원문 기준을 보고 해당하는 조건을 체크해 보세요.</div>',
-                            unsafe_allow_html=True)
-                for k, item in zip(keys, r.needs_check):
-                    st.checkbox(_check_label(item), value=saved.get(k, False), key=k, on_change=_save_check, args=(k,))
-                    hint = _calc_hint(item)
-                    if hint:
-                        st.markdown(hint, unsafe_allow_html=True)
+            _draw_checklist(r, key)
+        card_benefit.render(r, key)     # W2 자리 (app/card_benefit.py). 체크 완료 후 '내 조건으로 받을 수 있는 지원 보기'
         _card_guides(r, key, region)
         st.markdown(_card_sources(r), unsafe_allow_html=True)
 

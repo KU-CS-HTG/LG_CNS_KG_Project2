@@ -1,11 +1,11 @@
 {
-  "pack_id": "20261026-165811",
-  "file": "data_pack_20261026-165811.zip",
-  "size": 190391112,
-  "sha256": "8ed735580033c2d11248fd74dcfbb1c1de8a8331115875a4f00002eb572b78af",
-  "created_by": "taegyu",
-  "created_at": "2026-10-26T07:58:12Z",
-  "notes": "데이터 통일",
+  "pack_id": "20261027-153438",
+  "file": "data_pack_20261027-153438.zip",
+  "size": 190882739,
+  "sha256": "65b2742c255e09bb9c25dbb6b7e235192caa075c03133c3c04da5e371f51b4bb",
+  "created_by": "minkyu",
+  "created_at": "2026-10-27T06:34:40Z",
+  "notes": "색인 누락 92개 반영 (기초연금·노인맞춤돌봄서비스 등, handoff 192건), 활성 10,695개 전부 색인",
   "where": "https://drive.google.com/drive/folders/11sPrCTm7wiciiXNUjzPXtiMzTzkqCEKD?usp=drive_link",
   "embedding_model": "BAAI/bge-m3",
   "counts": {
