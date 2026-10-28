@@ -21,7 +21,8 @@ from src.common import config
 from src.common.regions import normalize_region
 from src.common.schema import SECTIONS, Answer, Chunk, Recommendation
 from src.catalog import store as catalog_store
-from src.generate import apply_link, benefit_detail, citation, condition_extractor, exclusion, fit_check, period_detail, topical, trace
+from src.generate import (apply_link, benefit_detail, citation, condition_extractor, exclusion, fit_check, local_topic, period_detail,
+                          topical, trace)
 from src.generate import evidence as evidence_mod
 from src.generate.citation import DISCLAIMER, NO_EVIDENCE_MESSAGE, SCOPE_NOTICE
 from src.ingest import store as ingest_store   # A: 신청기한 원문 조회 (모듈 속성으로 호출, 테스트에서 바꿔 끼움)
@@ -1086,6 +1087,13 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
         national = _national_candidates(question, region, filters, today)
         trace.listing("지역 필터 없이 다시 찾은 전국 제도", national)
         chunks = _mix_national(chunks, national)
+    local_added: list[Chunk] = []
+    local_terms: list[str] = []
+    if not region:
+        # 지역이 없어 지자체 제도가 뒤로 밀렸는데 찾는 주제가 지자체 제도에만 있으면 앞에 넣는다 ('반려동물 병원비', local_topic)
+        local_added, local_terms = local_topic.local_candidates(chunks, conditions.get("help"), filters)
+        local_added = _drop_expired(local_added, today)
+        chunks = local_added + chunks
     # 상위 5개만 판정하면 관련 없는 제도가 빠진 자리가 비어 버렸다: 정답 손실 분석에서 검색 6~15위에 있던 정답 10개가
     # 판정 기회가 없었다 (q02 청년도전지원사업 13위 등). 10개를 판정하고(동시) 통과한 것 중 앞 5개만 안내한다
     hidden = catalog_store.hidden_ids()          # 제도 목록 관리 화면에서 숨긴 제도 (색인에 반영하기 전에도 바로 빠진다)
@@ -1096,7 +1104,9 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     chunks = exclusion.exclude_in_use(question, conditions, chunks)   # W1 자리 (src/generate/exclusion.py)
     # 핵심 주제어가 본문에 있는 제도를 판정 후보 앞으로. 찾는 도움이 없는 넓은 질문은 처지 핵심어로 ('귀농' 질문의 실업크레딧이 1번 카드였다)
     chunks = topical.prioritize(chunks, conditions.get("help") or ([situation_q] if situation_q else None))
-    selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES)
+    # 넣은 지자체 제도(local_topic)만큼 판정 자리를 늘린다: 10자리 안에서 3자리를 차지하자 '면접 교통비' 질문의 정답
+    # (원래 판정 후보)이 밀려 안내되지 못했다 (답변 평가 q03). 원래 후보 10개는 그대로 판정받는다
+    selected = evidence_mod.select_evidence(chunks, JUDGE_CANDIDATES + len(local_added))
     trace.dropped(f"판정 후보 {JUDGE_CANDIDATES}개 밖", chunks, [c for cs in selected.values() for c in cs])
     trace.listing("판정에 넘긴 후보", [cs[0] for cs in selected.values()])
     if trace.enabled():
@@ -1114,6 +1124,11 @@ def _answer_with_evidence(question: str) -> tuple[Answer, dict[str, list[Chunk]]
     notice = _relaxed_notice(filters, used) if (result.relaxed or region_relaxed) else ""
     if notice and not answer.no_evidence:
         answer.text = f"{notice}\n\n{answer.text}"
+    # 주제가 지자체 제도에만 있어 넣은 제도(local_topic)가 안내됐으면 지역을 되묻는다. 원래 후보의 지자체 제도까지 보면
+    # '면접 교통비' 질문에 넣은 제도는 모두 빠졌는데 '교통비 관련 지원은 지역마다…'가 붙었다
+    shown = [r.service_name for r in answer.recommendations if r.service_id in {c.service_id for c in local_added}]
+    if shown:
+        answer.text = f"{local_topic.notice(local_terms, conditions.get('help'), shown)}\n\n{answer.text}"
     return answer, selected
 
 
