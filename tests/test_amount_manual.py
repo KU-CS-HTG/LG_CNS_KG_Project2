@@ -143,8 +143,11 @@ def test_page_hides_reviewed_services_and_can_restore(tmp_path, monkeypatch):
     at = AppTest.from_file(str(_page(tmp_path)), default_timeout=30).run()
     assert any("제도 2개" in c.value for c in at.caption)
     at.session_state["amount_sel_id"] = "S50"
-    at.sidebar.text_input[0].set_value("kim")
     at.run()
+    assert next(b for b in at.button if "지금 답변 그대로 OK" in b.label).disabled and any("Enter" in w.value for w in at.warning)   # 이름이 없으면 이유를 알려 준다
+    at.sidebar.text_input[0].set_value("김태규").run()
+    assert next(b for b in at.button if "지금 답변 그대로 OK" in b.label).disabled and any("영문·숫자" in w.value for w in at.warning)   # 한글 이름도 막고 이유를 알려 준다
+    at.sidebar.text_input[0].set_value("kim").run()
     next(b for b in at.button if "지금 답변 그대로 OK" in b.label).click().run()
     assert not at.exception and any("제도 1개" in c.value for c in at.caption)           # 확인 완료한 제도는 목록에서 빠진다
     assert at.session_state["amount_sel_id"] is None and set(am.reviewed()) == {"S50"}

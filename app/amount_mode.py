@@ -108,18 +108,27 @@ def _form(sid: str) -> dict:
     return {"variants": variants, "source": {"title": title, "url": url, "level": level, "quote": quote}, "note": note}
 
 
+def _editor_hint(editor: str) -> None:
+    """버튼이 꺼져 있는 이유를 알려 준다. 입력칸은 Enter를 누르거나 다른 곳을 눌러야 값이 적용된다."""
+    if not editor:
+        st.warning("버튼을 쓰려면 왼쪽 사이드바 '입력자 이름'에 이름을 입력하고 **Enter**를 누르세요. (사이드바가 접혀 있으면 왼쪽 위 »를 눌러 여세요.)")
+    elif not amount_manual.valid_editor(editor):
+        st.warning("입력자 이름은 영문·숫자·_-만 쓸 수 있어요 (예: taegyu). 한글은 쓸 수 없어요.")
+
+
 def _review_controls(sid: str, editor: str, done: dict | None) -> None:
     """'지금 답변 그대로 OK'(규칙이 필요 없음)를 기록하면 목록에서 빠진다. 기록은 입력자별 파일에 쌓인다."""
+    _editor_hint(editor)
     if done:
         st.success(f"확인 완료 — {done['by']} · {done['at'][:10]}" + (f" · {done['note']}" if done.get("note") else ""))
-        if st.button("다시 확인 필요로 되돌리기", key=f"am_{sid}_undo", disabled=not editor):
+        if st.button("다시 확인 필요로 되돌리기", key=f"am_{sid}_undo", disabled=not amount_manual.valid_editor(editor)):
             amount_manual.mark_reviewed(sid, editor, undo=True)
             st.rerun()
         return
     c1, c2 = st.columns([3, 2])
     note = c1.text_input("확인 메모 (선택: 예 '현물 서비스라 금액 없음')", key=f"am_{sid}_rnote")
     c2.write("")
-    if c2.button("✅ 지금 답변 그대로 OK (목록에서 숨기기)", key=f"am_{sid}_ok", disabled=not editor):
+    if c2.button("✅ 지금 답변 그대로 OK (목록에서 숨기기)", key=f"am_{sid}_ok", disabled=not amount_manual.valid_editor(editor)):
         amount_manual.mark_reviewed(sid, editor, note)
         st.rerun()
 
@@ -155,9 +164,7 @@ def _detail(service: dict, editor: str, done: dict | None = None) -> None:
     _preview_card(service, needs, "after", rule)
     with st.expander("저장될 규칙 (JSON)"):
         st.code(json.dumps(rule, ensure_ascii=False, indent=2), language="json")
-    if not editor:
-        st.caption("왼쪽에 입력자 이름을 넣으면 저장할 수 있어요.")
-    if st.button("이 규칙으로 저장", key=f"am_{sid}_save", disabled=not editor, type="primary"):
+    if st.button("이 규칙으로 저장", key=f"am_{sid}_save", disabled=not amount_manual.valid_editor(editor), type="primary"):
         try:
             outcome = amount_manual.save_rule(rule)
         except ValueError as exc:
@@ -171,8 +178,7 @@ def render() -> None:
     st.markdown(app_main.CSS, unsafe_allow_html=True)
     st.title("예상 수령액 규칙 관리")
     with st.sidebar:
-        editor = st.text_input("입력자 이름 (영문·숫자)", value=st.session_state.get("amount_editor", ""), placeholder="예: taegyu").strip()
-        st.session_state["amount_editor"] = editor
+        editor = st.text_input("입력자 이름 (영문·숫자, 입력 후 Enter)", placeholder="예: taegyu", key="amount_editor").strip()
         scope_label = st.radio("보여줄 제도", ["금액이 원문에 없는 제도", "모든 제도"], key="am_scope")
         include_local = st.checkbox("지자체 제도도 보기", key="am_local")
         show_done = st.checkbox("처리한 제도도 보기 (규칙 저장·확인 완료)", key="am_done")

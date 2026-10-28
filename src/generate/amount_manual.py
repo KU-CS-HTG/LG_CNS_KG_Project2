@@ -36,9 +36,13 @@ def reviewed(reviewed_dir: Path | None = None) -> dict[str, dict]:
     return {sid: e for sid, e in last.items() if e["action"] == "done"}
 
 
+def valid_editor(editor: str) -> bool:
+    return bool(_NAME_RE.fullmatch(editor or ""))
+
+
 def mark_reviewed(service_id: str, editor: str, note: str = "", *, undo: bool = False, reviewed_dir: Path | None = None) -> None:
     """확인 기록을 남긴다 (추가만 한다). undo=True면 다시 '확인 필요'로 되돌린다."""
-    if not _NAME_RE.fullmatch(editor or ""):
+    if not valid_editor(editor):
         raise ValueError("입력자 이름은 영문·숫자·_-만 쓸 수 있어요.")
     folder = reviewed_dir or REVIEWED_DIR
     folder.mkdir(parents=True, exist_ok=True)
