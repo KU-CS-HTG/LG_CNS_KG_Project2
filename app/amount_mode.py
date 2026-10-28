@@ -28,7 +28,7 @@ from src.generate import amount_candidates, amount_from_url, amount_manual, amou
 
 SHOW_ROWS = 500
 SECTIONS = (("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"), ("신청방법", "how_to_apply"))
-STATES = ("아직 처리 안 한 제도", "처리한 제도만 (다시 수정)", "전체")
+STATES = ("아직 처리 안 한 제도", "AI가 채운 제도 (확인 필요)", "처리한 제도만 (다시 수정)", "전체")
 PAY_TYPES = {"정액 (정해진 금액을 지급)": "fixed", "비용의 일정 비율 (한도 있음)": "percent"}
 LEVEL_LABELS = {"공식 (정부·공공기관 원문)": "공식", "2차 (신뢰할 만한 요약 자료)": "2차"}
 
@@ -298,17 +298,31 @@ def _save_buttons(sid: str, editor: str, draft: dict | None, rule: dict | None, 
         st.rerun()
 
 
+def _ai_review(sid: str, saved: dict, editor: str) -> None:
+    """AI가 채운 구성: 확인하기 전에는 실제 답변에 나오지 않는다. 조사 메모(후보 값·출처)는 여기서만 보인다."""
+    st.warning(f"🤖 AI({saved.get('by', '')})가 채운 내용이에요 — **아직 실제 답변에는 나오지 않아요.** 아래 ②·③을 확인해 고친 뒤 '저장'하거나, 그대로 괜찮으면 '확인 완료'를 누르세요.")
+    if saved.get("ai_memo"):
+        with st.expander("🤖 AI 조사 메모 (후보 값·출처, 사용자 화면에는 안 나와요)", expanded=True):
+            st.text(saved["ai_memo"])
+    if st.button("✅ AI가 채운 내용 확인 완료 (실제 답변에 반영)", key=f"am_{sid}_confirm", disabled=not amount_manual.valid_editor(editor)):
+        answer_override.confirm(sid, editor)
+        st.rerun()
+
+
 def _detail(service: dict, editor: str, done: dict | None = None) -> None:
     sid = service["service_id"]
     st.session_state.setdefault("checks", {})
     st.session_state.setdefault("guides", {})
     existing = amount_rules.find(sid)
-    saved = answer_override.find(sid)
+    saved = answer_override.find_any(sid)
     if existing:
         st.info(f"이미 계산 규칙이 있어요 · 확인일 {existing['as_of']} · {existing['status']}"
                 + ("" if existing["calculator"] == "generic" else " · 코드로 계산하는 규칙이라 이 화면에서는 바꿀 수 없어요."))
-    if saved:
-        st.info(f"직접 구성한 답변이 저장돼 있어요 · {saved.get('by', '')} · {(saved.get('at') or '')[:10]} (아래 ②에 불러왔어요)")
+    if answer_override.pending_ai(saved):
+        _ai_review(sid, saved, editor)
+    elif saved:
+        st.info(f"직접 구성한 답변이 저장돼 있어요 · {saved.get('by', '')} · {(saved.get('at') or '')[:10]}"
+                + (f" (AI가 채운 내용을 {saved['confirmed_by']}가 확인했어요)" if saved.get("confirmed_by") else "") + " (아래 ②에 불러왔어요)")
     with st.expander("제도 세부 내용 (수집 원문)", expanded=True):
         _content(service)
     _review_controls(sid, editor, done)
@@ -360,7 +374,7 @@ def render() -> None:
         scope_label = st.radio("보여줄 제도", ["금액이 원문에 없는 제도", "모든 제도"], key="am_scope")
         include_local = st.checkbox("지자체 제도도 보기", key="am_local")
         state_label = st.radio("처리 상태", list(STATES), key="am_state",
-                               help="처리 = 규칙 저장 · 답변 구성 저장 · 확인 완료. 처리한 제도는 '처리한 제도만'에서 다시 열어 고칠 수 있어요.")
+                               help="처리 = 규칙 저장 · 답변 구성 저장 · 확인 완료. 'AI가 채운 제도'는 AI가 초안을 써 둔 제도로, 확인 완료하거나 고쳐서 저장하기 전에는 실제 답변에 나오지 않아요.")
         text = st.text_input("검색 (서비스명·소관기관·ID)", key="am_q")
         st.caption("수요 = 검수 기록에서 '좋음·부분'으로 판정된 횟수예요. 수요가 많은 제도부터 규칙을 만드세요.")
     services = _services()
@@ -370,8 +384,9 @@ def render() -> None:
     done_map = amount_manual.reviewed()
     rows = amount_manual.needs_official(list(services.values()), _demand(), scope="no_amount" if scope_label.startswith("금액이") else "all",
                                         include_local=include_local, text=text, done=set(done_map),
-                                        show_done=state_label == STATES[2], only_done=state_label == STATES[1])
-    st.caption(("처리한 제도 " if state_label == STATES[1] else "사람이 공식 자료를 넣어야 하는 제도 ") + f"{len(rows):,}개" + (f" (앞 {SHOW_ROWS}개만 표시)" if len(rows) > SHOW_ROWS else "")
+                                        show_done=state_label == STATES[3], only_done=state_label == STATES[2], only_ai=state_label == STATES[1])
+    st.caption(("AI가 채워 확인을 기다리는 제도 " if state_label == STATES[1] else "처리한 제도 " if state_label == STATES[2] else "사람이 공식 자료를 넣어야 하는 제도 ")
+               + f"{len(rows):,}개" + (f" (앞 {SHOW_ROWS}개만 표시)" if len(rows) > SHOW_ROWS else "")
                + " · 표에서 제도를 클릭하면 아래가 열려요")
     view = rows[:SHOW_ROWS]
     table = [{"ID": r["service_id"], "서비스명": r["service_name"], "소관기관": r["agency"], "수요": r["demand"],

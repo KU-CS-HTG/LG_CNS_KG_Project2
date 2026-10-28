@@ -5,7 +5,10 @@
 
 저장 방식은 확인 기록(`amount_reviewed`)과 같다: 입력자별 `src/generate/answer_overrides/<이름>.jsonl`에 이벤트를 추가만 하고(git 충돌 없음),
 제도마다 시각이 가장 늦은 이벤트가 이긴다. 'clear' 이벤트로 되돌린다.
-금액 안내가 있으면 공식 출처(제목·주소·근거 구절)가 꼭 있어야 한다 (사람이 확인한 금액만 담당자 안내로 나가게)."""
+금액 안내가 있으면 공식 출처(제목·주소·근거 구절)가 꼭 있어야 한다 (사람이 확인한 금액만 담당자 안내로 나가게).
+
+AI가 채운 구성(`ai=True`)은 사람이 '확인 완료'(`confirm`)하거나 고쳐서 다시 저장하기 전에는 실제 답변에 쓰이지 않는다 (`find`는 숨기고 `find_any`만 보여 준다).
+AI가 조사한 후보 값·출처는 `ai_memo`에 적어 두며, 사용자 화면에는 나오지 않고 관리 화면에서만 본다."""
 from __future__ import annotations
 
 import json
@@ -23,7 +26,7 @@ OVERRIDE_DIR = config.ROOT / "src" / "generate" / "answer_overrides"
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 MAX_BENEFIT, MAX_HOW, MAX_NEEDS, MAX_NEED_LEN = 600, 600, 8, 120
 MAX_AMOUNTS, MAX_LABEL, MAX_TEXT, MAX_COND, MAX_NOTES, MAX_NOTE = 8, 40, 160, 120, 3, 200
-MAX_SUPPORT, MAX_SUPPORT_TEXT, MAX_TITLE = 8, 300, 30
+MAX_SUPPORT, MAX_SUPPORT_TEXT, MAX_TITLE, MAX_MEMO = 8, 300, 30, 4000
 DEFAULT_AMOUNT_TITLE = "받을 수 있는 금액"
 LEVELS = ("공식", "2차")
 LAYOUT_MODES, LAYOUT_ORDERS = ("side", "stack"), ("benefit_first", "apply_first")
@@ -59,6 +62,9 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             problems.append(f"금액 안내 {i}: 이름과 금액 문구를 모두 써 주세요.")
         elif len(a["label"]) > MAX_LABEL or len(a["text"]) > MAX_TEXT or len(a["condition"]) > MAX_COND:
             problems.append(f"금액 안내 {i}: 글이 너무 길어요 (이름 {MAX_LABEL}자, 금액 {MAX_TEXT}자, 조건 {MAX_COND}자).")
+    memo = str(data.get("ai_memo") or "").strip()
+    if len(memo) > MAX_MEMO:
+        problems.append(f"AI 조사 메모는 {MAX_MEMO}자 이하로 써 주세요.")
     amount_title = str(data.get("amount_title") or "").strip()
     support = [{"label": str(a.get("label") or "").strip(), "text": str(a.get("text") or "").strip()}
                for a in (data.get("support_lines") or []) if isinstance(a, dict) and (str(a.get("label") or "").strip() or str(a.get("text") or "").strip())]
@@ -93,46 +99,68 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
     if problems:
         return None, problems
     return {"benefit_text": benefit, "how_to_apply": how, "needs_check": needs, "notes": notes, "amounts": amounts,
-            "amount_title": amount_title, "support_lines": support, "source": source if amounts else {}, **({} if default_layout else {"layout": layout})}, []
+            "amount_title": amount_title, "support_lines": support, "ai_memo": memo, "source": source if amounts else {}, **({} if default_layout else {"layout": layout})}, []
 
 
 def overrides(folder: Path | None = None) -> dict[str, dict]:
-    """제도 -> 현재 구성 (입력자 파일을 모두 읽어 시각이 가장 늦은 이벤트가 이긴다, clear면 빠진다). 파일이 바뀌면 다시 읽는다."""
+    """제도 -> 현재 구성 (입력자 파일을 모두 읽어 시각순으로 적용한다: set이 구성을 바꾸고, confirm이 AI 구성을 확인 처리하고, clear가 지운다). 파일이 바뀌면 다시 읽는다.
+    구성에는 by·at(마지막 저장), ai(AI가 채운 구성인지), confirmed_by·confirmed_at(AI 구성의 확인)이 붙는다."""
     folder = folder or OVERRIDE_DIR
     files = sorted(folder.glob("*.jsonl")) if folder.is_dir() else []
     stamp = tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in files)
     hit = _cache.get(str(folder))
     if hit and hit[0] == stamp:
         return hit[1]
-    last: dict[str, dict] = {}
+    events: list[dict] = []
     for path in files:
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(e, dict) and e.get("service_id") and e.get("action") in ("set", "clear") and e.get("at", "") >= last.get(e["service_id"], {}).get("at", ""):
-                last[e["service_id"]] = e
-    result = {sid: {**e["data"], "by": e.get("by", ""), "at": e.get("at", "")} for sid, e in last.items() if e["action"] == "set" and isinstance(e.get("data"), dict)}
+            if isinstance(e, dict) and e.get("service_id") and e.get("action") in ("set", "clear", "confirm"):
+                events.append(e)
+    result: dict[str, dict] = {}
+    for e in sorted(events, key=lambda e: e.get("at", "")):
+        sid = e["service_id"]
+        if e["action"] == "set" and isinstance(e.get("data"), dict):
+            result[sid] = {**e["data"], "by": e.get("by", ""), "at": e.get("at", ""), "ai": bool(e.get("ai"))}
+        elif e["action"] == "clear":
+            result.pop(sid, None)
+        elif sid in result and result[sid].get("ai"):
+            result[sid] = {**result[sid], "confirmed_by": e.get("by", ""), "confirmed_at": e.get("at", "")}
     _cache[str(folder)] = (stamp, result)
     return result
 
 
-def _write(service_id: str, editor: str, action: str, data: dict | None, folder: Path | None) -> None:
+def pending_ai(ov: dict | None) -> bool:
+    """AI가 채웠고 아직 사람이 확인하지 않은 구성인가."""
+    return bool(ov and ov.get("ai") and not ov.get("confirmed_by"))
+
+
+def _write(service_id: str, editor: str, action: str, data: dict | None, folder: Path | None, ai: bool = False) -> None:
     if not valid_editor(editor):
         raise ValueError("입력자 이름은 영문·숫자·_-만 쓸 수 있어요.")
     folder = folder or OVERRIDE_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    event = {"service_id": service_id, "action": action, "data": data, "by": editor, "at": datetime.now(timezone.utc).isoformat()}
+    event = {"service_id": service_id, "action": action, "data": data, "by": editor, "at": datetime.now(timezone.utc).isoformat(), **({"ai": True} if ai else {})}
     with (folder / f"{editor}.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
-def save(service_id: str, editor: str, data: dict, folder: Path | None = None) -> None:
+def save(service_id: str, editor: str, data: dict, folder: Path | None = None, *, ai: bool = False) -> None:
+    """구성을 저장한다. ai=True는 AI가 채운 구성(사람이 확인하기 전에는 실제 답변에 안 나온다)."""
     clean, problems = validate(data)
     if clean is None:
         raise ValueError("; ".join(problems))
-    _write(service_id, editor, "set", clean, folder)
+    _write(service_id, editor, "set", clean, folder, ai)
+
+
+def confirm(service_id: str, editor: str, folder: Path | None = None) -> None:
+    """AI가 채운 구성을 사람이 확인했다고 기록한다 (이때부터 실제 답변에 나온다). AI 구성이 아니면 오류."""
+    if not pending_ai(overrides(folder).get(service_id)):
+        raise ValueError("확인할 AI 구성이 없어요.")
+    _write(service_id, editor, "confirm", None, folder)
 
 
 def clear(service_id: str, editor: str, folder: Path | None = None) -> None:
@@ -151,9 +179,16 @@ def preview(service_id: str, data: dict | None):
 
 
 def find(service_id: str) -> dict | None:
+    """실제 답변에 쓰는 구성. AI가 채우고 아직 확인되지 않은 구성은 돌려주지 않는다."""
     pending = getattr(_preview, "value", None)
     if pending is not None and pending[0] == service_id:
         return pending[1]
+    ov = overrides().get(service_id) if service_id else None
+    return None if pending_ai(ov) else ov
+
+
+def find_any(service_id: str) -> dict | None:
+    """관리 화면용: AI가 채운 미확인 구성도 돌려준다."""
     return overrides().get(service_id) if service_id else None
 
 

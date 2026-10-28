@@ -561,3 +561,84 @@ def test_page_edits_support_line_and_amount_title_and_saves(tmp_path, monkeypatc
     next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
     saved = ao.find("S50")
     assert saved["support_lines"] == [{"label": "지원 내용", "text": "맞춤형 프로그램과 참여수당을 제공해요."}] and saved["amount_title"] == "참여수당 안내"
+
+
+# --- AI가 채운 구성: 사람이 확인하기 전에는 실제 답변에 나오지 않는다 ---------------------------------------------------------------
+def test_ai_override_is_hidden_from_real_answers_until_confirmed(tmp_path, monkeypatch):
+    from src.generate import answer_override as ao
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S50", "claude", {**GOOD_OV, "ai_memo": "후보 값(미확인): 월 50만원"}, tmp_path, ai=True)
+    assert ao.find("S50") is None and ao.find_any("S50")["ai"] is True and ao.pending_ai(ao.find_any("S50"))      # 실제 답변에는 안 나온다
+    assert ao.find_any("S50")["ai_memo"] == "후보 값(미확인): 월 50만원"
+    from src.common.schema import Recommendation
+    r = Recommendation("가상", "기관", "이유", "원래 문구", "원래 신청", service_id="S50")
+    assert ao.apply(r) is r                                                           # 카드 문구도 그대로
+    with ao.preview("S50", {"benefit_text": "미리보기"}):                               # 관리 화면 미리보기에서는 보인다
+        assert ao.apply(r).benefit == "미리보기"
+    ao.confirm("S50", "kim", tmp_path)
+    ov = ao.find("S50")
+    assert ov and ov["confirmed_by"] == "kim" and ov["by"] == "claude" and not ao.pending_ai(ov) and ao.apply(r).benefit == "새 문구"
+    with pytest.raises(ValueError):                                                   # 이미 확인했거나 AI 구성이 아니면 확인할 수 없다
+        ao.confirm("S50", "kim", tmp_path)
+    with pytest.raises(ValueError):
+        ao.confirm("없는제도", "kim", tmp_path)
+
+
+def test_human_save_replaces_the_ai_override_and_clear_removes_it(tmp_path):
+    from src.generate import answer_override as ao
+    ao.save("S50", "claude", {"benefit_text": "AI 문구"}, tmp_path, ai=True)
+    ao.save("S50", "kim", {"benefit_text": "사람이 고친 문구"}, tmp_path)               # 고쳐서 저장하면 바로 실제 답변이 된다
+    ov = ao.overrides(tmp_path)["S50"]
+    assert ov["benefit_text"] == "사람이 고친 문구" and ov["ai"] is False and ov["by"] == "kim" and not ao.pending_ai(ov)
+    ao.save("S51", "claude", {"benefit_text": "AI 문구"}, tmp_path, ai=True)
+    ao.clear("S51", "kim", tmp_path)
+    assert "S51" not in ao.overrides(tmp_path)
+    assert ao.validate({"benefit_text": "x", "ai_memo": "가" * 4001})[0] is None
+
+
+def test_needs_official_marks_ai_filled_services(tmp_path, monkeypatch):
+    from src.generate import answer_override as ao
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S50", "claude", {"benefit_text": "AI 문구"}, tmp_path, ai=True)
+    ao.save("S60", "kim", {"benefit_text": "사람 문구"}, tmp_path)
+    svcs = [NOMONEY, {**NOMONEY, "service_id": "S60", "service_name": "사람이 쓴"}, {**NOMONEY, "service_id": "S70", "service_name": "아직"}]
+    assert [r["service_id"] for r in am.needs_official(svcs)] == ["S70"]                      # 처리 안 한 제도에는 둘 다 안 나온다
+    assert [(r["service_id"], r["state"]) for r in am.needs_official(svcs, only_ai=True)] == [("S50", am.AI_STATE)]
+    assert [(r["service_id"], r["state"]) for r in am.needs_official(svcs, only_done=True)] == [("S60", "답변 구성 저장")]    # AI 구성은 '처리한 제도'가 아니다
+    assert {r["service_id"] for r in am.needs_official(svcs, show_done=True)} == {"S50", "S60", "S70"}
+    ao.confirm("S50", "kim", tmp_path)
+    assert am.needs_official(svcs, only_ai=True) == [] and {r["service_id"] for r in am.needs_official(svcs, only_done=True)} == {"S50", "S60"}
+
+
+def test_page_ai_menu_review_and_confirm(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.generate import answer_override as ao
+    _setup_page(tmp_path, monkeypatch)
+    ao.save("S50", "claude", {**GOOD_OV, "ai_memo": "후보: 월 50만원 (미확인)"}, tmp_path / "overrides", ai=True)
+    at = _open_page(tmp_path)
+    at.sidebar.radio[1].set_value("AI가 채운 제도 (확인 필요)").run()
+    assert any("AI가 채워 확인을 기다리는 제도 1개" in c.value for c in at.caption)
+    at.session_state["amount_sel_id"] = "S50"
+    at.run()
+    assert not at.exception and any("AI(claude)가 채운 내용이에요" in w.value and "아직 실제 답변에는 나오지 않아요" in w.value for w in at.warning)
+    assert any("AI 조사 메모" in e.label for e in at.expander)
+    assert at.text_area(key="am_S50_benefit").value == "새 문구"                           # ②에 AI가 채운 내용이 불러와져 있다
+    assert "새 문구" in " ".join(m.value for m in at.markdown) and ao.find("S50") is None   # 미리보기에는 보이지만 실제 답변은 아니다
+    next(b for b in at.button if "AI가 채운 내용 확인 완료" in b.label).click().run()
+    assert ao.find("S50")["confirmed_by"] == "kim" and ao.find("S50")["benefit_text"] == "새 문구"
+
+
+def test_committed_ai_overrides_are_well_formed():
+    """저장소에 올린 AI 구성(claude.jsonl)의 형식과 안전 규칙: 모두 AI 표시, 금액 안내에는 공식 출처와 근거 구절."""
+    from src.generate import answer_override as ao
+    path = ao.OVERRIDE_DIR / "claude.jsonl"
+    if not path.is_file():
+        pytest.skip("AI 구성 파일이 없다")
+    events = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert events and all(e["ai"] is True and e["action"] == "set" and e["by"] == "claude" for e in events)
+    for e in events:
+        clean, problems = ao.validate(e["data"])
+        assert problems == [], (e["service_id"], problems)
+        if clean["amounts"]:
+            assert clean["source"]["url"].startswith("https://") and clean["source"]["level"] == "공식" and len(clean["source"]["quote"]) >= 8
+        assert clean["ai_memo"] and clean["needs_check"] and clean["how_to_apply"]
