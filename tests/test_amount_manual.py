@@ -200,3 +200,107 @@ def test_page_shows_before_then_after_preview_and_saves(tmp_path, monkeypatch):
     next(b for b in at.button if b.label == "이 규칙으로 저장").click().run()
     assert any("규칙을 추가했어요" in s.value for s in at.success)
     assert ar.find("S50")["variants"][0]["payout"]["amount_won"] == 500000 and "kim" in ar.find("S50")["status"]
+
+
+# --- 공식 자료 주소로 폼 채우기 (amount_from_url) ---------------------------------------------------------------------
+PAGE = """<html><head><title>청년창업기업 보증 안내</title><script>var x=1;</script></head><body><nav>메뉴</nav>
+<h1>청년창업기업 보증</h1><p>만 19세~34세 청년이 창업 후 7년 이내이면 보증을 받을 수 있습니다.</p>
+<table><tr><th>구분</th><td>보증한도</td><td>최대 30억원</td></tr></table>
+<p>보증비율은 90%이며 보증료는 연 0.5%입니다. 지원 기간은 12개월입니다.</p></body></html>"""
+GOOD_FILL = {"page_matches_service": True, "match_reason": "청년창업기업 보증 설명",
+             "variants": [{"name": "보증 한도(최대)", "pay_type": "fixed", "amount_won": 3_000_000_000, "months": 12, "age_min": 19, "age_max": 34,
+                           "median_pct": 0, "no_house": False, "quote": "보증한도 | 최대 30억원"}],
+             "note": "보증 심사를 거쳐요."}
+
+
+def _fetch(url):
+    from src.generate import amount_from_url as af
+    return af.html_to_text(PAGE)
+
+
+def test_html_to_text_drops_scripts_and_keeps_table_rows():
+    from src.generate import amount_from_url as af
+    title, text = af.html_to_text(PAGE)
+    assert title == "청년창업기업 보증 안내" and "var x" not in text and "보증한도 | 최대 30억원" in text.replace("  ", " ")
+
+
+def test_check_url_blocks_non_http_and_local_addresses():
+    from src.generate import amount_from_url as af
+    assert af.check_url("javascript:alert(1)") and af.check_url("ftp://x.kr/a") and af.check_url("http://127.0.0.1:8501/x") and af.check_url("http://localhost/x")
+    assert af.default_level("https://www.moel.go.kr/a") == "공식" and af.default_level("https://www.kibo.or.kr/a") == "2차"
+
+
+def test_fill_form_keeps_only_values_found_in_the_page():
+    from src.generate import amount_from_url as af
+    out = af.fill_form(NOMONEY, "https://www.kibo.or.kr/x", lambda s, u: GOOD_FILL, _fetch)
+    assert out["ok"] and out["issues"] == []
+    v = out["form"]["variants"][0]
+    assert v["amount_won"] == 3_000_000_000 and v["age_min"] == 19 and v["age_max"] == 34 and v["months"] == 12
+    assert out["form"]["source"] == {"title": "청년창업기업 보증 안내", "url": "https://www.kibo.or.kr/x", "level": "2차", "quote": "보증한도 | 최대 30억원"}
+    rule, problems = am.form_to_rule(NOMONEY, out["form"], "kim")                         # 채운 폼이 그대로 규칙이 된다
+    assert problems == [] and ar.generic_calculate(rule, {"age": 26})["scenarios"][0]["amount_won"] == 3_000_000_000 * 12
+    assert "만 19세" in out["text"]
+
+
+def test_fill_form_drops_or_blanks_unverifiable_values():
+    from src.generate import amount_from_url as af
+    bad = {"page_matches_service": True, "match_reason": "",
+           "variants": [{"name": "지어낸 금액", "pay_type": "fixed", "amount_won": 5_000_000_000, "quote": "보증한도 | 최대 30억원"},
+                        {"name": "지어낸 구절", "pay_type": "fixed", "amount_won": 3_000_000_000, "quote": "본문에 없는 문장입니다"},
+                        {"name": "조건 숫자 틀림", "pay_type": "fixed", "amount_won": 3_000_000_000, "age_min": 20, "age_max": 34, "months": 99,
+                         "quote": "보증한도 | 최대 30억원"},
+                        {"name": "비율형", "pay_type": "percent", "rate_pct": 90, "cap_won": 7_000_000_000, "quote": "보증비율은 90%이며"}]}
+    out = af.fill_form(NOMONEY, "https://www.kibo.or.kr/x", lambda s, u: bad, _fetch)
+    names = [v["name"] for v in out["form"]["variants"]]
+    assert names == ["조건 숫자 틀림", "비율형"]
+    blank = out["form"]["variants"][0]
+    assert blank["age_min"] == 0 and blank["age_max"] == 34 and blank["months"] == 0                 # 본문에 없는 20·99는 비운다
+    assert out["form"]["variants"][1]["cap_won"] == 0 and out["form"]["variants"][1]["rate_pct"] == 90
+    text = " ".join(out["issues"])
+    assert "금액이 페이지 본문에 없어" in text and "글자 그대로 없어" in text and "나이 최소" in text and "개월 수" in text and "한도 금액" in text
+
+
+def test_fill_form_refuses_other_programs_and_reports_fetch_or_ai_failures():
+    from src.generate import amount_from_url as af
+    other = af.fill_form(NOMONEY, "https://www.kibo.or.kr/x", lambda s, u: {"page_matches_service": False, "match_reason": "베이비유니콘 사업 설명"}, _fetch)
+    assert not other["ok"] and "다른 내용" in other["message"] and "베이비유니콘" in other["message"]
+    def boom(url):
+        raise RuntimeError("자료를 열지 못했어요")
+    assert af.fill_form(NOMONEY, "https://x.kr", lambda s, u: GOOD_FILL, boom)["message"] == "자료를 열지 못했어요"
+    def ai_down(s, u):
+        raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다")
+    assert "AI 호출에 실패" in af.fill_form(NOMONEY, "https://x.kr", ai_down, _fetch)["message"]
+    none = af.fill_form(NOMONEY, "https://x.kr", lambda s, u: {"page_matches_service": True, "variants": []}, _fetch)
+    assert not none["ok"] and "직접 입력" in none["message"]
+
+
+def test_page_autofill_fills_the_form_and_previews_it(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    import app.amount_mode as page
+    from src.generate import amount_from_url as af
+
+    rules = tmp_path / "rules.json"
+    rules.write_text(json.dumps({"rules": []}), encoding="utf-8")
+    monkeypatch.setattr(ar, "RULES_PATH", rules)
+    monkeypatch.setattr(am, "REVIEWED_DIR", tmp_path / "reviewed")
+    monkeypatch.setattr(page, "_services", lambda: {"S50": NOMONEY})
+    monkeypatch.setattr(page, "_demand", lambda: {})
+    monkeypatch.setattr(af, "fetch_page", lambda url: af.html_to_text(PAGE))
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: GOOD_FILL)
+    at = AppTest.from_file(str(_page(tmp_path)), default_timeout=30).run()
+    at.session_state["amount_sel_id"] = "S50"
+    at.run()
+    assert next(b for b in at.button if b.label == "자료에서 채우기").disabled                # 주소가 없으면 꺼져 있다
+    at.text_input(key="am_S50_aiurl").set_value("https://www.kibo.or.kr/x").run()
+    next(b for b in at.button if b.label == "자료에서 채우기").click().run()
+    assert not at.exception
+    assert any("AI가 자료에서 채운 것" in i.value for i in at.info)
+    assert at.text_input(key="am_S50_1_name").value == "보증 한도(최대)" and at.number_input(key="am_S50_1_amount").value == 3_000_000_000
+    assert at.text_input(key="am_S50_stitle").value == "청년창업기업 보증 안내" and at.text_input(key="am_S50_surl").value == "https://www.kibo.or.kr/x"
+    assert at.radio(key="am_S50_level").value.startswith("2차")                                # kibo.or.kr은 공식 도메인 목록 밖 -> 사람이 고른다
+    assert at.text_area(key="am_S50_quote").value == "보증한도 | 최대 30억원"
+    assert any("③ 입력 후 모습" in s.value for s in at.subheader) and not any("아직 미리볼 수 없어요" in i.value for i in at.info)    # 입력 없이 바로 미리보기
+    at.number_input(key="am_S50_1_amount").set_value(2_000_000_000).run()                      # 사람은 세부 값만 고친다
+    assert "예상 수령액" in " ".join(m.value for m in at.markdown)
+    assert any("AI가 읽은 자료 본문" in e.label for e in at.expander)
