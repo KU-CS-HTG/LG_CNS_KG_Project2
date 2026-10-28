@@ -11,8 +11,11 @@
     python -m eval.answer_eval --limit 5 --no-save   # 앞 5문항만 빠르게
     python -m eval.answer_eval --guides              # 판정 기준 문서 근거 평가 (eval/guide_questions.jsonl, LLM 없음)
     python -m eval.answer_eval --guides --interpret  # 위 + 이어진 질문의 답 문장을 LLM으로 써서 단정 표현·해석 성공률도 센다
-전제: 검색 색인이 있어야 한다 (python -m src.index.vector_store ...). 질문 하나에 LLM을 최대 4번 부른다
-(조건 추출·생성·Faithfulness·Correctness). 답변 평가는 정답 서비스(relevant_service_ids)가 없어도 expected_answer로 채점한다.
+    python -m eval.answer_eval --only q03,q35 --no-judge   # 바꾼 코드가 영향을 주는 질문만, LLM 채점 없이 (개발 중 확인)
+전제: 검색 색인이 있어야 한다 (python -m src.index.vector_store ...). 질문 하나에 LLM을 15~30번 부른다: 답변 만들기
+(조건 추출 2~3번·제도 판정 10~20번·적합성 점검 2번·생성)와 채점(Correctness 1번·Faithfulness 안내한 제도마다 1번).
+전체 36문항은 1,000번 안팎이라 개발 중에는 --only·--no-judge로 줄이고, LLM 채점 전체는 발표용 최종 숫자에만 돌린다
+(2026-10-28: 하루에 전체 평가를 여러 번 돌려 학원 키의 사용 한도가 찼다). 답변 평가는 정답 서비스(relevant_service_ids)가 없어도 expected_answer로 채점한다.
 정답 서비스가 있으면 '정답 제도를 안내했는가'(service_hit·service_recall)도 코드로 잰다 (색인 밖 정답은 분모에서 뺌).
 """
 from __future__ import annotations
@@ -184,8 +187,12 @@ def _indexed(service_id: str) -> bool:
     return bool(vector_store.get_service_chunks(service_id))
 
 
-def evaluate(questions: list[dict], indexed=_indexed) -> dict:
-    """질문마다 답변을 만들어 지표를 채점하고 평균을 낸다. 한 질문이 실패해도 나머지는 계속한다."""
+def evaluate(questions: list[dict], indexed=_indexed, judge: bool = True) -> dict:
+    """질문마다 답변을 만들어 지표를 채점하고 평균을 낸다. 한 질문이 실패해도 나머지는 계속한다.
+
+    judge=False면 LLM 채점(Answer Correctness·Faithfulness)을 하지 않고 코드로 세는 지표만 낸다 (정답 제도 안내율·회수율,
+    인용 정확도, 근거 없음 질문 정확도). 채점은 질문당 LLM 1번 + 안내한 제도마다 1번(최대 6번)이라, 개발 중 확인에서는
+    끄고 발표용 최종 숫자에만 켠다 (2026-10-28: 하루에 전체 평가를 여러 번 돌려 학원 키의 사용 한도가 찼다)."""
     rows = []
     for q in questions:
         row = {"id": q.get("id"), "question": q["question"], "expect_no_answer": bool(q.get("expect_no_answer"))}
@@ -195,27 +202,32 @@ def evaluate(questions: list[dict], indexed=_indexed) -> dict:
             row.update(
                 no_evidence=answer.no_evidence,
                 services=[r.service_name for r in answer.recommendations],
-                correctness=answer_correctness(answer, q),
-                faithfulness=faithfulness(answer, ev_text, _evidence_by_service(selected)),
                 citation_accuracy=citation_accuracy(answer, ev_text),
                 **service_match(answer, selected, q, indexed),
             )
+            if judge or q.get("expect_no_answer"):     # 근거 없음 질문의 정답 여부는 코드 판정이라 늘 센다
+                row["correctness"] = answer_correctness(answer, q)
+            if judge:
+                row["faithfulness"] = faithfulness(answer, ev_text, _evidence_by_service(selected))
         except Exception as e:  # 네트워크·키 오류 등: 기록만 하고 평균에서 뺀다
             row["error"] = f"{type(e).__name__}: {e}"
         rows.append(row)
 
     ok = [r for r in rows if "error" not in r]
-    mean = lambda key, rs=ok: round(sum(r[key] for r in rs) / len(rs), 4) if rs else None  # noqa: E731
+    def mean(key, rs=ok):
+        vals = [r[key] for r in rs if key in r]      # judge=False면 LLM 채점 지표는 없다 (-로 표시)
+        return round(sum(vals) / len(vals), 4) if vals else None
+    judged = [r for r in ok if not r["expect_no_answer"]]
     labeled = [r for r in ok if "service_hit" in r]
     return {
         "experiment": "answer_eval",
         "time": datetime.now().isoformat(timespec="seconds"),
-        "config": {"model": config.GENERATION_MODEL, "k": config.DEFAULT_TOP_K},
+        "config": {"model": config.GENERATION_MODEL, "k": config.DEFAULT_TOP_K, "judge": judge},
         "counts": {"total": len(rows), "scored": len(ok), "errors": len(rows) - len(ok),
                    "service_labeled": len(labeled),
                    "unreachable_ids": sum(len(r.get("unreachable_ids", [])) for r in ok)},
         "metrics": {
-            "answer_correctness": mean("correctness"),
+            "answer_correctness": mean("correctness") if judge else mean("correctness", judged),
             "faithfulness": mean("faithfulness"),
             "citation_accuracy": mean("citation_accuracy"),
             "no_answer_correctness": mean("correctness", [r for r in ok if r["expect_no_answer"]]),
@@ -235,11 +247,19 @@ def format_report(result: dict) -> str:
              f"정답 제도 안내 (정답 있는 {cnt.get('service_labeled', 0)}문항): 1개 이상 안내 {fmt(m.get('service_hit'))}"
              f"  |  정답 회수율 {fmt(m.get('service_recall'))}"
              f"  (색인 밖이라 뺀 정답 {cnt.get('unreachable_ids', 0)}개)",
-             "", "낮은 점수 (Correctness < 1 또는 Faithfulness < 1):"]
-    low = [r for r in result["questions"] if "error" in r or r["correctness"] < 1 or r["faithfulness"] < 1]
+             ""]
+    if not result["config"].get("judge", True):
+        lines[-1:] = ["(LLM 채점 끔: Answer Correctness·Faithfulness 없음, 근거 없음 질문 정확도는 코드 판정)", "",
+                      "정답 제도를 하나도 안내하지 못했거나 근거 없음 질문을 틀린 문항:"]
+        low = [r for r in result["questions"]
+               if "error" in r or r.get("service_hit") == 0.0 or r.get("correctness", 1) < 1]
+    else:
+        lines.append("낮은 점수 (Correctness < 1 또는 Faithfulness < 1):")
+        low = [r for r in result["questions"] if "error" in r or r["correctness"] < 1 or r["faithfulness"] < 1]
     for r in low[:10]:
-        detail = r.get("error") or (f"C {r['correctness']:.1f} / F {r['faithfulness']:.2f} / 제도 {len(r['services'])}개"
-                                    + (" (근거 없음)" if r["no_evidence"] else ""))
+        score = (f"C {r['correctness']:.1f} / F {r['faithfulness']:.2f}" if "faithfulness" in r
+                 else f"정답 안내 {r.get('service_hit', '-')}")
+        detail = r.get("error") or (f"{score} / 제도 {len(r['services'])}개" + (" (근거 없음)" if r["no_evidence"] else ""))
         lines.append(f"  {r['id']}  {r['question'][:40]}  ->  {detail}")
     if not low:
         lines.append("  없음")
@@ -385,6 +405,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-save", action="store_true", help="결과 파일을 저장하지 않는다")
     ap.add_argument("--guides", action="store_true", help="판정 기준 문서 근거 평가 (LLM 없이, B의 guide_store 필요)")
     ap.add_argument("--interpret", action="store_true", help="--guides와 함께: 이어진 질문의 답 문장을 LLM으로 써서 채점")
+    ap.add_argument("--only", help="이 질문 id만 (쉼표로 구분, 예: q03,q35). 바꾼 코드가 영향을 주는 질문만 돌려 비용을 줄인다")
+    ap.add_argument("--no-judge", action="store_true",
+                    help="LLM 채점(Answer Correctness·Faithfulness)을 끄고 코드 지표만 (정답 제도 안내·인용·근거 없음)")
     args = ap.parse_args(argv)
 
     if args.guides:
@@ -404,10 +427,23 @@ def main(argv: list[str] | None = None) -> None:
     if vector_store.count() == 0:
         raise SystemExit("색인이 비어 있습니다. 먼저: python -m src.index.vector_store --sample  (또는 A의 파이프라인 결과 색인)")
 
-    questions = load_questions(args.questions or QUESTIONS_PATH)[: args.limit]
-    result = evaluate(questions)
+    questions = select_questions(load_questions(args.questions or QUESTIONS_PATH), args.only, args.limit)
+    if not questions:
+        raise SystemExit(f"고른 질문이 없습니다: --only {args.only}")
+    result = evaluate(questions, judge=not args.no_judge)
     print(format_report(result))
     _save(result, args, "answer_eval")
+
+
+def select_questions(questions: list[dict], only: str | None = None, limit: int | None = None) -> list[dict]:
+    """--only(쉼표로 구분한 id, 질문 세트 순서 그대로)와 --limit(앞에서 N개)로 고른 질문. 없는 id는 경고만 한다."""
+    if only:
+        wanted = [i.strip() for i in only.split(",") if i.strip()]
+        missing = [i for i in wanted if i not in {q.get("id") for q in questions}]
+        if missing:
+            print(f"! 질문 세트에 없는 id: {', '.join(missing)}")
+        questions = [q for q in questions if q.get("id") in wanted]
+    return questions[:limit]
 
 
 def _save(result: dict, args, prefix: str) -> None:
