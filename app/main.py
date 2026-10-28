@@ -23,7 +23,7 @@ from streamlit import runtime  # noqa: E402
 
 from app import card_apply, card_benefit, card_period  # noqa: E402
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import generator, guide_evidence, income_calc  # noqa: E402
+from src.generate import answer_override, generator, guide_evidence, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -480,7 +480,10 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
 
     체크는 화면 안에서만 쓰고 답변·검색을 바꾸지 않는다. Streamlit은 화면에 그려지지 않은 위젯의 상태를 지우므로
     (다른 주제를 보고 돌아오면 체크가 풀림) 체크 상태는 session_state.checks에 따로 저장한다.
-    배지는 카드 머리에 있으므로 체크박스보다 먼저 그리며 저장된 상태를 읽는다."""
+    배지는 카드 머리에 있으므로 체크박스보다 먼저 그리며 저장된 상태를 읽는다.
+
+    담당자가 직접 구성한 카드 문구(src/generate/answer_override.py, 화면: app/amount_mode.py)가 있으면 그 내용으로 바꿔 그린다."""
+    r = answer_override.apply(r)
     saved = st.session_state.checks
     keys = [f"chk_{key}_{j}" for j in range(len(r.needs_check))]
     checked = sum(1 for k in keys if saved.get(k))

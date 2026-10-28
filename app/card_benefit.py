@@ -11,7 +11,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src.common.schema import Recommendation
-from src.generate import amount_rules, benefit_tiers
+from src.generate import amount_rules, answer_override, benefit_tiers
 
 
 def _checked(key: str, n: int) -> frozenset[int]:
@@ -130,21 +130,44 @@ def _amount_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int
             _show_amount(st.session_state[state_key])
 
 
+def _override_amounts(ov: dict | None) -> bool:
+    """담당자가 직접 쓴 금액 안내와 공식 근거. 그렸으면 True."""
+    if not ov or not (ov.get("amounts") or ov.get("notes")):
+        return False
+    if ov.get("amounts"):
+        st.markdown("##### 💰 받을 수 있는 금액 (담당자 확인)")
+        for a in ov["amounts"]:
+            st.markdown(f"**{a['label']}** — {a['text']}")
+            if a.get("condition"):
+                st.caption(f"조건: {a['condition']}")
+        src = ov.get("source") or {}
+        with st.expander("자세히 보기 (금액 근거)"):
+            st.markdown(f"[{src.get('title', '출처')}]({src.get('url', '')}) · {'공식 자료' if src.get('level') == '공식' else '2차 자료(공식 원문 대조 필요)'}")
+            st.text(src.get("quote", ""))
+            st.caption(f"담당자 {ov.get('by') or '-'} 확인" + (f" · {ov['at'][:10]}" if ov.get("at") else ""))
+    for note in ov.get("notes") or []:
+        st.caption(f"안내: {note}")
+    return True
+
+
 def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) -> None:
     rule = amount_rules.find(r.service_id)
+    ov = answer_override.find(r.service_id)
+    has_ov_amounts = bool(ov and ov.get("amounts"))
     groups = benefit_tiers.evaluate(result["tiers"], set(checked))
     got = groups["base"] + groups["met"]
     st.markdown("##### ✅ 체크한 조건으로 받을 수 있는 지원")
     if got:
         for t in got:
-            _tier_line(t, show_amount=rule is None)
+            _tier_line(t, show_amount=rule is None and not has_ov_amounts)
     else:
         st.info("체크한 조건으로 받을 수 있는 지원이 아직 없어요. 조건을 바꿔 다시 '체크 완료'를 눌러 보세요.")
     if groups["pending"]:
         with st.expander(f"조건을 더 충족하면 받을 수 있는 지원 {len(groups['pending'])}가지", expanded=not got):
             for t in groups["pending"]:
-                _tier_line(t, show_amount=rule is None)
+                _tier_line(t, show_amount=rule is None and not has_ov_amounts)
                 st.caption(f"필요한 조건: {_needs_text(r, t['requires'])}  (아직 체크 안 함: {_needs_text(r, t['missing'])})")
+    _override_amounts(ov)
     if rule:
         _amount_form(r, rule, key, checked)
     if result["notes"]:
@@ -178,6 +201,8 @@ def render(r: Recommendation, key: str) -> None:
             with st.spinner("조건별 지원과 금액을 정리하는 중…"):
                 result = benefit_tiers.compute(r.service_id, r.service_name, list(r.needs_check))
             if result is None:
+                if _override_amounts(answer_override.find(r.service_id)):       # 담당자가 쓴 금액 안내는 정리가 실패해도 보여 준다
+                    return
                 st.session_state[open_key] = False
                 st.warning("조건별 지원을 정리하지 못했어요. 카드의 원문 확인하기 링크로 확인해 주세요.")
                 return

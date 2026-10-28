@@ -12,7 +12,7 @@ from pathlib import Path
 
 from src.common import config
 from src.common.schema import Citation, Recommendation
-from src.generate import amount_candidates, amount_rules
+from src.generate import amount_candidates, amount_rules, answer_override
 
 REVIEWED_DIR = config.ROOT / "src" / "generate" / "amount_reviewed"      # 입력자별 확인 기록 (사람마다 파일이 달라 git 충돌이 없다)
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
@@ -59,6 +59,7 @@ def needs_official(services: list[dict], demand: dict[str, int] | None = None, *
     이미 처리한 제도(규칙을 저장했거나 done에 든 '지금 답변 그대로 OK')는 기본으로 뺀다 (show_done=True면 state와 함께 뒤에 보인다).
     수요 많은 제도·전국 제도가 앞이다."""
     demand, text = demand or {}, text.strip().lower()
+    overridden = answer_override.overrides()
     rows = []
     for s in services:
         info = amount_candidates.analyze(s)
@@ -70,7 +71,7 @@ def needs_official(services: list[dict], demand: dict[str, int] | None = None, *
             continue
         sid = s.get("service_id", "")
         has_rule = amount_rules.find(sid) is not None
-        state = "규칙 저장" if has_rule else "확인 완료" if sid in done else ""
+        state = "규칙 저장" if has_rule else "답변 구성 저장" if sid in overridden else "확인 완료" if sid in done else ""
         if state and not show_done:
             continue
         rows.append({"service_id": sid, "service_name": s.get("service_name", ""), "agency": agency, "field": s.get("field", ""),

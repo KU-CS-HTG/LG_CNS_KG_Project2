@@ -166,42 +166,6 @@ def _page(tmp_path):
     return script
 
 
-def test_page_shows_before_then_after_preview_and_saves(tmp_path, monkeypatch):
-    pytest.importorskip("streamlit")
-    from streamlit.testing.v1 import AppTest
-    import app.amount_mode as page
-
-    rules = tmp_path / "rules.json"
-    rules.write_text(json.dumps({"rules": []}), encoding="utf-8")
-    monkeypatch.setattr(ar, "RULES_PATH", rules)
-    monkeypatch.setattr(page, "_services", lambda: {"S50": NOMONEY, "S51": MONEY})
-    monkeypatch.setattr(page, "_demand", lambda: {})
-    at = AppTest.from_file(str(_page(tmp_path)), default_timeout=30).run()
-    assert not at.exception and any("사람이 공식 자료를 넣어야 하는 제도 1개" in c.value for c in at.caption)    # 금액 있는 S51은 목록에 없다
-    at.session_state["amount_sel_id"] = "S50"
-    at.run()
-    assert not at.exception
-    assert any("① 지금 답변에 나오는 모습" in s.value for s in at.subheader)
-    assert any("금액을 확인하지 못했어요" in c.value for c in at.caption)                  # 지금 화면: 금액 없음
-    assert any("아직 미리볼 수 없어요" in i.value for i in at.info)                          # 입력 전에는 ③ 미리보기가 없다
-    at.number_input(key="am_S50_1_amount").set_value(500000)
-    at.number_input(key="am_S50_1_months").set_value(6)
-    next(t for t in at.text_input if t.key == "am_S50_1_name").set_value("생활안정 지원")
-    at.text_input(key="am_S50_stitle").set_value("2026년 사업 안내")
-    at.text_input(key="am_S50_surl").set_value("https://www.moel.go.kr/x")
-    at.text_area(key="am_S50_quote").set_value("월 50만원씩 6개월간 지급한다")
-    at.run()
-    assert not at.exception
-    text = " ".join(m.value for m in at.markdown)
-    assert "예상 수령액: 300만 원" in text                                                  # 입력 후 화면: 금액이 나온다
-    assert ar.find("S50") is None                                                         # 저장 전에는 실제 규칙이 아니다
-    assert next(b for b in at.button if b.label == "이 규칙으로 저장").disabled              # 이름 없이는 저장 불가
-    at.sidebar.text_input[0].set_value("kim").run()
-    next(b for b in at.button if b.label == "이 규칙으로 저장").click().run()
-    assert any("규칙을 추가했어요" in s.value for s in at.success)
-    assert ar.find("S50")["variants"][0]["payout"]["amount_won"] == 500000 and "kim" in ar.find("S50")["status"]
-
-
 # --- 공식 자료 주소로 폼 채우기 (amount_from_url) ---------------------------------------------------------------------
 PAGE = """<html><head><title>청년창업기업 보증 안내</title><script>var x=1;</script></head><body><nav>메뉴</nav>
 <h1>청년창업기업 보증</h1><p>만 19세~34세 청년이 창업 후 7년 이내이면 보증을 받을 수 있습니다.</p>
@@ -274,33 +238,188 @@ def test_fill_form_refuses_other_programs_and_reports_fetch_or_ai_failures():
     assert not none["ok"] and "직접 입력" in none["message"]
 
 
-def test_page_autofill_fills_the_form_and_previews_it(tmp_path, monkeypatch):
-    pytest.importorskip("streamlit")
-    from streamlit.testing.v1 import AppTest
+# --- 화면: 답변 구성(② ③), 저장, 자료로 채우기 ------------------------------------------------------------------------------
+def _setup_page(tmp_path, monkeypatch, services=None):
     import app.amount_mode as page
-    from src.generate import amount_from_url as af
-
+    from src.generate import answer_override as ao
     rules = tmp_path / "rules.json"
     rules.write_text(json.dumps({"rules": []}), encoding="utf-8")
     monkeypatch.setattr(ar, "RULES_PATH", rules)
     monkeypatch.setattr(am, "REVIEWED_DIR", tmp_path / "reviewed")
-    monkeypatch.setattr(page, "_services", lambda: {"S50": NOMONEY})
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path / "overrides")
+    monkeypatch.setattr(page, "_services", lambda: services or {"S50": NOMONEY})
     monkeypatch.setattr(page, "_demand", lambda: {})
-    monkeypatch.setattr(af, "fetch_page", lambda url: af.html_to_text(PAGE))
-    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: GOOD_FILL)
+    return rules
+
+
+def _open_page(tmp_path, editor="kim"):
+    from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(_page(tmp_path)), default_timeout=30).run()
     at.session_state["amount_sel_id"] = "S50"
     at.run()
+    if editor:
+        at.sidebar.text_input[0].set_value(editor).run()
+    return at
+
+
+def test_page_compose_previews_then_saves_a_real_answer(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.generate import answer_override as ao
+    _setup_page(tmp_path, monkeypatch)
+    at = _open_page(tmp_path)
+    assert not at.exception and any("① 지금 답변에 나오는 모습" in x.value for x in at.subheader) and any("② 답변 구성" in x.value for x in at.subheader)
+    assert any("금액을 확인하지 못했어요" in c.value for c in at.caption)                  # 지금 화면: 금액 없음
+    assert any("아직 바꾼 내용이 없어요" in i.value for i in at.info)                        # 바꾸기 전에는 ③ 미리보기가 없다
+    assert not any(b.label == "이 구성을 실제 답변으로 저장" for b in at.button)             # 바꾼 내용이 없으면 저장 버튼도 없다
+    at.text_area(key="am_S50_benefit").set_value("창업 7년 이내 청년창업기업에 보증을 지원해요.").run()
+    assert not any("받을 수 있는 금액 (담당자 확인)" in m.value for m in at.markdown)
+    at.number_input(key="am_S50_na").set_value(1).run()
+    at.text_input(key="am_S50_a1_label").set_value("보증 한도")
+    at.text_input(key="am_S50_a1_text").set_value("최대 30억원")
+    at.run()
+    assert any("금액 안내에는 공식 자료의 제목이 필요해요" in w.value for w in at.warning)       # 출처 없이는 금액 안내가 나갈 수 없다
+    at.text_input(key="am_S50_stitle").set_value("청년창업기업보증 안내")
+    at.text_input(key="am_S50_surl").set_value("https://www.kibo.or.kr/x")
+    at.text_area(key="am_S50_quote").set_value("보증한도 최대 30억원").run()
+    assert not at.exception
+    text = " ".join(m.value for m in at.markdown)
+    assert "창업 7년 이내 청년창업기업에 보증을 지원해요." in text and "💰 받을 수 있는 금액 (담당자 확인)" in text and "**보증 한도** — 최대 30억원" in text
+    assert any("자세히 보기 (금액 근거)" in e.label for e in at.expander)
+    assert ao.find("S50") is None                                                         # 저장 전에는 실제 답변이 아니다
+    next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
+    assert any("저장했어요" in x.value for x in at.success)
+    saved = ao.find("S50")
+    assert saved["benefit_text"].startswith("창업 7년") and saved["amounts"][0]["text"] == "최대 30억원" and saved["by"] == "kim"
+    assert saved["source"]["url"] == "https://www.kibo.or.kr/x" and saved["how_to_apply"] == ""        # 고치지 않은 칸은 원래 문구
+    assert (tmp_path / "overrides" / "kim.jsonl").is_file()
+    at.run()
+    assert at.session_state["amount_sel_id"] is None                                       # 처리한 제도는 목록에서 빠진다
+    at.sidebar.checkbox[1].check().run()                                                   # '처리한 제도도 보기'
+    at.session_state["amount_sel_id"] = "S50"
+    at.run()                                                                              # 다시 열면 저장한 구성이 ②에 불러와진다
+    assert any("직접 구성한 답변이 저장돼 있어요" in i.value for i in at.info)
+    assert at.text_area(key="am_S50_benefit").value.startswith("창업 7년")
+    next(b for b in at.button if b.label == "저장한 구성 삭제 (원래 답변으로)").click().run()
+    assert ao.find("S50") is None
+
+
+def test_page_calculator_rule_uses_the_shared_source_and_saves(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    rules = _setup_page(tmp_path, monkeypatch)
+    at = _open_page(tmp_path)
+    at.checkbox(key="am_S50_usecalc").check().run()
+    assert any("출처" in w.value or "제목" in w.value for w in at.warning)                  # 출처가 없으면 규칙을 만들 수 없다
+    at.number_input(key="am_S50_1_amount").set_value(500000)
+    at.number_input(key="am_S50_1_months").set_value(6)
+    at.text_input(key="am_S50_1_name").set_value("생활안정 지원")
+    at.text_input(key="am_S50_stitle").set_value("2026년 사업 안내")
+    at.text_input(key="am_S50_surl").set_value("https://www.moel.go.kr/x")
+    at.text_area(key="am_S50_quote").set_value("월 50만원씩 6개월간 지급한다").run()
+    assert not at.exception and "예상 수령액: 300만 원" in " ".join(m.value for m in at.markdown)
+    assert ar.find("S50") is None
+    next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
+    assert ar.find("S50")["variants"][0]["payout"]["amount_won"] == 500000 and "kim" in ar.find("S50")["status"]
+    assert json.loads(rules.read_text(encoding="utf-8"))["rules"][0]["service_ids"] == ["S50"]
+
+
+def test_page_autofill_fills_amounts_source_and_calculator_and_previews_it(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.generate import amount_from_url as af
+    _setup_page(tmp_path, monkeypatch)
+    monkeypatch.setattr(af, "fetch_page", lambda url: af.html_to_text(PAGE))
+    monkeypatch.setattr("src.generate.condition_extractor._chat_json", lambda s, u: GOOD_FILL)
+    at = _open_page(tmp_path)
     assert next(b for b in at.button if b.label == "자료에서 채우기").disabled                # 주소가 없으면 꺼져 있다
     at.text_input(key="am_S50_aiurl").set_value("https://www.kibo.or.kr/x").run()
     next(b for b in at.button if b.label == "자료에서 채우기").click().run()
-    assert not at.exception
-    assert any("AI가 자료에서 채운 것" in i.value for i in at.info)
-    assert at.text_input(key="am_S50_1_name").value == "보증 한도(최대)" and at.number_input(key="am_S50_1_amount").value == 3_000_000_000
+    assert not at.exception and any("AI가 자료에서 채운 것" in i.value for i in at.info)
+    assert at.text_input(key="am_S50_a1_label").value == "보증 한도(최대)" and at.text_input(key="am_S50_a1_text").value == "30억 원 × 12개월"
+    assert at.text_input(key="am_S50_a1_cond").value == "만 19~34세"
     assert at.text_input(key="am_S50_stitle").value == "청년창업기업 보증 안내" and at.text_input(key="am_S50_surl").value == "https://www.kibo.or.kr/x"
-    assert at.radio(key="am_S50_level").value.startswith("2차")                                # kibo.or.kr은 공식 도메인 목록 밖 -> 사람이 고른다
-    assert at.text_area(key="am_S50_quote").value == "보증한도 | 최대 30억원"
-    assert any("③ 입력 후 모습" in s.value for s in at.subheader) and not any("아직 미리볼 수 없어요" in i.value for i in at.info)    # 입력 없이 바로 미리보기
-    at.number_input(key="am_S50_1_amount").set_value(2_000_000_000).run()                      # 사람은 세부 값만 고친다
-    assert "예상 수령액" in " ".join(m.value for m in at.markdown)
-    assert any("AI가 읽은 자료 본문" in e.label for e in at.expander)
+    assert at.radio(key="am_S50_level").value.startswith("2차") and at.text_area(key="am_S50_quote").value == "보증한도 | 최대 30억원"
+    assert "💰 받을 수 있는 금액 (담당자 확인)" in " ".join(m.value for m in at.markdown)       # 채우자마자 ③ 미리보기에 나온다
+    at.text_input(key="am_S50_a1_text").set_value("최대 20억원").run()                       # 사람은 세부 값만 고친다
+    assert "최대 20억원" in " ".join(m.value for m in at.markdown) and any("AI가 읽은 자료 본문" in e.label for e in at.expander)
+
+
+# --- 답변 구성 저장소(answer_override) -----------------------------------------------------------------------------------------
+GOOD_OV = {"benefit_text": "새 문구", "how_to_apply": "", "needs_check": ["나이 — 만 19~34세"], "notes": ["선발형"],
+           "amounts": [{"label": "보증 한도", "text": "최대 30억원", "condition": ""}],
+           "source": {"title": "안내", "url": "https://www.kibo.or.kr/x", "level": "2차", "quote": "보증한도 최대 30억원"}}
+
+
+def test_answer_override_validate_requires_a_source_for_amounts():
+    from src.generate import answer_override as ao
+    assert ao.validate(GOOD_OV)[1] == []
+    no_source = {**GOOD_OV, "source": {}}
+    problems = " ".join(ao.validate(no_source)[1])
+    assert "제목" in problems and "주소" in problems and "근거 구절" in problems and "등급" in problems
+    assert ao.validate({"benefit_text": "문구만"})[0]["source"] == {}                    # 금액 안내가 없으면 출처 없이도 문구는 바꿀 수 있다
+    assert ao.validate({})[1] == ["바꿀 내용을 하나 이상 써 주세요."]
+    long = ao.validate({"benefit_text": "가" * 601, "amounts": [{"label": "", "text": "x"}], "needs_check": ["a"] * 9})[1]
+    assert len(long) >= 3
+
+
+def test_answer_override_latest_event_wins_across_editors_and_clear(tmp_path):
+    from src.generate import answer_override as ao
+    ao.save("S50", "kim", {"benefit_text": "A"}, tmp_path)
+    ao.save("S50", "lee", {"benefit_text": "B"}, tmp_path)
+    assert ao.overrides(tmp_path)["S50"]["benefit_text"] == "B" and ao.overrides(tmp_path)["S50"]["by"] == "lee"
+    ao.clear("S50", "kim", tmp_path)
+    assert "S50" not in ao.overrides(tmp_path)
+    (tmp_path / "kim.jsonl").open("a", encoding="utf-8").write("깨진 줄\n")
+    assert ao.overrides(tmp_path) == {} and ao.overrides(tmp_path / "없음") == {}
+    for bad in ("", "../x", "김"):
+        with pytest.raises(ValueError):
+            ao.save("S50", bad, {"benefit_text": "A"}, tmp_path)
+    with pytest.raises(ValueError):
+        ao.save("S50", "kim", {}, tmp_path)
+
+
+def test_answer_override_apply_changes_only_overridden_card_fields(tmp_path, monkeypatch):
+    from src.generate import answer_override as ao
+    from src.common.schema import Recommendation
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    r = Recommendation("가상", "기관", "이유", "원래 지원내용", "원래 신청방법", needs_check=["원래 조건"], service_id="S50")
+    assert ao.apply(r) is r
+    ao.save("S50", "kim", {"benefit_text": "새 문구", "needs_check": ["새 조건"]}, tmp_path)
+    out = ao.apply(r)
+    assert out.benefit == "새 문구" and out.needs_check == ["새 조건"] and out.how_to_apply == "원래 신청방법" and out.reason == "이유" and r.benefit == "원래 지원내용"
+    other = Recommendation("다른", "기관", "이유", "b", "h", service_id="S99")
+    assert ao.apply(other) is other
+    with ao.preview("S50", {"benefit_text": "미리보기"}):
+        assert ao.apply(r).benefit == "미리보기"
+        with ao.preview("S50", None):
+            assert ao.apply(r) is r
+    assert ao.apply(r).benefit == "새 문구"
+
+
+def test_card_shows_saved_override_in_the_real_answer(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    from src.generate import answer_override as ao, benefit_tiers
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S50", "kim", GOOD_OV, tmp_path)
+    monkeypatch.setattr(benefit_tiers, "compute", lambda *a, **k: {"tiers": [{"label": "보증", "requires": [], "benefit": "보증 지원", "quote": "", "basis": "outside",
+                                                                            "amount": "", "amount_basis": "", "evidence": []}], "notes": []})
+
+    def script():
+        import streamlit as st
+        from app import main as app
+        from src.common.schema import Recommendation
+        st.session_state.setdefault("checks", {})
+        st.session_state.setdefault("guides", {})
+        app._card(1, Recommendation("청년창업기업보증", "기술보증기금", "이유", "원래 문구", "원래 신청", needs_check=["원래 조건"], service_id="S50"), "o1")
+
+    at = AppTest.from_function(script, default_timeout=30).run()
+    assert not at.exception
+    markup = " ".join(m.value for m in at.markdown)
+    assert "새 문구" in markup and "원래 문구" not in markup                                  # 무엇을 받나요가 직접 쓴 문구로
+    assert len(at.checkbox) == 1 and "나이" in at.checkbox[0].label and "원래 조건" not in at.checkbox[0].label    # 체크리스트도
+    at.checkbox[0].check().run()
+    next(b for b in at.button if b.label == "체크 완료").click().run()
+    next(b for b in at.button if "내 조건으로" in b.label).click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert "**보증 한도** — 최대 30억원" in text and any("안내: 선발형" in c.value for c in at.caption)
+    assert not any("금액을 확인하지 못했어요" in c.value for c in at.caption)               # 담당자 금액이 있으면 '확인 못 함' 문구를 쓰지 않는다
+    assert any("자세히 보기 (금액 근거)" in e.label for e in at.expander)
