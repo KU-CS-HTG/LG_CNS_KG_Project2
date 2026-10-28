@@ -23,6 +23,8 @@ OVERRIDE_DIR = config.ROOT / "src" / "generate" / "answer_overrides"
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 MAX_BENEFIT, MAX_HOW, MAX_NEEDS, MAX_NEED_LEN = 600, 600, 8, 120
 MAX_AMOUNTS, MAX_LABEL, MAX_TEXT, MAX_COND, MAX_NOTES, MAX_NOTE = 8, 40, 160, 120, 3, 200
+MAX_SUPPORT, MAX_SUPPORT_TEXT, MAX_TITLE = 8, 300, 30
+DEFAULT_AMOUNT_TITLE = "받을 수 있는 금액"
 LEVELS = ("공식", "2차")
 LAYOUT_MODES, LAYOUT_ORDERS = ("side", "stack"), ("benefit_first", "apply_first")
 MIN_LEFT, MAX_LEFT = 20, 80
@@ -57,6 +59,18 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             problems.append(f"금액 안내 {i}: 이름과 금액 문구를 모두 써 주세요.")
         elif len(a["label"]) > MAX_LABEL or len(a["text"]) > MAX_TEXT or len(a["condition"]) > MAX_COND:
             problems.append(f"금액 안내 {i}: 글이 너무 길어요 (이름 {MAX_LABEL}자, 금액 {MAX_TEXT}자, 조건 {MAX_COND}자).")
+    amount_title = str(data.get("amount_title") or "").strip()
+    support = [{"label": str(a.get("label") or "").strip(), "text": str(a.get("text") or "").strip()}
+               for a in (data.get("support_lines") or []) if isinstance(a, dict) and (str(a.get("label") or "").strip() or str(a.get("text") or "").strip())]
+    if len(amount_title) > MAX_TITLE:
+        problems.append(f"금액 안내 제목은 {MAX_TITLE}자 이하로 써 주세요.")
+    if len(support) > MAX_SUPPORT:
+        problems.append(f"지원 내용 항목은 {MAX_SUPPORT}개 이하로 써 주세요.")
+    for i, a in enumerate(support, 1):
+        if not a["label"] or not a["text"]:
+            problems.append(f"지원 내용 항목 {i}: 이름과 내용을 모두 써 주세요.")
+        elif len(a["label"]) > MAX_LABEL or len(a["text"]) > MAX_SUPPORT_TEXT:
+            problems.append(f"지원 내용 항목 {i}: 글이 너무 길어요 (이름 {MAX_LABEL}자, 내용 {MAX_SUPPORT_TEXT}자).")
     src = data.get("source") or {}
     source = {k: str(src.get(k) or "").strip() for k in ("title", "url", "level", "quote")}
     if amounts:
@@ -74,12 +88,12 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             isinstance(layout["left_pct"], int) and not isinstance(layout["left_pct"], bool) and MIN_LEFT <= layout["left_pct"] <= MAX_LEFT):
         problems.append(f"카드 배치가 올바르지 않아요 (왼쪽 칸 너비는 {MIN_LEFT}~{MAX_LEFT}%).")
     default_layout = layout == {"mode": "side", "order": "benefit_first", "left_pct": 50}
-    if not (benefit or how or needs or notes or amounts) and default_layout:
+    if not (benefit or how or needs or notes or amounts or support or amount_title) and default_layout:
         problems.append("바꿀 내용을 하나 이상 써 주세요.")
     if problems:
         return None, problems
     return {"benefit_text": benefit, "how_to_apply": how, "needs_check": needs, "notes": notes, "amounts": amounts,
-            "source": source if amounts else {}, **({} if default_layout else {"layout": layout})}, []
+            "amount_title": amount_title, "support_lines": support, "source": source if amounts else {}, **({} if default_layout else {"layout": layout})}, []
 
 
 def overrides(folder: Path | None = None) -> dict[str, dict]:

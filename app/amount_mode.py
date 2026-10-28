@@ -242,8 +242,22 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     needs_default = "\n".join(saved.get("needs_check") or base_needs)
     needs = st.text_area("✅ 자격 체크리스트 (한 줄에 하나. 예: 주택 — 무주택 청년)", key=f"am_{sid}_cneeds", height=100, **_init(f"am_{sid}_cneeds", needs_default))
 
+    st.markdown("**📋 지원 내용 줄** — '체크한 조건으로 받을 수 있는 지원' 아래에 나오는 문장이에요. 잘렸거나 마음에 안 들면 고쳐 쓰세요.")
+    st.caption("실제 답변에서는 AI가 원문을 정리해 이 줄을 만들어서, 아래 기본값과 조금 다를 수 있어요. 여기에 쓴 내용이 있으면 그 내용으로 바뀌어요.")
+    default_support = amount_manual.default_support_lines(service)
+    saved_support = saved.get("support_lines") or default_support
+    n_sup = int(st.number_input("지원 내용 줄 개수", min_value=0, max_value=answer_override.MAX_SUPPORT, key=f"am_{sid}_ns", **_init(f"am_{sid}_ns", len(saved_support))))
+    support = []
+    for i in range(1, n_sup + 1):
+        old = saved_support[i - 1] if i <= len(saved_support) else {}
+        c1, c2 = st.columns([2, 6])
+        support.append({"label": c1.text_input(f"줄 {i} 이름", key=f"am_{sid}_s{i}_label", **_init(f"am_{sid}_s{i}_label", old.get("label", ""))),
+                        "text": c2.text_area(f"줄 {i} 내용", key=f"am_{sid}_s{i}_text", height=90, **_init(f"am_{sid}_s{i}_text", old.get("text", "")))})
+
     st.markdown("**💰 금액 안내** — 사용자에게 보여 줄 금액을 직접 써요 (공식 출처 필수).")
     _autofill(sid, service)
+    amount_title = st.text_input("금액 안내 제목 (카드에 나오는 소제목)", key=f"am_{sid}_atitle",
+                                 **_init(f"am_{sid}_atitle", saved.get("amount_title") or answer_override.DEFAULT_AMOUNT_TITLE))
     saved_amounts = saved.get("amounts") or []
     n_amt = int(st.number_input("금액 안내 개수", min_value=0, max_value=answer_override.MAX_AMOUNTS, key=f"am_{sid}_na", **_init(f"am_{sid}_na", len(saved_amounts))))
     amounts = []
@@ -259,7 +273,9 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     raw = {"benefit_text": benefit.strip() if benefit.strip() != base.benefit.strip() else "",
            "how_to_apply": how.strip() if how.strip() != base.how_to_apply.strip() else "",
            "needs_check": _lines(needs) if _lines(needs) != base_needs else [],
-           "amounts": amounts, "notes": _lines(notes), "source": source, "layout": layout}
+           "amounts": amounts, "notes": _lines(notes), "source": source, "layout": layout,
+           "support_lines": support if support != default_support else [],
+           "amount_title": amount_title.strip() if amount_title.strip() != answer_override.DEFAULT_AMOUNT_TITLE else ""}
     return raw, source
 
 

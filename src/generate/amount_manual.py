@@ -99,13 +99,28 @@ def preview_recommendation(service: dict, needs_check: list[str] | None = None) 
         service_id=service.get("service_id", ""), benefit_detail=[content] if content else [])
 
 
+def first_paragraph(text: str, limit: int = 300) -> str:
+    """지원내용의 첫 문단(빈 줄 전까지)을 한 줄로. 첫 '줄'만 쓰면 문장이 중간에 끊겨 보인다."""
+    para = re.split(r"\n\s*\n", (text or "").strip(), maxsplit=1)[0]
+    one = " ".join(para.split())
+    return one if len(one) <= limit else one[:limit - 1] + "…"
+
+
+def default_support_lines(service: dict) -> list[dict]:
+    """'체크한 조건으로 받을 수 있는 지원' 줄의 기본값(미리보기 시뮬레이션과 같다). 실제 답변에서는 LLM이 정리해서 다를 수 있다."""
+    first = first_paragraph(service.get("support_content") or "")
+    return [{"label": "지원 내용", "text": first}] if first else []
+
+
 def preview_tiers(service: dict) -> dict:
-    """'내 조건으로 받을 수 있는 지원' 정리 결과의 대용. 미리보기는 LLM을 부르지 않으므로 원문 첫 줄을 한 항목으로 둔다.
+    """'내 조건으로 받을 수 있는 지원' 정리 결과의 대용. 미리보기는 LLM을 부르지 않으므로 원문 첫 문단을 한 항목으로 둔다.
     실제 답변에서는 LLM이 지원 유형을 나누므로 항목 이름·개수는 다를 수 있다."""
+    lines = default_support_lines(service)
+    first = lines[0]["text"] if lines else ""
     content = (service.get("support_content") or "").strip()
-    first = next((l.strip() for l in content.splitlines() if l.strip()), "")
-    return {"tiers": [{"label": "지원 내용", "requires": [], "benefit": _short(first) or "지원내용 정보 없음", "quote": first[:80] if len(first) >= 4 else "",
-                       "basis": "source" if len(first) >= 4 else "outside", "amount": "", "amount_basis": "", "evidence": []}], "notes": []}
+    quote = next((l.strip() for l in content.splitlines() if len(l.strip()) >= 4), "")[:80]
+    return {"tiers": [{"label": "지원 내용", "requires": [], "benefit": first or "지원내용 정보 없음", "quote": quote,
+                       "basis": "source" if quote else "outside", "amount": "", "amount_basis": "", "evidence": []}], "notes": []}
 
 
 def form_to_rule(service: dict, form: dict, editor: str = "", today: date | None = None) -> tuple[dict | None, list[str]]:

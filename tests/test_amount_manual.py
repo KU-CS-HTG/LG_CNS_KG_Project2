@@ -285,7 +285,7 @@ def test_page_compose_previews_then_saves_a_real_answer(tmp_path, monkeypatch):
     at.text_area(key="am_S50_quote").set_value("보증한도 최대 30억원").run()
     assert not at.exception
     text = " ".join(m.value for m in at.markdown)
-    assert "창업 7년 이내 청년창업기업에 보증을 지원해요." in text and "💰 받을 수 있는 금액 (담당자 확인)" in text and "**보증 한도** — 최대 30억원" in text
+    assert "창업 7년 이내 청년창업기업에 보증을 지원해요." in text and "💰 받을 수 있는 금액" in text and "**보증 한도** — 최대 30억원" in text
     assert any("자세히 보기 (금액 근거)" in e.label for e in at.expander)
     assert ao.find("S50") is None                                                         # 저장 전에는 실제 답변이 아니다
     next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
@@ -339,7 +339,7 @@ def test_page_autofill_fills_amounts_source_and_calculator_and_previews_it(tmp_p
     assert at.text_input(key="am_S50_a1_cond").value == "만 19~34세"
     assert at.text_input(key="am_S50_stitle").value == "청년창업기업 보증 안내" and at.text_input(key="am_S50_surl").value == "https://www.kibo.or.kr/x"
     assert at.radio(key="am_S50_level").value.startswith("2차") and at.text_area(key="am_S50_quote").value == "보증한도 | 최대 30억원"
-    assert "💰 받을 수 있는 금액 (담당자 확인)" in " ".join(m.value for m in at.markdown)       # 채우자마자 ③ 미리보기에 나온다
+    assert "💰 받을 수 있는 금액" in " ".join(m.value for m in at.markdown)       # 채우자마자 ③ 미리보기에 나온다
     at.text_input(key="am_S50_a1_text").set_value("최대 20억원").run()                       # 사람은 세부 값만 고친다
     assert "최대 20억원" in " ".join(m.value for m in at.markdown) and any("AI가 읽은 자료 본문" in e.label for e in at.expander)
 
@@ -492,3 +492,72 @@ def test_page_layout_controls_preview_and_save(tmp_path, monkeypatch):
     at.radio(key="am_S50_lmode").set_value("나란히 (좌우)").run()
     next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
     assert ao.find("S50")["layout"] == {"mode": "side", "order": "apply_first", "left_pct": 35}
+
+
+# --- 금액 안내 제목·지원 내용 줄을 직접 고치기 -------------------------------------------------------------------------------------
+def test_first_paragraph_keeps_the_whole_first_paragraph_not_just_one_line():
+    text = "○ 구직단념청년 등을 대상으로 밀착상담, 사례관리,\n  취업역량강화 등 맞춤형 프로그램 및\n 참여수당, 인센티브 등을 제공\n\n○ 둘째 문단"
+    assert am.first_paragraph(text) == "○ 구직단념청년 등을 대상으로 밀착상담, 사례관리, 취업역량강화 등 맞춤형 프로그램 및 참여수당, 인센티브 등을 제공"
+    assert am.first_paragraph("가" * 400, 50).endswith("…") and len(am.first_paragraph("가" * 400, 50)) == 50 and am.first_paragraph("") == ""
+    assert am.default_support_lines({"support_content": "첫 문단\n\n둘째"}) == [{"label": "지원 내용", "text": "첫 문단"}] and am.default_support_lines({}) == []
+    assert am.preview_tiers({"support_content": "첫 문단\n\n둘째"})["tiers"][0]["benefit"] == "첫 문단"
+
+
+def test_override_validate_title_and_support_lines():
+    from src.generate import answer_override as ao
+    ok, problems = ao.validate({"amount_title": "받을 수 있는 금액", "support_lines": [{"label": "지원 내용", "text": "전체 문장"}]})
+    assert problems == [] and ok["support_lines"] == [{"label": "지원 내용", "text": "전체 문장"}] and ok["amount_title"] == "받을 수 있는 금액"
+    assert ao.validate({"support_lines": [{"label": "", "text": "x"}]})[0] is None
+    assert ao.validate({"amount_title": "가" * 31})[0] is None and ao.validate({"support_lines": [{"label": "a", "text": "가" * 301}]})[0] is None
+
+
+def test_card_uses_custom_amount_title_and_support_lines(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    from src.generate import answer_override as ao, benefit_tiers
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S50", "kim", {**GOOD_OV, "needs_check": [], "amount_title": "프로그램별 지원금", "support_lines": [{"label": "지원 내용", "text": "맞춤형 프로그램 및 참여수당을 제공해요."}]}, tmp_path)
+    monkeypatch.setattr(benefit_tiers, "compute", lambda *a, **k: {"tiers": [{"label": "지원 내용", "requires": [], "benefit": "잘린 문장 및", "quote": "", "basis": "outside",
+                                                                            "amount": "", "amount_basis": "", "evidence": []},
+                                                                           {"label": "추가", "requires": [1], "benefit": "조건부", "quote": "", "basis": "outside",
+                                                                            "amount": "", "amount_basis": "", "evidence": []}], "notes": []})
+
+    def script():
+        import streamlit as st
+        from app import main as app
+        from src.common.schema import Recommendation
+        st.session_state.setdefault("checks", {})
+        st.session_state.setdefault("guides", {})
+        app._card(1, Recommendation("가상", "기관", "이유", "원래 문구", "원래 신청", service_id="S50"), "t1")
+
+    at = AppTest.from_function(script, default_timeout=30).run()
+    next(b for b in at.button if "내 조건으로" in b.label).click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert not at.exception and "💰 프로그램별 지원금" in text and "담당자 확인" not in text
+    assert "**지원 내용** — 맞춤형 프로그램 및 참여수당을 제공해요." in text and "잘린 문장 및" not in text   # AI가 정리한 줄 대신 직접 쓴 줄
+    assert not any("조건을 더 충족하면" in e.label for e in at.expander)
+
+
+def test_page_edits_support_line_and_amount_title_and_saves(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.generate import answer_override as ao
+    svc = {**NOMONEY, "support_content": "구직단념청년 등을 대상으로 맞춤형 프로그램 및\n참여수당을 제공하여 취업을 촉진\n\n○ 둘째 문단"}
+    _setup_page(tmp_path, monkeypatch, {"S50": svc})
+    at = _open_page(tmp_path)
+    assert at.text_area(key="am_S50_s1_text").value == "구직단념청년 등을 대상으로 맞춤형 프로그램 및 참여수당을 제공하여 취업을 촉진"   # 첫 문단 전체가 기본값
+    assert "프로그램 및 참여수당을" in " ".join(m.value for m in at.markdown)                        # 미리보기 시뮬레이션도 끊기지 않는다
+    assert at.text_input(key="am_S50_atitle").value == "받을 수 있는 금액"
+    assert not any(b.label == "이 구성을 실제 답변으로 저장" for b in at.button)                      # 기본값 그대로면 바뀐 것이 없다
+    at.text_area(key="am_S50_s1_text").set_value("맞춤형 프로그램과 참여수당을 제공해요.").run()
+    at.number_input(key="am_S50_na").set_value(1).run()
+    at.text_input(key="am_S50_a1_label").set_value("참여수당")
+    at.text_input(key="am_S50_a1_text").set_value("월 50만원")
+    at.text_input(key="am_S50_stitle").set_value("사업 안내")
+    at.text_input(key="am_S50_surl").set_value("https://www.moel.go.kr/x")
+    at.text_area(key="am_S50_quote").set_value("참여수당 월 50만원 지급").run()
+    at.text_input(key="am_S50_atitle").set_value("참여수당 안내").run()
+    html = " ".join(m.value for m in at.markdown)
+    assert "**지원 내용** — 맞춤형 프로그램과 참여수당을 제공해요." in html and "💰 참여수당 안내" in html and "담당자 확인" not in html
+    next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
+    saved = ao.find("S50")
+    assert saved["support_lines"] == [{"label": "지원 내용", "text": "맞춤형 프로그램과 참여수당을 제공해요."}] and saved["amount_title"] == "참여수당 안내"

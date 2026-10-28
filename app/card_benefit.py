@@ -135,7 +135,7 @@ def _override_amounts(ov: dict | None) -> bool:
     if not ov or not (ov.get("amounts") or ov.get("notes")):
         return False
     if ov.get("amounts"):
-        st.markdown("##### 💰 받을 수 있는 금액 (담당자 확인)")
+        st.markdown(f"##### 💰 {ov.get('amount_title') or answer_override.DEFAULT_AMOUNT_TITLE}")
         for a in ov["amounts"]:
             st.markdown(f"**{a['label']}** — {a['text']}")
             if a.get("condition"):
@@ -157,7 +157,12 @@ def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) 
     groups = benefit_tiers.evaluate(result["tiers"], set(checked))
     got = groups["base"] + groups["met"]
     st.markdown("##### ✅ 체크한 조건으로 받을 수 있는 지원")
-    if got:
+    custom = (ov or {}).get("support_lines")
+    if custom:                                    # 담당자가 직접 쓴 지원 내용 줄이 LLM이 정리한 항목을 대신한다
+        for line in custom:
+            st.markdown(f"**{line['label']}** — {line['text']}")
+        groups = {**groups, "pending": []}
+    elif got:
         for t in got:
             _tier_line(t, show_amount=rule is None and not has_ov_amounts)
     else:
