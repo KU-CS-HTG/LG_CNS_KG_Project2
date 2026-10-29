@@ -26,7 +26,7 @@ OVERRIDE_DIR = config.ROOT / "src" / "generate" / "answer_overrides"
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 MAX_BENEFIT, MAX_HOW, MAX_NEEDS, MAX_NEED_LEN = 600, 600, 8, 120
 MAX_AMOUNTS, MAX_LABEL, MAX_TEXT, MAX_COND, MAX_NOTES, MAX_NOTE = 8, 40, 160, 120, 3, 200
-MAX_SUPPORT, MAX_SUPPORT_TEXT, MAX_TITLE, MAX_MEMO = 8, 300, 30, 4000
+MAX_SUPPORT, MAX_SUPPORT_TEXT, MAX_TITLE, MAX_MEMO, MAX_URL = 8, 300, 30, 4000, 500
 DEFAULT_AMOUNT_TITLE = "받을 수 있는 금액"
 LEVELS = ("공식", "2차")
 LAYOUT_MODES, LAYOUT_ORDERS = ("side", "stack"), ("benefit_first", "apply_first")
@@ -69,17 +69,29 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             problems.append(f"금액 안내 {i}: 이름과 금액 문구를 모두 써 주세요.")
         elif len(a["label"]) > MAX_LABEL or len(a["text"]) > MAX_TEXT or len(a["condition"]) > MAX_COND:
             problems.append(f"금액 안내 {i}: 글이 너무 길어요 (이름 {MAX_LABEL}자, 금액 {MAX_TEXT}자, 조건 {MAX_COND}자).")
+    apply_url = str(data.get("apply_url") or "").strip()
+    if apply_url and (not apply_url.startswith(("https://", "http://", "mailto:")) or len(apply_url) > MAX_URL or re.search(r"\s", apply_url)):
+        problems.append("신청 사이트 주소는 https://(또는 http://, mailto:)로 시작하는 공백 없는 주소여야 해요.")
     memo = str(data.get("ai_memo") or "").strip()
     if len(memo) > MAX_MEMO:
         problems.append(f"AI 조사 메모는 {MAX_MEMO}자 이하로 써 주세요.")
     amount_title = str(data.get("amount_title") or "").strip()
-    support = [{"label": str(a.get("label") or "").strip(), "text": str(a.get("text") or "").strip()}
-               for a in (data.get("support_lines") or []) if isinstance(a, dict) and (str(a.get("label") or "").strip() or str(a.get("text") or "").strip())]
+    support = []
+    for a in (data.get("support_lines") or []):
+        if not isinstance(a, dict) or not (str(a.get("label") or "").strip() or str(a.get("text") or "").strip()):
+            continue
+        item = {"label": str(a.get("label") or "").strip(), "text": str(a.get("text") or "").strip()}
+        when = sorted({w for w in (a.get("when") or []) if isinstance(w, int) and not isinstance(w, bool)})
+        if when:                       # 표시 조건: 체크리스트 번호(1부터) 중 하나라도 체크했을 때만 이 줄을 보인다. 없으면 항상 보인다
+            item["when"] = when
+        support.append(item)
     if len(amount_title) > MAX_TITLE:
         problems.append(f"금액 안내 제목은 {MAX_TITLE}자 이하로 써 주세요.")
     if len(support) > MAX_SUPPORT:
         problems.append(f"지원 내용 항목은 {MAX_SUPPORT}개 이하로 써 주세요.")
     for i, a in enumerate(support, 1):
+        if any(not 1 <= w <= (len(needs) or MAX_NEEDS) for w in a.get("when", [])):
+            problems.append(f"지원 내용 항목 {i}: 표시 조건 번호가 자격 체크리스트 범위를 벗어났어요.")
         if not a["label"] or not a["text"]:
             problems.append(f"지원 내용 항목 {i}: 이름과 내용을 모두 써 주세요.")
         elif len(a["label"]) > MAX_LABEL or len(a["text"]) > MAX_SUPPORT_TEXT:
@@ -101,12 +113,13 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             isinstance(layout["left_pct"], int) and not isinstance(layout["left_pct"], bool) and MIN_LEFT <= layout["left_pct"] <= MAX_LEFT):
         problems.append(f"카드 배치가 올바르지 않아요 (왼쪽 칸 너비는 {MIN_LEFT}~{MAX_LEFT}%).")
     default_layout = layout == {"mode": "side", "order": "benefit_first", "left_pct": 50}
-    if not (benefit or how or needs or notes or amounts or support or amount_title or applicability) and default_layout:
+    if not (benefit or how or needs or notes or amounts or support or amount_title or applicability or apply_url) and default_layout:
         problems.append("바꿀 내용을 하나 이상 써 주세요.")
     if problems:
         return None, problems
     return {"benefit_text": benefit, "how_to_apply": how, "needs_check": needs, "notes": notes, "amounts": amounts,
-            "amount_title": amount_title, "support_lines": support, "ai_memo": memo, "source": source if amounts else {}, **applicability, **({} if default_layout else {"layout": layout})}, []
+            "amount_title": amount_title, "support_lines": support, "ai_memo": memo, "source": source if amounts else {}, **applicability, **({} if default_layout else {"layout": layout}),
+            **({"apply_url": apply_url} if apply_url else {})}, []
 
 
 def overrides(folder: Path | None = None) -> dict[str, dict]:
@@ -208,9 +221,9 @@ def find_any(service_id: str) -> dict | None:
 
 
 def apply(r: Recommendation) -> Recommendation:
-    """저장된 구성이 있으면 카드에 쓰는 문구를 바꾼 사본을 돌려준다 (없으면 그대로). 바꾸는 것: 무엇을 받나요·신청방법·자격 체크리스트."""
+    """저장된 구성이 있으면 카드에 쓰는 문구를 바꾼 사본을 돌려준다 (없으면 그대로). 바꾸는 것: 무엇을 받나요·신청방법·자격 체크리스트·신청 사이트 주소(apply_url)."""
     ov = find(r.service_id)
     if not ov:
         return r
     return replace(r, benefit=ov.get("benefit_text") or r.benefit, how_to_apply=ov.get("how_to_apply") or r.how_to_apply,
-                   needs_check=list(ov.get("needs_check") or r.needs_check))
+                   needs_check=list(ov.get("needs_check") or r.needs_check), apply_url=ov.get("apply_url") or r.apply_url)
