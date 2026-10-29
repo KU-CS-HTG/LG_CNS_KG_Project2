@@ -245,3 +245,16 @@ def test_search_log_reports_skipped_and_failed_methods(monkeypatch):
         answer_research.web_search_urls("q", log=lines.append)
     text = "\n".join(lines)
     assert "✘ Claude Code(claude -p) 실패: not logged in" in text and "건너뜀: Anthropic API(Claude) (설치·키 없음)" in text and "건너뜀: OpenAI (설치·키 없음)" in text
+
+
+def test_claude_cli_not_logged_in_has_a_clear_hint(monkeypatch):
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        return _cli_proc("Not logged in · Please run /login", 1, True)
+    monkeypatch.setattr(answer_research.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="로그인되어 있지 않아요.*claude.*login"):
+        answer_research._search_claude_cli("q")
+    assert seen["encoding"] == "utf-8"        # Windows 기본 인코딩(cp949)으로 읽어 한글이 깨지는 것을 막는다
