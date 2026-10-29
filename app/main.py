@@ -23,7 +23,7 @@ from streamlit import runtime  # noqa: E402
 
 from app import card_apply, card_benefit, card_period  # noqa: E402
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import generator, guide_evidence, guide_router, income_calc  # noqa: E402
+from src.generate import answer_override, generator, guide_evidence, guide_router, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -93,7 +93,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .badge.check { color:var(--warn); background:var(--warn-soft); }
 
 .reason { font-size:.95rem; line-height:1.6; margin-bottom:.75rem; }
-.grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; margin-bottom:.7rem; }
+.grid { display:grid; grid-template-columns:var(--cols, 1fr 1fr); gap:.6rem; margin-bottom:.7rem; }
 @media (max-width: 640px) { .grid { grid-template-columns:1fr; } .badge { margin-left:0; } .card-head { flex-wrap:wrap; } }
 .box { border-radius:12px; padding:.65rem .8rem; border:1px solid var(--line); }
 .box .k { font-size:.78rem; font-weight:700; opacity:.6; margin-bottom:.2rem; }
@@ -271,6 +271,11 @@ def _e(s: str) -> str:
     return html.escape(s or "")
 
 
+def _e_inline(s: str) -> str:
+    """HTML 이스케이프 + 줄바꿈을 '&#10;'으로: 원문에 빈 줄이 있으면 markdown이 HTML 블록을 거기서 끊어 카드 칸 배치가 깨진다 (줄바꿈 표시는 그대로)."""
+    return re.sub(r"\r?\n", "&#10;", html.escape(s or ""))
+
+
 def _safe_url(url: str) -> str:
     return url if url.startswith(("https://", "http://")) else ""
 
@@ -312,24 +317,40 @@ def _benefit_source_link(r: Recommendation) -> str:
     if not blocks:
         return ""
     url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
-    body = "".join(f'<div class="src-text">{_e(b)}</div>' for b in blocks)
+    body = "".join(f'<div class="src-text">{_e_inline(b)}</div>' for b in blocks)
     link = f'<a class="src-more" href="{_e(url)}" target="_blank" rel="noopener">상세 페이지에서 보기 ↗</a>' if url else ""
     return f'<details class="src-detail"><summary>원문 확인하기</summary>{body}{link}</details>'
 
 
+def _card_boxes(r: Recommendation, how: str, deadline: str) -> tuple[str, str, str]:
+    """('무엇을 받나요' 칸, '어떻게 신청하나요' 칸, 배치 스타일). 담당자가 정한 배치(answer_override의 layout)가 있으면 따른다:
+    나란히/위아래, 칸 순서, 왼쪽 칸 너비(%)."""
+    benefit = (f'<div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e_inline(r.benefit)}</div>'
+               f'{_benefit_source_link(r)}</div>')
+    apply = f'<div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e_inline(how)}</div>{_deadline_html(deadline)}</div>'
+    lay = (answer_override.find(r.service_id) or {}).get("layout") or {}
+    first, second = (apply, benefit) if lay.get("order") == "apply_first" else (benefit, apply)
+    if lay.get("mode") == "stack":
+        style = "--cols:1fr"
+    else:
+        left = int(lay.get("left_pct") or 50)
+        style = f"--cols:{left}fr {100 - left}fr"
+    return first, second, style
+
+
 def _card_head(i: int, r: Recommendation, checked: int) -> str:
     how, _, deadline = r.how_to_apply.partition(" / 신청기한: ")
+    first, second, style = _card_boxes(r, how, deadline)
     return f"""
 <div class="card-head">
   <div class="num">{i}</div>
   <div><div class="title">{_e(r.service_name)}</div><div class="agency">🏛 {_e(r.agency)}{_scope_html(r.agency)}</div></div>
   {_badge(len(r.needs_check), checked)}
 </div>
-<div class="reason">{_e(r.reason)}</div>
-<div class="grid">
-  <div class="box"><div class="k">🎁 무엇을 받나요</div><div class="v">{_e(r.benefit)}</div>{_benefit_source_link(r)}</div>
-  <div class="box"><div class="k">📝 어떻게 신청하나요</div><div class="v">{_e(how)}</div>
-    {_deadline_html(deadline)}</div>
+<div class="reason">{_e_inline(r.reason)}</div>
+<div class="grid" style="{style}">
+  {first}
+  {second}
 </div>"""
 
 
@@ -378,7 +399,7 @@ def _deadline_html(deadline: str, today: date | None = None) -> str:
 
 
 def _card_sources(r: Recommendation) -> str:
-    quotes = "".join(f'<div class="quote">{_e(c.quote)}</div>' for c in r.citations)
+    quotes = "".join(f'<div class="quote">{_e_inline(c.quote)}</div>' for c in r.citations)
     url = next((_safe_url(c.detail_url) for c in r.citations if _safe_url(c.detail_url)), "")
     return (f'<details class="src"><summary>근거 원문 {len(r.citations)}건 보기</summary>{quotes}</details>'
             + (f'<div class="links"><a class="btn" href="{_e(url)}" target="_blank" rel="noopener">상세 페이지 열기 ↗</a></div>'
@@ -482,7 +503,10 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
 
     체크는 화면 안에서만 쓰고 답변·검색을 바꾸지 않는다. Streamlit은 화면에 그려지지 않은 위젯의 상태를 지우므로
     (다른 주제를 보고 돌아오면 체크가 풀림) 체크 상태는 session_state.checks에 따로 저장한다.
-    배지는 카드 머리에 있으므로 체크박스보다 먼저 그리며 저장된 상태를 읽는다."""
+    배지는 카드 머리에 있으므로 체크박스보다 먼저 그리며 저장된 상태를 읽는다.
+
+    담당자가 직접 구성한 카드 문구(src/generate/answer_override.py, 화면: app/amount_mode.py)가 있으면 그 내용으로 바꿔 그린다."""
+    r = answer_override.apply(r)
     saved = st.session_state.checks
     keys = [f"chk_{key}_{j}" for j in range(len(r.needs_check))]
     checked = sum(1 for k in keys if saved.get(k))

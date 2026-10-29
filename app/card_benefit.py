@@ -11,7 +11,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src.common.schema import Recommendation
-from src.generate import amount_rules, benefit_tiers
+from src.generate import amount_rules, answer_override, benefit_tiers
 
 
 def _checked(key: str, n: int) -> frozenset[int]:
@@ -77,10 +77,33 @@ def _show_amount(out: dict) -> None:
         st.caption(f"확인일 {out['as_of']} · 상태: {out['status']}. 계산 값은 참고용이며 실제 지급액은 담당 기관 심사로 정해져요.")
 
 
+def _generic_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int]) -> None:
+    """범용 규칙(JSON만으로 만든 규칙): 체크리스트로 알 수 있는 입력은 채우고 나머지만 묻고, 값이 바뀔 때마다 바로 계산한다."""
+    values = amount_rules.auto_flags(rule, list(r.needs_check), set(checked))
+    if values:
+        st.caption("체크리스트 답으로 채운 항목: " + ", ".join(f"{s['label']} → {'예' if values[s['id']] else '아니요'}" for s in rule["inputs"] if s["id"] in values))
+    for spec in rule["inputs"]:
+        if spec["id"] in values:
+            continue
+        wk, label, kind = f"amt_{key}_{spec['id']}", spec["label"], spec["type"]
+        if kind == "bool":
+            picked = st.radio(label, ["예", "아니요"], index=None, horizontal=True, key=wk)
+            values[spec["id"]] = None if picked is None else picked == "예"
+        elif kind == "choice":
+            values[spec["id"]] = st.selectbox(label, spec["options"], index=None, key=wk)
+        else:
+            step = 1 if kind == "int" else 0.1
+            values[spec["id"]] = st.number_input(label, min_value=spec.get("min"), max_value=spec.get("max"), value=None, step=step, key=wk)
+    _show_amount(amount_rules.generic_calculate(rule, values))
+
+
 def _amount_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int]) -> None:
     """예상 수령액. 체크리스트 답으로 바로 계산하고(같은 내용을 다시 묻지 않는다), 체크로 알 수 없는 나이대·부양가족 수만 묻는다.
     소득·재산을 숫자로 넣어 단독 가구/가구 합산을 비교하는 정밀 계산은 선택 사항(접어 둔 칸)이다. LLM 없음."""
     st.markdown("##### 💰 예상 수령액")
+    if rule["calculator"] == "generic":
+        _generic_form(r, rule, key, checked)
+        return
     flags = amount_rules.check_flags(rule, list(r.needs_check), set(checked))
     band = st.radio("나이대", amount_rules.AGE_BANDS, index=None, horizontal=True, key=f"amt_band_{key}")
     cols = st.columns(3)
@@ -107,21 +130,49 @@ def _amount_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int
             _show_amount(st.session_state[state_key])
 
 
+def _override_amounts(ov: dict | None) -> bool:
+    """담당자가 직접 쓴 금액 안내와 공식 근거. 그렸으면 True."""
+    if not ov or not (ov.get("amounts") or ov.get("notes")):
+        return False
+    if ov.get("amounts"):
+        st.markdown(f"##### 💰 {ov.get('amount_title') or answer_override.DEFAULT_AMOUNT_TITLE}")
+        for a in ov["amounts"]:
+            st.markdown(f"**{a['label']}** — {a['text']}")
+            if a.get("condition"):
+                st.caption(f"조건: {a['condition']}")
+        src = ov.get("source") or {}
+        with st.expander("자세히 보기 (금액 근거)"):
+            st.markdown(f"[{src.get('title', '출처')}]({src.get('url', '')}) · {'공식 자료' if src.get('level') == '공식' else '2차 자료(공식 원문 대조 필요)'}")
+            st.text(src.get("quote", ""))
+            st.caption(f"담당자 {ov.get('by') or '-'} 확인" + (f" · {ov['at'][:10]}" if ov.get("at") else ""))
+    for note in ov.get("notes") or []:
+        st.caption(f"안내: {note}")
+    return True
+
+
 def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) -> None:
     rule = amount_rules.find(r.service_id)
+    ov = answer_override.find(r.service_id)
+    has_ov_amounts = bool(ov and ov.get("amounts"))
     groups = benefit_tiers.evaluate(result["tiers"], set(checked))
     got = groups["base"] + groups["met"]
     st.markdown("##### ✅ 체크한 조건으로 받을 수 있는 지원")
-    if got:
+    custom = (ov or {}).get("support_lines")
+    if custom:                                    # 담당자가 직접 쓴 지원 내용 줄이 LLM이 정리한 항목을 대신한다
+        for line in custom:
+            st.markdown(f"**{line['label']}** — {line['text']}")
+        groups = {**groups, "pending": []}
+    elif got:
         for t in got:
-            _tier_line(t, show_amount=rule is None)
+            _tier_line(t, show_amount=rule is None and not has_ov_amounts)
     else:
         st.info("체크한 조건으로 받을 수 있는 지원이 아직 없어요. 조건을 바꿔 다시 '체크 완료'를 눌러 보세요.")
     if groups["pending"]:
         with st.expander(f"조건을 더 충족하면 받을 수 있는 지원 {len(groups['pending'])}가지", expanded=not got):
             for t in groups["pending"]:
-                _tier_line(t, show_amount=rule is None)
+                _tier_line(t, show_amount=rule is None and not has_ov_amounts)
                 st.caption(f"필요한 조건: {_needs_text(r, t['requires'])}  (아직 체크 안 함: {_needs_text(r, t['missing'])})")
+    _override_amounts(ov)
     if rule:
         _amount_form(r, rule, key, checked)
     if result["notes"]:
@@ -155,6 +206,8 @@ def render(r: Recommendation, key: str) -> None:
             with st.spinner("조건별 지원과 금액을 정리하는 중…"):
                 result = benefit_tiers.compute(r.service_id, r.service_name, list(r.needs_check))
             if result is None:
+                if _override_amounts(answer_override.find(r.service_id)):       # 담당자가 쓴 금액 안내는 정리가 실패해도 보여 준다
+                    return
                 st.session_state[open_key] = False
                 st.warning("조건별 지원을 정리하지 못했어요. 카드의 원문 확인하기 링크로 확인해 주세요.")
                 return
