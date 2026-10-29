@@ -43,6 +43,13 @@ def valid_editor(editor: str) -> bool:
 def validate(data: dict) -> tuple[dict | None, list[str]]:
     """입력 -> (정리된 구성, 문제 목록). 문제가 있으면 구성은 None. 비어 있는 칸은 '바꾸지 않음'이다."""
     problems: list[str] = []
+    applicability = {}
+    if "applicability" in data:
+        from src.generate import benefit_applicability
+        checked, issues = benefit_applicability.validate(data["applicability"])
+        problems.extend(issues)
+        if checked is not None:
+            applicability["applicability"] = checked
     benefit = str(data.get("benefit_text") or "").strip()
     how = str(data.get("how_to_apply") or "").strip()
     needs = [str(l).strip() for l in (data.get("needs_check") or []) if str(l).strip()]
@@ -106,12 +113,12 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
             isinstance(layout["left_pct"], int) and not isinstance(layout["left_pct"], bool) and MIN_LEFT <= layout["left_pct"] <= MAX_LEFT):
         problems.append(f"카드 배치가 올바르지 않아요 (왼쪽 칸 너비는 {MIN_LEFT}~{MAX_LEFT}%).")
     default_layout = layout == {"mode": "side", "order": "benefit_first", "left_pct": 50}
-    if not (benefit or how or needs or notes or amounts or support or amount_title or apply_url) and default_layout:
+    if not (benefit or how or needs or notes or amounts or support or amount_title or applicability or apply_url) and default_layout:
         problems.append("바꿀 내용을 하나 이상 써 주세요.")
     if problems:
         return None, problems
     return {"benefit_text": benefit, "how_to_apply": how, "needs_check": needs, "notes": notes, "amounts": amounts,
-            "amount_title": amount_title, "support_lines": support, "ai_memo": memo, "source": source if amounts else {}, **({} if default_layout else {"layout": layout}),
+            "amount_title": amount_title, "support_lines": support, "ai_memo": memo, "source": source if amounts else {}, **applicability, **({} if default_layout else {"layout": layout}),
             **({"apply_url": apply_url} if apply_url else {})}, []
 
 
@@ -166,13 +173,21 @@ def save(service_id: str, editor: str, data: dict, folder: Path | None = None, *
     clean, problems = validate(data)
     if clean is None:
         raise ValueError("; ".join(problems))
+    if clean.get("applicability", {}).get("program_id", service_id) != service_id:
+        raise ValueError("다른 제도의 유형 설정은 저장할 수 없어요.")
     _write(service_id, editor, "set", clean, folder, ai)
 
 
 def confirm(service_id: str, editor: str, folder: Path | None = None) -> None:
     """AI가 채운 구성을 사람이 확인했다고 기록한다 (이때부터 실제 답변에 나온다). AI 구성이 아니면 오류."""
-    if not pending_ai(overrides(folder).get(service_id)):
+    current = overrides(folder).get(service_id)
+    if not pending_ai(current):
         raise ValueError("확인할 AI 구성이 없어요.")
+    if "applicability" in current:
+        from src.generate import benefit_applicability
+        _, problems = benefit_applicability.validate(current["applicability"], service_id)
+        if problems:
+            raise ValueError("; ".join(problems))
     _write(service_id, editor, "confirm", None, folder)
 
 

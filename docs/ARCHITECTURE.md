@@ -252,6 +252,24 @@ are proposed for A-2/A-3 and still require team agreement. pypdf adds structure/
 validation only. Product direction, actual source evidence, limitations and detailed-condition
 evaluation plan: [OFFICIAL_DOCUMENTS_A1.md](OFFICIAL_DOCUMENTS_A1.md).
 
+### 6.6 Category-aware guidance (W5, 2026-10-29)
+
+`benefit_applicability.py` is the single deterministic grouped evaluator. An optional
+`answer_override.applicability` object holds program-scoped stable IDs, one exclusive
+group, explicit common/options/unresolved scopes, requirements, source-backed items
+and reviewed calculation associations. Missing/invalid scope cannot become common.
+The first exact-ID source adapter reads existing 근로·자녀장려금 rows without new
+amounts/formulas or human approval. Other programs retain the existing interface.
+
+`app/main.py` routes grouped checklists to `card_benefit`; selected/common conditions
+alone drive progress. Confirmation binds card/config/source/selection/checks/inputs;
+changes close results and require confirmation again. No local interaction invokes
+new LLM/retrieval work. Unmapped generated/manual text and global rule notes cannot
+bypass the evaluator. Original evidence remains in 원문 확인하기. Admin mappings
+are previewed separately and published only through existing explicit save/confirm.
+Legacy JSONL is not rewritten; Chunk/Citation and ranking remain unchanged. Details
+and validation boundaries: [CATEGORY_BENEFITS.md](CATEGORY_BENEFITS.md).
+
 ## 7. 변경 이력
 
 - 2026-10-23: A-1 isolated official document/source catalog, bounded originals, content-addressed versions, temporal inspection, auditable service/topic links and B/C proposal. No document extraction/index/routing changes or evaluation-label edits.
