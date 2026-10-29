@@ -1,0 +1,122 @@
+"""AI 답변 채우기(answer_research): 가짜 검색·읽기·LLM으로 검증 규칙을 확인한다 (네트워크·키 불필요)."""
+from datetime import date
+from types import SimpleNamespace
+
+import pytest
+
+from src.generate import answer_override, answer_research, page_fetch
+
+URL = "https://www.kamco.or.kr/portal/contents.do?mId=1"
+BODY = "가계안정지원사업 안내. 채무자의 상환능력에 따라 원금의 20~70% 및 이자 전액 감면, 최장 10년간 분할상환. 한국자산관리공사 콜센터 1588-3570으로 신청."
+SERVICE = {"service_id": "S1", "service_name": "국민행복기금 채무조정", "agency": "한국자산관리공사", "detail_url": "",
+           "support_target": "연체채권 채무자", "support_content": "채무감면 및 분할상환", "how_to_apply": "상담 후 신청", "application_period": "상시"}
+
+
+def fetch_ok(url):
+    return page_fetch.page_from_text(url, "가계안정지원사업", BODY)
+
+
+def llm(**over):
+    base = {"relevant": [0, 1], "benefit_text": "원금과 이자를 감면하고 최장 10년까지 나눠 갚도록 도와요.", "how_to_apply": "① 콜센터 1588-3570에서 상담 후 신청해요.",
+            "needs_check": ["국민행복기금 보유 연체채권의 채무자", "소득 요건 (확인 필요)"],
+            "support_lines": [{"label": "분할상환", "text": "최장 10년간 나눠 갚아요.", "source": 1, "quote": "최장 10년간 분할상환"}],
+            "amounts": [{"label": "원금 감면", "text": "원금의 20~70%", "condition": "", "source": 1, "quote": "원금의 20~70% 및 이자 전액 감면"}],
+            "discrepancies": [], "not_found": ["이자율"], "cautions": []}
+    base.update(over)
+    return lambda system, user: base
+
+
+def run(chat, fetch=fetch_ok, search=lambda q: [URL]):
+    return answer_research.research(SERVICE, search=search, fetch=fetch, chat_json=chat, today=date(2026, 10, 29))
+
+
+def test_fills_verified_values_with_source_and_notes():
+    res = run(llm())
+    assert res["ok"], res
+    d = res["data"]
+    assert d["source"]["url"] == URL and d["source"]["level"] == "공식" and "원금의 20~70%" in d["source"]["quote"]
+    assert d["amounts"] == [{"label": "원금 감면", "text": "원금의 20~70%", "condition": ""}]
+    assert d["support_lines"] == [{"label": "분할상환", "text": "최장 10년간 나눠 갚아요."}]
+    assert any("확인하지 못함: 이자율" in n for n in d["notes"]) and "담당 기관에서 확인" in d["notes"][-1] and "2026-10-29" in d["notes"][-1]
+    assert answer_override.validate(d)[0] is not None and len(d["notes"]) <= answer_override.MAX_NOTES
+
+
+def test_drops_fabricated_quote_and_foreign_numbers():
+    res = run(llm(amounts=[{"label": "지어낸 금액", "text": "월 50만원", "condition": "", "source": 1, "quote": "월 50만원을 지급한다"}],
+                  support_lines=[{"label": "감면", "text": "원금의 90%를 감면해요.", "source": 1, "quote": "원금의 20~70% 및 이자 전액 감면"}],
+                  benefit_text="월 100만원을 드려요.", needs_check=["만 35세 이하"]))
+    d = res["data"]
+    assert d["amounts"] == [] and d["source"] == {} and d["support_lines"] == [] and d["benefit_text"] == "" and d["needs_check"] == []
+    assert len(res["issues"]) == 4
+
+
+def test_collected_text_cannot_back_an_amount():
+    res = run(llm(amounts=[{"label": "감면", "text": "채무감면", "condition": "", "source": 0, "quote": "채무감면 및 분할상환"}]))
+    assert res["data"]["amounts"] == []
+
+
+def test_blocked_pages_are_recorded_and_nothing_is_saved():
+    def blocked(url):
+        raise page_fetch.FetchError("network", "ConnectionError")
+    res = run(llm(), fetch=blocked)
+    assert not res["ok"] and res["data"] is None and res["unread"][0]["cause"] == "network" and "붙여넣기" in res["message"]
+
+
+def test_irrelevant_pages_are_not_used():
+    assert not run(llm(relevant=[0]))["ok"]
+
+
+def test_search_failure_still_tries_detail_url():
+    def broken(q):
+        raise RuntimeError("no key")
+    svc = {**SERVICE, "detail_url": URL}
+    res = answer_research.research(svc, search=broken, fetch=fetch_ok, chat_json=llm(), today=date(2026, 10, 29))
+    assert res["ok"] and "웹 검색 실패: no key" in res["data"]["ai_memo"]
+
+
+def test_second_level_source_is_marked():
+    res = run(llm(), fetch=lambda u: page_fetch.page_from_text(u, "블로그", BODY), search=lambda q: ["https://blog.example.com/a"])
+    assert res["data"]["source"]["level"] == "2차" and "2차 자료 기준" in res["data"]["notes"][-1]
+
+
+def test_official_domains_sort_first():
+    urls, _ = answer_research.candidate_urls(SERVICE, search=lambda q: ["https://blog.example.com/a", URL])
+    assert urls[0] == URL
+
+
+def test_web_search_urls_keep_only_citations_and_strip_utm(monkeypatch):
+    ann = [SimpleNamespace(type="url_citation", url="https://www.gov.kr/p?id=1&utm_source=openai"), SimpleNamespace(type="file", url="x")]
+    resp = SimpleNamespace(output=[SimpleNamespace(content=[SimpleNamespace(annotations=ann)])])
+    calls = []
+
+    class Client:
+        responses = SimpleNamespace(create=lambda **kw: calls.append(kw["tools"][0]["type"]) or (_ for _ in ()).throw(RuntimeError("x")) if len(calls) == 0 else resp)
+
+    monkeypatch.setattr(answer_research, "_client", Client())
+    assert answer_research.web_search_urls("q") == ["https://www.gov.kr/p?id=1"]
+    assert calls == ["web_search"]        # 첫 도구 이름이 실패하면 web_search_preview로 다시 시도한다
+
+
+def test_batch_saves_as_ai_and_skips_human_overrides(tmp_path):
+    answer_override.save("S2", "human", {"benefit_text": "사람이 쓴 문구"}, tmp_path)
+    s2 = {**SERVICE, "service_id": "S2"}
+    seen = []
+    results = answer_research.run_batch([SERVICE, s2], "taegyu", folder=tmp_path, progress=lambda i, n, name: seen.append((i, n)),
+                                        search=lambda q: [URL], fetch=fetch_ok, chat_json=llm(), today=date(2026, 10, 29))
+    assert [r["ok"] for r in results] == [True, False] and results[1]["skipped"] and seen == [(1, 2), (2, 2)]
+    ov = answer_override.overrides(tmp_path)
+    assert ov["S1"]["ai"] and answer_override.pending_ai(ov["S1"]) and ov["S2"]["benefit_text"] == "사람이 쓴 문구"
+
+
+def test_batch_continues_after_an_error_and_caps_size(tmp_path):
+    def chat(system, user):
+        raise ValueError("boom")
+    many = [{**SERVICE, "service_id": f"S{i}"} for i in range(answer_research.MAX_BATCH + 2)]
+    results = answer_research.run_batch(many, "taegyu", folder=tmp_path, search=lambda q: [URL], fetch=fetch_ok, chat_json=chat)
+    assert len(results) == answer_research.MAX_BATCH + 1 and "AI 호출에 실패" in results[0]["message"] and "한 번에" in results[-1]["message"]
+    assert not answer_override.overrides(tmp_path)
+
+
+def test_batch_rejects_bad_editor(tmp_path):
+    with pytest.raises(ValueError):
+        answer_research.run_batch([SERVICE], "한글", folder=tmp_path)

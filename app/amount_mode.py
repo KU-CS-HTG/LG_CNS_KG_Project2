@@ -1,7 +1,7 @@
 """예상 수령액 규칙 관리: 수집 원문에 금액이 없어 사람이 공식 자료를 보고 넣어야 하는 제도를 보고, 입력하면 답변 화면이 어떻게 바뀌는지 바로 확인한다.
 
 실행: python -m app.amount_mode   (내부에서 `streamlit run`으로 다시 띄운다)
-흐름: 표에서 제도 선택 -> ① 지금 답변에 나오는 모습 -> ② 답변 구성(카드 문구·자격 체크리스트·금액 안내와 공식 출처를 직접 씀, 선택으로 계산 규칙) ->
+흐름: 표에서 제도 선택(체크박스; 여러 개 체크하면 'AI로 답변 채우기'로 조사·구성을 AI가 채움, src/generate/answer_research.py) -> ① 지금 답변에 나오는 모습 -> ② 답변 구성(카드 문구·자격 체크리스트·금액 안내와 공식 출처를 직접 씀, 선택으로 계산 규칙) ->
 ③ 입력 후 모습(저장 전 미리보기, 입력하는 대로 바뀜) -> 저장하면 이 제도가 실제 답변에 나올 때 그 구성으로 나온다 (src/generate/answer_override.py).
 저장한 구성·규칙은 앱을 다시 띄우지 않아도 다음 질문부터 쓰인다 (파일 수정 시각을 보고 다시 읽음).
 미리보기는 실제 카드(app.main._card)를 그대로 그리되 LLM·검색은 부르지 않는다 (지원 유형 정리 단계만 원문 첫 줄로 대신하므로 실제 항목 이름은 다를 수 있다).
@@ -24,7 +24,7 @@ from app import card_benefit  # noqa: E402
 from app import main as app_main  # noqa: E402
 from app.catalog_mode import pick_selected  # noqa: E402
 from src.common import config  # noqa: E402
-from src.generate import amount_candidates, amount_from_url, amount_manual, amount_rules, answer_override, benefit_tiers, page_fetch  # noqa: E402
+from src.generate import amount_candidates, amount_from_url, amount_manual, amount_rules, answer_override, answer_research, benefit_tiers, page_fetch  # noqa: E402
 
 SHOW_ROWS = 500
 SECTIONS = (("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"), ("신청방법", "how_to_apply"))
@@ -381,6 +381,43 @@ def _detail(service: dict, editor: str, done: dict | None = None) -> None:
     _save_buttons(sid, editor, draft, rule, saved)
 
 
+def _batch_bar(picked: list[str], services: dict[str, dict], editor: str) -> None:
+    """표에서 체크한 제도들을 조사해 '답변 구성'을 AI가 채운다 (확인 완료 전에는 실제 답변에 나오지 않는다)."""
+    results = st.session_state.get("am_batch_results")
+    c1, c2 = st.columns([4, 2])
+    c1.caption(f"체크한 제도 {len(picked)}개 · 한 번에 {answer_research.MAX_BATCH}개까지, 제도마다 1~2분 걸릴 수 있어요. "
+               "웹 검색으로 공식 자료를 찾아 실제로 열어 읽고, 읽은 본문에 글자 그대로 있는 구절·숫자만 남겨요. 사람이 구성한 제도는 건너뛰어요.")
+    go = c2.button(f"🤖 AI로 답변 채우기 ({len(picked)}개)", key="am_batch_go", disabled=not picked or not answer_override.valid_editor(editor))
+    if picked and not answer_override.valid_editor(editor):
+        _editor_hint(editor)
+    if go:
+        bar = st.progress(0.0, text="시작하는 중…")
+
+        def progress(i: int, n: int, name: str) -> None:
+            bar.progress((i - 1) / n, text=f"({i}/{n}) {name} 조사 중…")
+
+        results = answer_research.run_batch([services[i] for i in picked if i in services], editor, progress=progress)
+        bar.progress(1.0, text="끝났어요")
+        st.session_state["am_batch_results"] = results
+        for r in results:       # 이미 열어 본 제도의 입력칸이 옛 값을 붙들지 않게, AI가 새로 채운 제도의 입력 상태를 비운다
+            if r["ok"]:
+                for k in [k for k in st.session_state if k.startswith(f"am_{r['service_id']}_")]:
+                    del st.session_state[k]
+    if results:
+        ok = sum(1 for r in results if r["ok"])
+        st.success(f"AI가 {ok}개를 채웠어요. 아래 표에서 제도를 눌러 '🤖 AI 조사 메모'와 값을 확인한 뒤 '확인 완료'를 누르면 실제 답변에 반영돼요.") if ok else st.warning("채워진 제도가 없어요. 아래 사유를 확인하세요.")
+        with st.expander(f"AI 채우기 결과 ({len(results)}건)", expanded=True):
+            for r in results:
+                st.markdown(f"{'✅' if r['ok'] else '⏭️' if r['skipped'] else '⚠️'} **{r['service_name']}** `{r['service_id']}` — {r['message']}")
+                for issue in r["issues"]:
+                    st.caption(f"　· {issue}")
+                for u in r["unread"]:
+                    st.caption(f"　· 읽지 못함 [{u['cause']}] {u['url']}")
+        if st.button("결과 닫기", key="am_batch_close"):
+            st.session_state.pop("am_batch_results", None)
+            st.rerun()
+
+
 def render() -> None:
     st.markdown(app_main.CSS, unsafe_allow_html=True)
     st.title("예상 수령액 규칙 관리")
@@ -402,20 +439,25 @@ def render() -> None:
                                         show_done=state_label == STATES[3], only_done=state_label == STATES[2], only_ai=state_label == STATES[1])
     st.caption(("AI가 채워 확인을 기다리는 제도 " if state_label == STATES[1] else "처리한 제도 " if state_label == STATES[2] else "사람이 공식 자료를 넣어야 하는 제도 ")
                + f"{len(rows):,}개" + (f" (앞 {SHOW_ROWS}개만 표시)" if len(rows) > SHOW_ROWS else "")
-               + " · 표에서 제도를 클릭하면 아래가 열려요")
+               + " · 표 왼쪽 체크박스로 제도를 고르세요 (하나만 체크하면 아래가 열리고, 여러 개 체크하면 'AI로 답변 채우기'를 쓸 수 있어요)")
     view = rows[:SHOW_ROWS]
     table = [{"ID": r["service_id"], "서비스명": r["service_name"], "소관기관": r["agency"], "수요": r["demand"],
               "상태": r["state"], "사유": r["reason"]} for r in view]
     current = st.session_state.get("amount_sel_id")
+    picked: list[str] = []
     try:
-        event = st.dataframe(table, hide_index=True, height=300, key="am_table", on_select="rerun", selection_mode="single-row")
-        current = pick_selected(list(event.selection.rows), view, current)
+        event = st.dataframe(table, hide_index=True, height=300, key="am_table", on_select="rerun", selection_mode="multi-row")
+        rows_sel = [i for i in event.selection.rows if 0 <= i < len(view)]
+        picked = [view[i]["service_id"] for i in rows_sel]
+        current = pick_selected(rows_sel if len(rows_sel) == 1 else [], view, current)       # 하나만 체크하면 아래에 내용이 열린다
     except TypeError:
         st.dataframe(table, hide_index=True, height=300)
         if view:
             ids = [r["service_id"] for r in view]
             current = st.selectbox("제도 선택", ids, index=ids.index(current) if current in ids else 0, key="am_pick",
                                    format_func=lambda i: f"{services[i].get('service_name', '')}  ·  {i}")
+            picked = [current]
+    _batch_bar(picked, services, editor)
     if current not in {r["service_id"] for r in view}:      # 처리해서 목록에서 빠진 제도는 선택을 푼다
         current = None
     st.session_state["amount_sel_id"] = current
