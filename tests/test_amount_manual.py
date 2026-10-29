@@ -720,3 +720,41 @@ def test_page_sets_support_line_display_condition_and_saves(tmp_path, monkeypatc
     saved = ao.find("S50")
     assert not at.exception
     assert saved["support_lines"] == [{"label": "기업 패키지", "text": "기업 상담\n맞춤 서비스", "when": [1]}, {"label": "구직자 패키지", "text": "구직 상담", "when": [2]}]
+
+
+def test_override_apply_url_is_validated_and_replaces_the_missing_site_message(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.common.schema import Recommendation
+    from src.generate import answer_override as ao
+    assert ao.validate({"apply_url": "ftp://x"})[0] is None and ao.validate({"apply_url": "https://a b"})[0] is None
+    assert ao.validate({"apply_url": "https://www.work24.go.kr/x"})[0]["apply_url"] == "https://www.work24.go.kr/x"
+    assert "apply_url" not in ao.validate({"benefit_text": "x"})[0]                     # 안 쓰면 키를 두지 않는다 (옛 형식과 같음)
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S70", "kim", {"apply_url": "https://www.work24.go.kr/x"}, tmp_path)
+    r = ao.apply(Recommendation("가상", "고용노동부", "이유", "혜택", "신청", service_id="S70"))
+    assert r.apply_url == "https://www.work24.go.kr/x"
+    from app import card_apply
+    assert "신청 사이트를 찾지 못함" not in card_apply.apply_html(r) and "work24.go.kr" in card_apply.apply_html(r)
+
+
+def test_support_lines_show_without_llm_tier_summary(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    from src.generate import answer_override as ao, benefit_tiers
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S71", "kim", {"needs_check": ["기업 조건"], "support_lines": [{"label": "기업 패키지", "text": "기업 상담", "when": [1]}]}, tmp_path)
+    monkeypatch.setattr(benefit_tiers, "compute", lambda *a, **k: None)             # LLM 정리가 실패해도 (한도 초과 등)
+
+    def script():
+        import streamlit as st
+        from app import main as app
+        from src.common.schema import Recommendation
+        st.session_state.setdefault("checks", {})
+        st.session_state.setdefault("guides", {})
+        app._card(1, Recommendation("가상", "기관", "이유", "혜택", "신청", needs_check=["a"], service_id="S71"), "t1")
+    at = AppTest.from_function(script, default_timeout=30).run()
+    at.checkbox[0].check().run()
+    next(b for b in at.button if b.label == "체크 완료").click().run()
+    next(b for b in at.button if "내 조건으로" in b.label).click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert "**기업 패키지** — 기업 상담" in text and not any("정리하지 못했어요" in w.value for w in at.warning)
