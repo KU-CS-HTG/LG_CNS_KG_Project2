@@ -58,7 +58,10 @@ def _content(service: dict) -> None:
     for label, key in SECTIONS:
         text = (service.get(key) or "").strip()
         st.markdown(f"**{label}**")
-        st.text(text) if text else st.caption("(비어 있음)")
+        if text:
+            st.text(text)
+        else:
+            st.caption("(비어 있음)")
 
 
 def _preview_card(service: dict, base_needs: list[str], tag: str, rule: dict | None = None, draft: dict | None = None) -> None:
@@ -405,7 +408,10 @@ def _batch_bar(picked: list[str], services: dict[str, dict], editor: str) -> Non
                     del st.session_state[k]
     if results:
         ok = sum(1 for r in results if r["ok"])
-        st.success(f"AI가 {ok}개를 채웠어요. 아래 표에서 제도를 눌러 '🤖 AI 조사 메모'와 값을 확인한 뒤 '확인 완료'를 누르면 실제 답변에 반영돼요.") if ok else st.warning("채워진 제도가 없어요. 아래 사유를 확인하세요.")
+        if ok:
+            st.success(f"AI가 {ok}개를 채웠어요. 아래 표에서 제도를 눌러 '🤖 AI 조사 메모'와 값을 확인한 뒤 '확인 완료'를 누르면 실제 답변에 반영돼요.")
+        else:
+            st.warning("채워진 제도가 없어요. 아래 사유를 확인하세요.")
         with st.expander(f"AI 채우기 결과 ({len(results)}건)", expanded=True):
             for r in results:
                 st.markdown(f"{'✅' if r['ok'] else '⏭️' if r['skipped'] else '⚠️'} **{r['service_name']}** `{r['service_id']}` — {r['message']}")
