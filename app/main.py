@@ -97,7 +97,7 @@ header[data-testid="stHeader"] { background: transparent; }
 @media (max-width: 640px) { .grid { grid-template-columns:1fr; } .badge { margin-left:0; } .card-head { flex-wrap:wrap; } }
 .box { border-radius:12px; padding:.65rem .8rem; border:1px solid var(--line); }
 .box .k { font-size:.78rem; font-weight:700; opacity:.6; margin-bottom:.2rem; }
-.box .v { font-size:.92rem; line-height:1.55; }
+.box .v { font-size:.92rem; line-height:1.55; white-space:pre-line; }      /* 담당자·원문의 줄바꿈(&#10;)을 그대로 보인다 */
 .src-detail { margin-top:.4rem; }
 .src-detail summary { display:inline-block; cursor:pointer; list-style:none; font-size:.74rem; font-weight:600; color:var(--accent);
   border:1px solid var(--accent); border-radius:999px; padding:.05rem .55rem; }

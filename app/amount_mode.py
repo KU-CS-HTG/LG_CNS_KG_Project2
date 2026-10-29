@@ -248,6 +248,20 @@ def _layout_controls(sid: str, saved: dict) -> dict:
     return {"mode": mode, "order": order, "left_pct": 50 if mode == "stack" else left}
 
 
+def _when_picker(sid: str, i: int, needs: list[str], saved: list[int]) -> list[int]:
+    """지원 내용 줄의 표시 조건: 고른 체크리스트 항목 중 하나라도 사용자가 체크했을 때만 이 줄이 나온다 (비워 두면 항상 나온다).
+    예: 기업 관련 항목을 체크하면 '기업' 지원만, 구직자 관련 항목을 체크하면 '구직자' 지원만 보이게."""
+    if not needs:
+        return []
+    key = f"am_{sid}_s{i}_when"
+    options = list(range(1, len(needs) + 1))
+    if key in st.session_state:                  # 체크리스트를 고쳐 번호가 줄었을 때 없어진 번호는 뺀다
+        st.session_state[key] = [w for w in st.session_state[key] if w in options]
+    default = {} if key in st.session_state else {"default": [w for w in saved if w in options]}
+    return sorted(st.multiselect(f"줄 {i} 표시 조건 (선택: 고른 체크 항목 중 하나라도 체크하면 이 줄을 보여요. 비우면 항상 보여요)", options, key=key,
+                                 format_func=lambda n: f"{n}. {needs[n - 1][:30]}", **default))
+
+
 def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tuple[dict, dict]:
     """② 답변 구성 입력 -> (override용 입력, 계산 규칙 폼). 기본값과 같은 칸은 '바꾸지 않음'(빈 값)으로 둔다."""
     base = amount_manual.preview_recommendation(service, [])
@@ -269,8 +283,12 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     for i in range(1, n_sup + 1):
         old = saved_support[i - 1] if i <= len(saved_support) else {}
         c1, c2 = st.columns([2, 6])
-        support.append({"label": c1.text_input(f"줄 {i} 이름", key=f"am_{sid}_s{i}_label", **_init(f"am_{sid}_s{i}_label", old.get("label", ""))),
-                        "text": c2.text_area(f"줄 {i} 내용", key=f"am_{sid}_s{i}_text", height=90, **_init(f"am_{sid}_s{i}_text", old.get("text", "")))})
+        item = {"label": c1.text_input(f"줄 {i} 이름", key=f"am_{sid}_s{i}_label", **_init(f"am_{sid}_s{i}_label", old.get("label", ""))),
+                "text": c2.text_area(f"줄 {i} 내용 (줄바꿈은 그대로 나와요)", key=f"am_{sid}_s{i}_text", height=90, **_init(f"am_{sid}_s{i}_text", old.get("text", "")))}
+        when = _when_picker(sid, i, _lines(needs) or base_needs, old.get("when") or [])
+        if when:
+            item["when"] = when
+        support.append(item)
 
     st.markdown("**💰 금액 안내** — 사용자에게 보여 줄 금액을 직접 써요 (공식 출처 필수).")
     _autofill(sid, service)

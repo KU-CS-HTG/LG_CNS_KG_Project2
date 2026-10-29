@@ -109,13 +109,15 @@ def _search_claude_cli(query: str) -> list[str]:
         raise RuntimeError("claude 명령을 찾지 못했어요 (Claude Code 설치·로그인 필요).")
     try:
         proc = subprocess.run([exe, "-p", SEARCH_PROMPT + query, "--allowedTools", "WebSearch", "--output-format", "json", "--max-turns", "8"],
-                              capture_output=True, text=True, timeout=CLAUDE_TIMEOUT, cwd=tempfile.gettempdir())
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=CLAUDE_TIMEOUT, cwd=tempfile.gettempdir())
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"claude 응답이 {CLAUDE_TIMEOUT}초 안에 오지 않았어요.") from exc
     try:
         data = json.loads(proc.stdout or "{}")
     except ValueError as exc:
         raise RuntimeError(f"claude 출력을 읽지 못했어요: {(proc.stderr or proc.stdout)[:200]}") from exc
+    if "not logged in" in str(data.get("result") or proc.stderr).lower() or "/login" in str(data.get("result") or ""):
+        raise RuntimeError("Claude Code에 로그인되어 있지 않아요. 터미널에서 `claude`를 실행해 `/login`으로 로그인한 뒤 다시 시도하세요.")
     if proc.returncode != 0 or data.get("is_error"):
         raise RuntimeError(f"claude 실행 실패: {str(data.get('result') or proc.stderr)[:200]}")
     return list(dict.fromkeys(_clean_url(u.rstrip(".")) for u in _URL_RE.findall(str(data.get("result") or ""))))

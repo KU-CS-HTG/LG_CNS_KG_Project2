@@ -66,13 +66,22 @@ def validate(data: dict) -> tuple[dict | None, list[str]]:
     if len(memo) > MAX_MEMO:
         problems.append(f"AI 조사 메모는 {MAX_MEMO}자 이하로 써 주세요.")
     amount_title = str(data.get("amount_title") or "").strip()
-    support = [{"label": str(a.get("label") or "").strip(), "text": str(a.get("text") or "").strip()}
-               for a in (data.get("support_lines") or []) if isinstance(a, dict) and (str(a.get("label") or "").strip() or str(a.get("text") or "").strip())]
+    support = []
+    for a in (data.get("support_lines") or []):
+        if not isinstance(a, dict) or not (str(a.get("label") or "").strip() or str(a.get("text") or "").strip()):
+            continue
+        item = {"label": str(a.get("label") or "").strip(), "text": str(a.get("text") or "").strip()}
+        when = sorted({w for w in (a.get("when") or []) if isinstance(w, int) and not isinstance(w, bool)})
+        if when:                       # 표시 조건: 체크리스트 번호(1부터) 중 하나라도 체크했을 때만 이 줄을 보인다. 없으면 항상 보인다
+            item["when"] = when
+        support.append(item)
     if len(amount_title) > MAX_TITLE:
         problems.append(f"금액 안내 제목은 {MAX_TITLE}자 이하로 써 주세요.")
     if len(support) > MAX_SUPPORT:
         problems.append(f"지원 내용 항목은 {MAX_SUPPORT}개 이하로 써 주세요.")
     for i, a in enumerate(support, 1):
+        if any(not 1 <= w <= (len(needs) or MAX_NEEDS) for w in a.get("when", [])):
+            problems.append(f"지원 내용 항목 {i}: 표시 조건 번호가 자격 체크리스트 범위를 벗어났어요.")
         if not a["label"] or not a["text"]:
             problems.append(f"지원 내용 항목 {i}: 이름과 내용을 모두 써 주세요.")
         elif len(a["label"]) > MAX_LABEL or len(a["text"]) > MAX_SUPPORT_TEXT:
