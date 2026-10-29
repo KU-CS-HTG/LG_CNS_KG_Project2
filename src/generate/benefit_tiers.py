@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
+import threading
+from contextlib import contextmanager
 
 from src.common.schema import Chunk
 from src.generate import condition_extractor
@@ -43,6 +46,18 @@ PROMPT = """너는 정부 지원제도 하나가 '어떤 조건이면 무엇을 
 - tier는 최대 8개. 한국어 존댓말로 짧게 쓴다."""
 
 _cache: dict[tuple, dict] = {}
+_preview = threading.local()
+
+
+@contextmanager
+def preview(result):
+    """Admin-only simulated preparation; never populates the public LLM cache."""
+    previous = getattr(_preview, "result", None)
+    _preview.result = result
+    try:
+        yield
+    finally:
+        _preview.result = previous
 
 
 def _squash(s: str) -> str:
@@ -77,6 +92,7 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
         if not label or not benefit:
             continue
         requires = sorted({i for i in (item.get("requires") or []) if isinstance(i, int) and not isinstance(i, bool) and 1 <= i <= n_needs})
+        unresolved = bool(item.get("requires")) and not requires
         quote = str(item.get("quote") or "").strip()
         grounded = (item.get("basis") == SOURCE and len(_squash(quote)) >= MIN_QUOTE and _squash(quote) in src_flat
                     and _numbers(f"{label} {benefit}") <= src_numbers)
@@ -84,7 +100,8 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
         amount_ok = bool(amount) and grounded and bool(_numbers(amount)) and _numbers(amount) <= src_numbers
         tiers.append({"label": label[:MAX_LABEL], "requires": requires, "benefit": benefit[:MAX_BENEFIT],
                       "quote": quote if grounded else "", "basis": SOURCE if grounded else OUTSIDE,
-                      "amount": amount if amount_ok else "", "amount_basis": SOURCE if amount_ok else "", "evidence": []})
+                      "amount": amount if amount_ok else "", "amount_basis": SOURCE if amount_ok else "", "evidence": [],
+                      **({"unresolved_requirements": True} if unresolved else {})})
     notes = [{"text": str(n.get("text") or "").strip()[:MAX_NOTE], "basis": OUTSIDE} for n in (raw.get("notes") or [])[:MAX_NOTES]
              if isinstance(n, dict) and str(n.get("text") or "").strip()]
     return {"tiers": tiers, "notes": notes}
@@ -92,9 +109,9 @@ def clean(raw: dict, source: str, n_needs: int) -> dict:
 
 def compute(service_id: str, service_name: str, needs: list[str], chunks: list[Chunk] | None = None) -> dict | None:
     """{'tiers': [...], 'notes': [...]} 또는 실패하면 None. needs는 카드의 자격 체크리스트(번호는 1부터)."""
-    key = (service_id, tuple(needs))
-    if key in _cache:
-        return _cache[key]
+    simulated = getattr(_preview, "result", None)
+    if simulated is not None:
+        return simulated
     try:
         if chunks is None:
             from src.index import vector_store
@@ -102,6 +119,9 @@ def compute(service_id: str, service_name: str, needs: list[str], chunks: list[C
         source = source_text(chunks)
         if not source.strip():
             return None
+        key = ("tiers-v2", service_id, tuple(needs), hashlib.sha256(source.encode()).hexdigest())
+        if key in _cache:
+            return _cache[key]
         user = json.dumps({"제도 이름": service_name, "원문": source,
                            "체크리스트": [f"{i}. {n}" for i, n in enumerate(needs, start=1)]}, ensure_ascii=False)
         result = clean(condition_extractor._chat_json(PROMPT, user), source, len(needs))
@@ -121,6 +141,9 @@ def evaluate(tiers: list[dict], checked: set[int]) -> dict:
     base: 따로 충족할 조건이 없는 지원 / met: 필요한 조건을 모두 체크함 / pending: 아직 체크 안 한 조건이 남음 (missing에 번호)."""
     out: dict[str, list[dict]] = {"base": [], "met": [], "pending": []}
     for t in tiers:
+        if t.get("unresolved_requirements"):
+            out.setdefault("unresolved", []).append(t)
+            continue
         need = set(t["requires"])
         if not need:
             out["base"].append(t)

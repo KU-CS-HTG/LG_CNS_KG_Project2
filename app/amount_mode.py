@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 import streamlit as st  # noqa: E402
 from streamlit import runtime  # noqa: E402
 
-from app import card_benefit  # noqa: E402
+from app import card_benefit, category_editor  # noqa: E402
 from app import main as app_main  # noqa: E402
 from app.catalog_mode import pick_selected  # noqa: E402
 from src.common import config  # noqa: E402
@@ -73,7 +73,7 @@ def _preview_card(service: dict, base_needs: list[str], tag: str, rule: dict | N
         ov = answer_override.find(sid)
         needs = list(ov["needs_check"]) if ov and ov.get("needs_check") else base_needs      # 카드가 실제로 그릴 체크리스트
         r = amount_manual.preview_recommendation(service, needs)
-        benefit_tiers._cache[(sid, tuple(needs))] = amount_manual.preview_tiers(service)       # LLM을 부르지 않는다
+        stack.enter_context(benefit_tiers.preview(amount_manual.preview_tiers(service)))
         st.session_state[f"tiers_open_{key}"] = True
         if needs:
             st.session_state[f"checks_done_{key}"] = card_benefit._checked(key, len(needs))      # '체크 완료'를 누른 것으로 본다
@@ -291,6 +291,9 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
            "amounts": amounts, "notes": _lines(notes), "source": source, "layout": layout,
            "support_lines": support if support != default_support else [],
            "amount_title": amount_title.strip() if amount_title.strip() != answer_override.DEFAULT_AMOUNT_TITLE else ""}
+    category = category_editor.render(sid, service, saved, raw, amount_rules.find(sid))
+    if category is not None:
+        raw["applicability"] = category
     return raw, source
 
 

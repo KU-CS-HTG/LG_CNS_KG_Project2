@@ -35,13 +35,17 @@ INPUTS = {
 
 
 @lru_cache(maxsize=4)
-def _read(mtime_ns: int) -> list[dict]:
-    return json.loads(RULES_PATH.read_text(encoding="utf-8"))["rules"]
+def _read(path: str, content: bytes) -> list[dict]:
+    return json.loads(content.decode("utf-8"))["rules"]
 
 
 def _load() -> list[dict]:
-    """규칙 파일 내용. 파일이 바뀌면(수정 시각이 달라지면) 앱을 다시 띄우지 않아도 새 규칙을 읽는다."""
-    return _read(RULES_PATH.stat().st_mtime_ns)
+    """Cache by resolved path and exact content, never a timestamp alone.
+
+    Equal timestamps across files or preserved mtimes must not leak a different
+    program's rule or retain an obsolete confirmation/calculation revision.
+    """
+    return _read(str(RULES_PATH.resolve()), RULES_PATH.read_bytes())
 
 
 _load.cache_clear = _read.cache_clear

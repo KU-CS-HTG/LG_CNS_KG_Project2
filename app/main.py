@@ -11,6 +11,7 @@ import html
 import re
 import sys
 import threading
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from streamlit import runtime  # noqa: E402
 
 from app import card_apply, card_benefit, card_period  # noqa: E402
 from src.common.schema import Answer, Chunk, Filters, Recommendation  # noqa: E402
-from src.generate import answer_override, generator, guide_evidence, guide_router, income_calc  # noqa: E402
+from src.generate import answer_override, benefit_applicability, generator, guide_evidence, guide_router, income_calc  # noqa: E402
 from src.retrieve import hybrid  # noqa: E402
 
 # 예시 질문: 서비스가 하는 일을 하나씩 보여 주도록 고른다
@@ -338,14 +339,14 @@ def _card_boxes(r: Recommendation, how: str, deadline: str) -> tuple[str, str, s
     return first, second, style
 
 
-def _card_head(i: int, r: Recommendation, checked: int) -> str:
+def _card_head(i: int, r: Recommendation, checked: int, badge: str | None = None) -> str:
     how, _, deadline = r.how_to_apply.partition(" / 신청기한: ")
     first, second, style = _card_boxes(r, how, deadline)
     return f"""
 <div class="card-head">
   <div class="num">{i}</div>
   <div><div class="title">{_e(r.service_name)}</div><div class="agency">🏛 {_e(r.agency)}{_scope_html(r.agency)}</div></div>
-  {_badge(len(r.needs_check), checked)}
+  {badge if badge is not None else _badge(len(r.needs_check), checked)}
 </div>
 <div class="reason">{_e_inline(r.reason)}</div>
 <div class="grid" style="{style}">
@@ -507,14 +508,19 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
 
     담당자가 직접 구성한 카드 문구(src/generate/answer_override.py, 화면: app/amount_mode.py)가 있으면 그 내용으로 바꿔 그린다."""
     r = answer_override.apply(r)
+    category = benefit_applicability.config_for(r.service_id, answer_override.find(r.service_id))
     saved = st.session_state.checks
     keys = [f"chk_{key}_{j}" for j in range(len(r.needs_check))]
     checked = sum(1 for k in keys if saved.get(k))
     with st.container(key=f"card_{key}"):
-        st.markdown(_card_head(i, r, checked), unsafe_allow_html=True)
+        head_r = replace(r, benefit="가구 유형과 조건을 선택하면 해당 지원을 안내해요.") if category is not None else r
+        badge = '<span class="badge check">유형·조건 확인</span>' if category is not None else None
+        st.markdown(_card_head(i, head_r, checked, badge), unsafe_allow_html=True)
         card_apply.render(r, key)       # W3 자리 (app/card_apply.py)
         card_period.render(r, key)      # W4 자리 (app/card_period.py)
-        if r.needs_check:
+        if category is not None:
+            card_benefit.render_checklist(r, key, category)
+        elif r.needs_check:
             _draw_checklist(r, key)
         card_benefit.render(r, key)     # W2 자리 (app/card_benefit.py). 체크 완료 후 '내 조건으로 받을 수 있는 지원 보기'
         _card_guides(r, key, region)
