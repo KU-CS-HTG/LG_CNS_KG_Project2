@@ -93,7 +93,7 @@ def test_web_search_urls_keep_only_citations_and_strip_utm(monkeypatch):
         responses = SimpleNamespace(create=lambda **kw: calls.append(kw["tools"][0]["type"]) or (_ for _ in ()).throw(RuntimeError("x")) if len(calls) == 0 else resp)
 
     monkeypatch.setattr(answer_research, "_client", Client())
-    assert answer_research.web_search_urls("q") == ["https://www.gov.kr/p?id=1"]
+    assert answer_research._search_openai("q") == ["https://www.gov.kr/p?id=1"]
     assert calls == ["web_search"]        # 첫 도구 이름이 실패하면 web_search_preview로 다시 시도한다
 
 
@@ -144,3 +144,60 @@ def test_failure_message_shows_search_outcome():
     assert not res["ok"] and "웹 검색 오류: tool not enabled" in res["message"]
     res = run(llm(), search=lambda q: [])
     assert "찾은 주소 0개" in res["message"]
+
+
+def _cli_proc(result, code=0, is_error=False):
+    import json
+    from types import SimpleNamespace as NS
+    return NS(returncode=code, stdout=json.dumps({"result": result, "is_error": is_error}), stderr="")
+
+
+def test_claude_cli_search_extracts_urls_and_passes_query_as_one_argument(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return _cli_proc('찾았어요 ["https://www.gov.kr/p?id=1&utm_source=x", "https://www.kamco.or.kr/a.do."] 끝')
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
+    monkeypatch.setattr(answer_research.subprocess, "run", fake_run)
+    urls = answer_research._search_claude_cli("국민행복기금; rm -rf /")
+    assert urls == ["https://www.gov.kr/p?id=1", "https://www.kamco.or.kr/a.do"]
+    assert seen["cmd"][:2] == ["/bin/claude", "-p"] and seen["cmd"][2].endswith("국민행복기금; rm -rf /") and "WebSearch" in seen["cmd"] and "shell" not in seen["kw"]
+
+
+def test_claude_cli_errors_become_runtime_errors(monkeypatch):
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
+    monkeypatch.setattr(answer_research.subprocess, "run", lambda *a, **k: _cli_proc("Not logged in", 1, True))
+    with pytest.raises(RuntimeError, match="claude 실행 실패"):
+        answer_research._search_claude_cli("q")
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: None)
+    with pytest.raises(RuntimeError, match="찾지 못"):
+        answer_research._search_claude_cli("q")
+
+
+def test_anthropic_search_reads_tool_result_urls(monkeypatch):
+    from types import SimpleNamespace as NS
+    resp = NS(content=[NS(type="text", text="..."), NS(type="web_search_tool_result", content=[NS(url="https://www.gov.kr/x?utm_source=a"), NS(url="https://www.moel.go.kr/y")])])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", NS(Anthropic=lambda **kw: NS(messages=NS(create=lambda **k: resp))))
+    assert answer_research._search_anthropic("q") == ["https://www.gov.kr/x", "https://www.moel.go.kr/y"]
+
+
+def test_auto_search_falls_back_and_reports_every_failure(monkeypatch):
+    monkeypatch.delenv("RESEARCH_SEARCH", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
+    monkeypatch.setattr(answer_research.config, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(answer_research, "_search_claude_cli", lambda q: (_ for _ in ()).throw(RuntimeError("no login")))
+    monkeypatch.setattr(answer_research, "_search_anthropic", lambda q: ["https://www.gov.kr/ok"])
+    assert answer_research.web_search_urls("q") == ["https://www.gov.kr/ok"]
+    monkeypatch.setattr(answer_research, "_search_anthropic", lambda q: (_ for _ in ()).throw(RuntimeError("limit")))
+    with pytest.raises(RuntimeError) as e:
+        answer_research.web_search_urls("q")
+    assert "claude: no login" in str(e.value) and "anthropic: limit" in str(e.value) and "openai" not in str(e.value)
+
+
+def test_search_choice_is_validated(monkeypatch):
+    monkeypatch.setenv("RESEARCH_SEARCH", "bing")
+    with pytest.raises(RuntimeError, match="알 수 없는 값"):
+        answer_research.web_search_urls("q")

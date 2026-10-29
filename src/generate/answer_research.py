@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -47,6 +50,7 @@ PROMPT = """너는 정부 지원제도 하나의 '답변 카드' 문구를 쓴�
 - support_lines는 혜택마다 한 줄이다. amounts는 자료에 금액·비율·기간이 명시된 것만 넣고, 없으면 빈 배열."""
 
 _client = None
+CLAUDE_TIMEOUT, ANTHROPIC_MODEL = 240, "claude-sonnet-5-5"
 
 
 def _nums(text: str) -> set[str]:
@@ -66,8 +70,8 @@ def _clean_url(url: str) -> str:
     return urlunparse(p._replace(query=query, fragment=""))
 
 
-def web_search_urls(query: str) -> list[str]:
-    """웹 검색(OpenAI Responses의 web_search 도구)으로 자료 후보 주소만 얻는다. 요약·발췌는 쓰지 않는다. 실패하면 RuntimeError."""
+def _search_openai(query: str) -> list[str]:
+    """OpenAI Responses의 web_search 도구로 주소를 찾는다. 실패하면 RuntimeError."""
     global _client
     if _client is None:
         if not config.OPENAI_API_KEY:
@@ -90,6 +94,73 @@ def web_search_urls(query: str) -> list[str]:
                         urls.append(_clean_url(u))
         return list(dict.fromkeys(urls))
     raise RuntimeError(f"웹 검색에 실패했어요: {last!r}")
+
+
+SEARCH_PROMPT = ("웹 검색으로 아래 정부 지원제도를 설명하는 공식 안내 페이지(정부·공공기관·소관 기관 사이트 우선, 블로그·뉴스는 뒤)를 찾아 "
+                 "그 주소만 JSON 배열로 출력해. 설명·요약은 쓰지 마. 예: [\"https://…\", \"https://…\"]\n제도: ")
+_URL_RE = re.compile(r"https?://[^\s\"'<>\])},，]+")
+
+
+def _search_claude_cli(query: str) -> list[str]:
+    """이 PC의 Claude Code(`claude -p`)로 웹 검색해 주소만 얻는다 (API 키 없이 로그인된 Claude를 쓴다). 실패하면 RuntimeError."""
+    exe = shutil.which("claude")
+    if not exe:
+        raise RuntimeError("claude 명령을 찾지 못했어요 (Claude Code 설치·로그인 필요).")
+    try:
+        proc = subprocess.run([exe, "-p", SEARCH_PROMPT + query, "--allowedTools", "WebSearch", "--output-format", "json", "--max-turns", "8"],
+                              capture_output=True, text=True, timeout=CLAUDE_TIMEOUT, cwd=tempfile.gettempdir())
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"claude 응답이 {CLAUDE_TIMEOUT}초 안에 오지 않았어요.") from exc
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except ValueError as exc:
+        raise RuntimeError(f"claude 출력을 읽지 못했어요: {(proc.stderr or proc.stdout)[:200]}") from exc
+    if proc.returncode != 0 or data.get("is_error"):
+        raise RuntimeError(f"claude 실행 실패: {str(data.get('result') or proc.stderr)[:200]}")
+    return list(dict.fromkeys(_clean_url(u.rstrip(".")) for u in _URL_RE.findall(str(data.get("result") or ""))))
+
+
+def _search_anthropic(query: str) -> list[str]:
+    """Anthropic API의 웹 검색 도구로 주소를 찾는다 (ANTHROPIC_API_KEY와 `pip install anthropic` 필요). 실패하면 RuntimeError."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다 (.env 확인).")
+    try:
+        import anthropic
+    except ImportError as exc:
+        raise RuntimeError("anthropic 패키지가 없어요 (pip install anthropic).") from exc
+    try:
+        resp = anthropic.Anthropic(api_key=key, timeout=90).messages.create(
+            model=os.environ.get("RESEARCH_MODEL") or ANTHROPIC_MODEL, max_tokens=1024,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+            messages=[{"role": "user", "content": SEARCH_PROMPT + query}])
+    except Exception as exc:     # noqa: BLE001 — 한도·네트워크·모델 오류
+        raise RuntimeError(f"anthropic 검색 실패: {exc!r}") from exc
+    urls = []
+    for block in resp.content:
+        if getattr(block, "type", "") == "web_search_tool_result" and isinstance(getattr(block, "content", None), list):
+            urls += [_clean_url(r.url) for r in block.content if getattr(r, "url", None)]
+    return list(dict.fromkeys(urls))
+
+
+def web_search_urls(query: str) -> list[str]:
+    """웹 검색으로 자료 후보 주소만 얻는다 (요약·발췌는 쓰지 않는다). 쓸 수 있는 방법을 차례로 시도하고 모두 실패하면 RuntimeError.
+    기본(RESEARCH_SEARCH=auto)은 Claude Code(claude 명령) -> Anthropic API(키가 있을 때) -> OpenAI(키가 있을 때). 하나만 쓰려면 claude|anthropic|openai."""
+    choice = (os.environ.get("RESEARCH_SEARCH") or "auto").lower()
+    backends = {"claude": _search_claude_cli, "anthropic": _search_anthropic, "openai": _search_openai}
+    order = ["claude", "anthropic", "openai"] if choice == "auto" else [choice]
+    errors = []
+    for name in order:
+        if name not in backends:
+            raise RuntimeError(f"RESEARCH_SEARCH={choice}는 알 수 없는 값이에요 (auto|claude|anthropic|openai).")
+        if choice == "auto" and ((name == "claude" and not shutil.which("claude")) or (name == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"))
+                                 or (name == "openai" and not config.OPENAI_API_KEY)):
+            continue
+        try:
+            return backends[name](query)
+        except RuntimeError as exc:
+            errors.append(f"{name}: {exc}")
+    raise RuntimeError("웹 검색에 실패했어요 — " + (" / ".join(errors) or "쓸 수 있는 검색 방법이 없어요 (claude 명령 설치, ANTHROPIC_API_KEY 또는 OPENAI_API_KEY 필요)."))
 
 
 def queries(service: dict) -> list[str]:
