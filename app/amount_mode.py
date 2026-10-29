@@ -58,7 +58,10 @@ def _content(service: dict) -> None:
     for label, key in SECTIONS:
         text = (service.get(key) or "").strip()
         st.markdown(f"**{label}**")
-        st.text(text) if text else st.caption("(비어 있음)")
+        if text:
+            st.text(text)
+        else:
+            st.caption("(비어 있음)")
 
 
 def _preview_card(service: dict, base_needs: list[str], tag: str, rule: dict | None = None, draft: dict | None = None) -> None:
@@ -245,6 +248,20 @@ def _layout_controls(sid: str, saved: dict) -> dict:
     return {"mode": mode, "order": order, "left_pct": 50 if mode == "stack" else left}
 
 
+def _when_picker(sid: str, i: int, needs: list[str], saved: list[int]) -> list[int]:
+    """지원 내용 줄의 표시 조건: 고른 체크리스트 항목 중 하나라도 사용자가 체크했을 때만 이 줄이 나온다 (비워 두면 항상 나온다).
+    예: 기업 관련 항목을 체크하면 '기업' 지원만, 구직자 관련 항목을 체크하면 '구직자' 지원만 보이게."""
+    if not needs:
+        return []
+    key = f"am_{sid}_s{i}_when"
+    options = list(range(1, len(needs) + 1))
+    if key in st.session_state:                  # 체크리스트를 고쳐 번호가 줄었을 때 없어진 번호는 뺀다
+        st.session_state[key] = [w for w in st.session_state[key] if w in options]
+    default = {} if key in st.session_state else {"default": [w for w in saved if w in options]}
+    return sorted(st.multiselect(f"줄 {i} 표시 조건 (선택: 고른 체크 항목 중 하나라도 체크하면 이 줄을 보여요. 비우면 항상 보여요)", options, key=key,
+                                 format_func=lambda n: f"{n}. {needs[n - 1][:30]}", **default))
+
+
 def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tuple[dict, dict]:
     """② 답변 구성 입력 -> (override용 입력, 계산 규칙 폼). 기본값과 같은 칸은 '바꾸지 않음'(빈 값)으로 둔다."""
     base = amount_manual.preview_recommendation(service, [])
@@ -253,6 +270,9 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     benefit = st.text_area("🎁 무엇을 받나요", key=f"am_{sid}_benefit", height=100, **_init(f"am_{sid}_benefit", benefit_default))
     how_default = saved.get("how_to_apply") or base.how_to_apply
     how = st.text_area("📝 어떻게 신청하나요", key=f"am_{sid}_how", height=80, **_init(f"am_{sid}_how", how_default))
+    apply_default = saved.get("apply_url") or getattr(base, "apply_url", "")
+    apply_url = st.text_input("🔗 신청 사이트 주소 (선택: 있으면 카드에 '신청하기' 버튼이 나와요. 없으면 '신청 사이트를 찾지 못함'이 나와요)",
+                              key=f"am_{sid}_applyurl", placeholder="https://… (공식 신청 페이지)", **_init(f"am_{sid}_applyurl", apply_default))
     layout = _layout_controls(sid, saved.get("layout") or {})
     needs_default = "\n".join(saved.get("needs_check") or base_needs)
     needs = st.text_area("✅ 자격 체크리스트 (한 줄에 하나. 예: 주택 — 무주택 청년)", key=f"am_{sid}_cneeds", height=100, **_init(f"am_{sid}_cneeds", needs_default))
@@ -266,8 +286,12 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     for i in range(1, n_sup + 1):
         old = saved_support[i - 1] if i <= len(saved_support) else {}
         c1, c2 = st.columns([2, 6])
-        support.append({"label": c1.text_input(f"줄 {i} 이름", key=f"am_{sid}_s{i}_label", **_init(f"am_{sid}_s{i}_label", old.get("label", ""))),
-                        "text": c2.text_area(f"줄 {i} 내용", key=f"am_{sid}_s{i}_text", height=90, **_init(f"am_{sid}_s{i}_text", old.get("text", "")))})
+        item = {"label": c1.text_input(f"줄 {i} 이름", key=f"am_{sid}_s{i}_label", **_init(f"am_{sid}_s{i}_label", old.get("label", ""))),
+                "text": c2.text_area(f"줄 {i} 내용 (줄바꿈은 그대로 나와요)", key=f"am_{sid}_s{i}_text", height=90, **_init(f"am_{sid}_s{i}_text", old.get("text", "")))}
+        when = _when_picker(sid, i, _lines(needs) or base_needs, old.get("when") or [])
+        if when:
+            item["when"] = when
+        support.append(item)
 
     st.markdown("**💰 금액 안내** — 사용자에게 보여 줄 금액을 직접 써요 (공식 출처 필수).")
     _autofill(sid, service)
@@ -287,6 +311,7 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
                          **_init(f"am_{sid}_notes", "\n".join(saved.get("notes") or [])))
     raw = {"benefit_text": benefit.strip() if benefit.strip() != base.benefit.strip() else "",
            "how_to_apply": how.strip() if how.strip() != base.how_to_apply.strip() else "",
+           "apply_url": apply_url.strip() if apply_url.strip() != getattr(base, "apply_url", "").strip() else "",
            "needs_check": _lines(needs) if _lines(needs) != base_needs else [],
            "amounts": amounts, "notes": _lines(notes), "source": source, "layout": layout,
            "support_lines": support if support != default_support else [],
@@ -390,14 +415,21 @@ def _batch_bar(picked: list[str], services: dict[str, dict], editor: str) -> Non
     go = c2.button(f"🤖 AI로 답변 채우기 ({len(picked)}개)", key="am_batch_go", disabled=not picked or not answer_override.valid_editor(editor))
     if picked and not answer_override.valid_editor(editor):
         _editor_hint(editor)
+    c1.caption(answer_research.search_setup())
     if go:
         bar = st.progress(0.0, text="시작하는 중…")
+        box = st.status("조사 진행 기록 (어떤 검색 방법을 쓰고 어떤 페이지를 읽는지 실시간으로 보여요)", expanded=True)
 
         def progress(i: int, n: int, name: str) -> None:
             bar.progress((i - 1) / n, text=f"({i}/{n}) {name} 조사 중…")
+            box.write(f"**▶ ({i}/{n}) {name}**")
 
-        results = answer_research.run_batch([services[i] for i in picked if i in services], editor, progress=progress)
+        def on_log(i: int, n: int, name: str, line: str) -> None:
+            box.write(f"`{line}`")
+
+        results = answer_research.run_batch([services[i] for i in picked if i in services], editor, progress=progress, on_log=on_log)
         bar.progress(1.0, text="끝났어요")
+        box.update(label="조사 진행 기록 (끝났어요)", state="complete", expanded=False)
         st.session_state["am_batch_results"] = results
         for r in results:       # 이미 열어 본 제도의 입력칸이 옛 값을 붙들지 않게, AI가 새로 채운 제도의 입력 상태를 비운다
             if r["ok"]:
@@ -405,14 +437,21 @@ def _batch_bar(picked: list[str], services: dict[str, dict], editor: str) -> Non
                     del st.session_state[k]
     if results:
         ok = sum(1 for r in results if r["ok"])
-        st.success(f"AI가 {ok}개를 채웠어요. 아래 표에서 제도를 눌러 '🤖 AI 조사 메모'와 값을 확인한 뒤 '확인 완료'를 누르면 실제 답변에 반영돼요.") if ok else st.warning("채워진 제도가 없어요. 아래 사유를 확인하세요.")
-        with st.expander(f"AI 채우기 결과 ({len(results)}건)", expanded=True):
+        if ok:
+            st.success(f"AI가 {ok}개를 채웠어요. 아래 표에서 제도를 눌러 '🤖 AI 조사 메모'와 값을 확인한 뒤 '확인 완료'를 누르면 실제 답변에 반영돼요.")
+        else:
+            st.warning("채워진 제도가 없어요. 아래 사유를 확인하세요.")
+        with st.container(border=True):       # 안에 '진행 기록' expander를 넣어야 해서 바깥은 expander가 아닌 상자 (expander 안에 expander는 못 쓴다)
+            st.markdown(f"**AI 채우기 결과 ({len(results)}건)**")
             for r in results:
                 st.markdown(f"{'✅' if r['ok'] else '⏭️' if r['skipped'] else '⚠️'} **{r['service_name']}** `{r['service_id']}` — {r['message']}")
                 for issue in r["issues"]:
                     st.caption(f"　· {issue}")
                 for u in r["unread"]:
                     st.caption(f"　· 읽지 못함 [{u['cause']}] {u['url']}")
+                if r.get("log"):
+                    with st.expander("진행 기록 보기"):
+                        st.text("\n".join(r["log"]))
         if st.button("결과 닫기", key="am_batch_close"):
             st.session_state.pop("am_batch_results", None)
             st.rerun()
