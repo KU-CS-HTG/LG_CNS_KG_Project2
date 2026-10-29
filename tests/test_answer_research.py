@@ -120,3 +120,27 @@ def test_batch_continues_after_an_error_and_caps_size(tmp_path):
 def test_batch_rejects_bad_editor(tmp_path):
     with pytest.raises(ValueError):
         answer_research.run_batch([SERVICE], "한글", folder=tmp_path)
+
+
+def test_later_search_rounds_find_other_pages_when_the_first_is_blocked():
+    asked = []
+
+    def search(q):
+        asked.append(q)
+        return ["https://www.gov.kr/blocked"] if len(asked) == 1 else [URL]
+
+    def fetch(url):
+        if "blocked" in url:
+            raise page_fetch.FetchError("robots")
+        return fetch_ok(url)
+    res = run(llm(), fetch=fetch, search=search)
+    assert res["ok"] and len(asked) == 3 and res["read"] == [URL] and res["unread"][0]["cause"] == "robots"
+
+
+def test_failure_message_shows_search_outcome():
+    def broken(q):
+        raise RuntimeError("tool not enabled")
+    res = run(llm(), search=broken)
+    assert not res["ok"] and "웹 검색 오류: tool not enabled" in res["message"]
+    res = run(llm(), search=lambda q: [])
+    assert "찾은 주소 0개" in res["message"]

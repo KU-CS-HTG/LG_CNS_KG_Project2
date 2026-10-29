@@ -19,7 +19,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from src.common import config
 from src.generate import amount_from_url, answer_override, page_fetch
 
-MAX_URLS, MAX_PAGES, MAX_PAGE_CHARS, MAX_BATCH = 6, 4, 9000, 10
+MAX_URLS, MAX_PAGES, MIN_PAGES, MAX_PAGE_CHARS, MAX_BATCH = 6, 4, 2, 9000, 10
 SOURCE_TEXT_KEYS = (("지원대상", "support_target"), ("선정기준", "selection_criteria"), ("지원내용", "support_content"),
                     ("신청방법", "how_to_apply"), ("신청기한", "application_period"))
 FINAL_NOTE = "최종 신청 자격과 조건은 담당 기관에서 확인해 주세요."
@@ -92,17 +92,23 @@ def web_search_urls(query: str) -> list[str]:
     raise RuntimeError(f"웹 검색에 실패했어요: {last!r}")
 
 
-def candidate_urls(service: dict, search=None) -> tuple[list[str], str]:
-    """읽어 볼 주소 목록(공식 도메인 먼저, 최대 MAX_URLS개)과 검색 실패 메시지(성공이면 '')."""
+def queries(service: dict) -> list[str]:
+    """검색 질문들. 앞 질문으로 읽은 자료가 모자라면 다음 질문으로 다른 자료를 찾는다."""
     name, agency = service.get("service_name", ""), service.get("agency", "")
+    return [f"{name} {agency} 지원대상 지원내용 신청방법".strip(), f"{name} 신청 자격 지원 금액 기간 정부24 복지로 고용24",
+            f"{name} {agency} 공고 사업 안내 시행계획".strip()]
+
+
+def candidate_urls(service: dict, search=None, round_: int = 0) -> tuple[list[str], str]:
+    """round_번째 질문으로 읽어 볼 주소 목록(공식 도메인 먼저, 최대 MAX_URLS개)과 검색 실패 메시지(성공이면 ''). 첫 라운드에는 제도 상세 링크도 넣는다."""
     found: list[str] = []
     error = ""
     try:
-        found = (search or web_search_urls)(f"{name} {agency} 지원대상 지원내용 신청방법 공식 안내".strip())
+        found = (search or web_search_urls)(queries(service)[round_])
     except Exception as exc:     # noqa: BLE001 — 검색이 안 돼도 상세 링크는 시도한다
         error = str(exc)
     detail = service.get("detail_url") or ""
-    urls = [u for u in dict.fromkeys(([detail] if detail.startswith(("http://", "https://")) else []) + found) if u]
+    urls = [u for u in dict.fromkeys(([detail] if round_ == 0 and detail.startswith(("http://", "https://")) else []) + found) if u]
     urls.sort(key=lambda u: _level(u) != "공식")      # 안정 정렬: 공식 도메인이 앞, 같은 등급은 검색 순서 유지
     return urls[:MAX_URLS], error
 
@@ -268,15 +274,32 @@ def _memo(service, pages, unread, search_error, v, issues, spare, source, today)
 
 
 def research(service: dict, *, search=None, fetch=None, chat_json=None, today: date | None = None) -> dict:
-    """제도 하나를 조사해 구성을 만든다 (저장하지 않음) -> {ok, message, data, issues, read, unread}."""
-    urls, search_error = candidate_urls(service, search)
-    pages, unread = read_pages(urls, fetch)
+    """제도 하나를 조사해 구성을 만든다 (저장하지 않음) -> {ok, message, data, issues, read, unread}.
+    읽은 자료가 MIN_PAGES개 모자라면(막힌 사이트가 많으면) 다른 검색 질문으로 다른 자료를 찾아 더 읽는다 (이미 시도한 주소는 다시 읽지 않는다)."""
+    pages: list[page_fetch.Page] = []
+    unread: list[dict] = []
+    tried: set[str] = set()
+    errors: list[str] = []
+    found = 0
+    for round_ in range(len(queries(service))):
+        urls, error = candidate_urls(service, search, round_)
+        found += len([u for u in urls if u != service.get("detail_url")])
+        if error:
+            errors.append(error)
+        more, bad = read_pages([u for u in urls if u not in tried], fetch)
+        tried.update(urls)
+        pages += more
+        unread += bad
+        if len(pages) >= MIN_PAGES:
+            break
+    search_error = "; ".join(dict.fromkeys(errors))
     if not pages:
-        why = "; ".join(f"{u['url']} [{u['cause']}]" for u in unread[:3]) or search_error or "후보 주소가 없어요"
-        return {"ok": False, "message": f"읽을 수 있는 자료가 없어 채우지 않았어요 ({why}). 접속이 막힌 사이트는 '자료 주소로 채우기'의 본문 붙여넣기를 쓰세요.",
+        why = "; ".join(f"{u['url']} [{u['cause']}]" for u in unread[:3]) or "후보 주소가 없어요"
+        search_note = f"웹 검색 오류: {search_error[:200]}" if search_error else f"웹 검색으로 찾은 주소 {found}개"
+        return {"ok": False, "message": f"읽을 수 있는 자료가 없어 채우지 않았어요 — {search_note} / 읽지 못함: {why}. 접속이 막힌 사이트는 '자료 주소로 채우기'의 본문 붙여넣기를 쓰세요.",
                 "data": None, "issues": [], "read": [], "unread": unread}
-    res = build(service, pages, unread, search_error, chat_json, today)
-    return {**res, "read": [p.url for p in pages], "unread": unread}
+    res = build(service, pages[:MAX_PAGES], unread, search_error, chat_json, today)
+    return {**res, "read": [p.url for p in pages[:MAX_PAGES]], "unread": unread}
 
 
 def run_batch(services: list[dict], editor: str, *, folder: Path | None = None, progress=None, **deps) -> list[dict]:
