@@ -212,17 +212,21 @@ def render(r: Recommendation, key: str) -> None:
                 return
             st.session_state[open_key] = True
         ckey = (r.service_id, tuple(r.needs_check))
-        if ckey not in cache:
-            with st.spinner("조건별 지원과 금액을 정리하는 중…"):
-                result = benefit_tiers.compute(r.service_id, r.service_name, list(r.needs_check))
-            if result is None:
-                if _override_amounts(answer_override.find(r.service_id)):       # 담당자가 쓴 금액 안내는 정리가 실패해도 보여 준다
+        if (answer_override.find(r.service_id) or {}).get("support_lines"):
+            result = {"tiers": [], "notes": []}      # 담당자가 지원 내용 줄을 직접 썼으면 LLM 정리가 필요 없다 (LLM 실패·한도 초과와 무관하게 나온다)
+        else:
+            if ckey not in cache:
+                with st.spinner("조건별 지원과 금액을 정리하는 중…"):
+                    computed = benefit_tiers.compute(r.service_id, r.service_name, list(r.needs_check))
+                if computed is None:
+                    if _override_amounts(answer_override.find(r.service_id)):       # 담당자가 쓴 금액 안내는 정리가 실패해도 보여 준다
+                        return
+                    st.session_state[open_key] = False
+                    st.warning("조건별 지원을 정리하지 못했어요. 카드의 원문 확인하기 링크로 확인해 주세요.")
                     return
-                st.session_state[open_key] = False
-                st.warning("조건별 지원을 정리하지 못했어요. 카드의 원문 확인하기 링크로 확인해 주세요.")
-                return
-            cache[ckey] = result
-        _result(r, key, cache[ckey], checked)
+                cache[ckey] = computed
+            result = cache[ckey]
+        _result(r, key, result, checked)
         if st.button("닫기", key=f"tiers_close_{key}"):
             st.session_state[open_key] = False
             st.rerun()

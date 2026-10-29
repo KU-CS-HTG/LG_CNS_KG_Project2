@@ -270,6 +270,9 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
     benefit = st.text_area("🎁 무엇을 받나요", key=f"am_{sid}_benefit", height=100, **_init(f"am_{sid}_benefit", benefit_default))
     how_default = saved.get("how_to_apply") or base.how_to_apply
     how = st.text_area("📝 어떻게 신청하나요", key=f"am_{sid}_how", height=80, **_init(f"am_{sid}_how", how_default))
+    apply_default = saved.get("apply_url") or getattr(base, "apply_url", "")
+    apply_url = st.text_input("🔗 신청 사이트 주소 (선택: 있으면 카드에 '신청하기' 버튼이 나와요. 없으면 '신청 사이트를 찾지 못함'이 나와요)",
+                              key=f"am_{sid}_applyurl", placeholder="https://… (공식 신청 페이지)", **_init(f"am_{sid}_applyurl", apply_default))
     layout = _layout_controls(sid, saved.get("layout") or {})
     needs_default = "\n".join(saved.get("needs_check") or base_needs)
     needs = st.text_area("✅ 자격 체크리스트 (한 줄에 하나. 예: 주택 — 무주택 청년)", key=f"am_{sid}_cneeds", height=100, **_init(f"am_{sid}_cneeds", needs_default))
@@ -308,6 +311,7 @@ def _compose(sid: str, service: dict, base_needs: list[str], saved: dict) -> tup
                          **_init(f"am_{sid}_notes", "\n".join(saved.get("notes") or [])))
     raw = {"benefit_text": benefit.strip() if benefit.strip() != base.benefit.strip() else "",
            "how_to_apply": how.strip() if how.strip() != base.how_to_apply.strip() else "",
+           "apply_url": apply_url.strip() if apply_url.strip() != getattr(base, "apply_url", "").strip() else "",
            "needs_check": _lines(needs) if _lines(needs) != base_needs else [],
            "amounts": amounts, "notes": _lines(notes), "source": source, "layout": layout,
            "support_lines": support if support != default_support else [],
