@@ -167,7 +167,7 @@ def test_claude_cli_search_extracts_urls_and_passes_query_as_one_argument(monkey
 
 def test_claude_cli_errors_become_runtime_errors(monkeypatch):
     monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
-    monkeypatch.setattr(answer_research.subprocess, "run", lambda *a, **k: _cli_proc("Not logged in", 1, True))
+    monkeypatch.setattr(answer_research.subprocess, "run", lambda *a, **k: _cli_proc("rate limited", 1, True))
     with pytest.raises(RuntimeError, match="claude 실행 실패"):
         answer_research._search_claude_cli("q")
     monkeypatch.setattr(answer_research.shutil, "which", lambda n: None)
