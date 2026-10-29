@@ -132,6 +132,38 @@ def available() -> bool:
         return False
 
 
+_linked: dict = {}   # 색인 조각 파일 -> (수정 시각, 연결 제도 집합 또는 None=공통 문서가 있어 모든 제도)
+
+
+def has_guides(service_id: str) -> bool:
+    """이 제도에 연결된 판정 기준 문서가 색인에 있는가. 문서는 일부 제도(기초생활보장 급여·국민취업지원제도 등)에만 있어서,
+    없는 제도 카드에 '판정 기준 문서에서 확인하기'를 보여 주면 눌러도 '찾지 못했어요'뿐이었다. 색인의 조각 파일만 읽는다
+    (모델·BM25를 불러오지 않음, 파일이 바뀔 때만 다시 읽음). 공통 문서(service_ids가 빈 문서)가 있으면 모든 제도가 True,
+    색인이 없거나 읽지 못하면 False (검색해도 빈 결과다). 검색 모듈이 색인 위치(INDEX_DIR)를 알려 주지 않으면
+    연결을 알 수 없으므로 지금처럼 True (테스트의 가짜 search_guides 모듈)."""
+    if not service_id or not available():
+        return False
+    try:
+        guide_store = importlib.import_module(GUIDE_STORE)
+        if getattr(guide_store, "INDEX_DIR", None) is None:
+            return True
+        path = guide_store.INDEX_DIR / "chunks.jsonl"
+        mtime = path.stat().st_mtime
+        cached = _linked.get(path)
+        if cached is None or cached[0] != mtime:
+            ids: set[str] | None = set()
+            for c in guide_store.guides.read_chunks(path):
+                if not c.service_ids:
+                    ids = None
+                    break
+                ids.update(c.service_ids)
+            _linked[path] = cached = (mtime, ids)
+    except Exception as e:  # 모듈·색인 없음, 파일 오류: 버튼을 숨긴다
+        log.debug("판정 기준 문서 연결 확인 실패: %s", e)
+        return False
+    return cached[1] is None or service_id in cached[1]
+
+
 def question_region(question: str) -> str | None:
     """질문 원문에서 사용자의 시·도 ('서울에 사는' -> '서울'). 판정 문서의 지역 비교용 (LLM 호출 없음)."""
     return condition_extractor._find_region(question or "")
