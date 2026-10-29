@@ -201,3 +201,47 @@ def test_search_choice_is_validated(monkeypatch):
     monkeypatch.setenv("RESEARCH_SEARCH", "bing")
     with pytest.raises(RuntimeError, match="알 수 없는 값"):
         answer_research.web_search_urls("q")
+
+
+def test_log_shows_search_method_pages_and_writer(monkeypatch):
+    monkeypatch.delenv("RESEARCH_SEARCH", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
+    monkeypatch.setattr(answer_research.config, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(answer_research, "_search_claude_cli", lambda q: [URL])
+    lines = []
+    res = answer_research.research(SERVICE, fetch=fetch_ok, chat_json=llm(), today=date(2026, 10, 29), log=lines.append)
+    text = "\n".join(lines)
+    assert res["ok"]
+    assert "검색 방법 시도: Claude Code(claude -p)" in text and "✔ Claude Code(claude -p)로 주소 1개 찾음" in text
+    assert f"페이지 읽는 중: {URL}" in text and "✔ 읽음: 가계안정지원사업" in text
+    assert "구성 작성 중" in text and "코드 검증" in text
+
+
+def test_batch_logs_are_streamed_returned_and_kept_in_the_memo(tmp_path):
+    live = []
+    results = answer_research.run_batch([SERVICE], "taegyu", folder=tmp_path, on_log=lambda i, n, name, line: live.append(line),
+                                        search=lambda q: [URL], fetch=fetch_ok, chat_json=llm(), today=date(2026, 10, 29))
+    assert results[0]["log"] == live and live[0].endswith("조사 시작") and any("AI 구성으로 저장" in l for l in live)
+    assert "■ 진행 기록" in answer_override.overrides(tmp_path)["S1"]["ai_memo"]
+
+
+def test_search_setup_names_each_method(monkeypatch):
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: None)
+    monkeypatch.setattr(answer_research.config, "OPENAI_API_KEY", "k")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    text = answer_research.search_setup()
+    assert "Claude Code(claude -p) ❌" in text and "Anthropic API(Claude) ❌" in text and "OpenAI ✅" in text and "구성 작성: OpenAI" in text
+
+
+def test_search_log_reports_skipped_and_failed_methods(monkeypatch):
+    monkeypatch.delenv("RESEARCH_SEARCH", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(answer_research.shutil, "which", lambda n: "/bin/claude")
+    monkeypatch.setattr(answer_research.config, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(answer_research, "_search_claude_cli", lambda q: (_ for _ in ()).throw(RuntimeError("not logged in")))
+    lines = []
+    with pytest.raises(RuntimeError):
+        answer_research.web_search_urls("q", log=lines.append)
+    text = "\n".join(lines)
+    assert "✘ Claude Code(claude -p) 실패: not logged in" in text and "건너뜀: Anthropic API(Claude) (설치·키 없음)" in text and "건너뜀: OpenAI (설치·키 없음)" in text

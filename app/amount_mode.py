@@ -393,14 +393,21 @@ def _batch_bar(picked: list[str], services: dict[str, dict], editor: str) -> Non
     go = c2.button(f"🤖 AI로 답변 채우기 ({len(picked)}개)", key="am_batch_go", disabled=not picked or not answer_override.valid_editor(editor))
     if picked and not answer_override.valid_editor(editor):
         _editor_hint(editor)
+    c1.caption(answer_research.search_setup())
     if go:
         bar = st.progress(0.0, text="시작하는 중…")
+        box = st.status("조사 진행 기록 (어떤 검색 방법을 쓰고 어떤 페이지를 읽는지 실시간으로 보여요)", expanded=True)
 
         def progress(i: int, n: int, name: str) -> None:
             bar.progress((i - 1) / n, text=f"({i}/{n}) {name} 조사 중…")
+            box.write(f"**▶ ({i}/{n}) {name}**")
 
-        results = answer_research.run_batch([services[i] for i in picked if i in services], editor, progress=progress)
+        def on_log(i: int, n: int, name: str, line: str) -> None:
+            box.write(f"`{line}`")
+
+        results = answer_research.run_batch([services[i] for i in picked if i in services], editor, progress=progress, on_log=on_log)
         bar.progress(1.0, text="끝났어요")
+        box.update(label="조사 진행 기록 (끝났어요)", state="complete", expanded=False)
         st.session_state["am_batch_results"] = results
         for r in results:       # 이미 열어 본 제도의 입력칸이 옛 값을 붙들지 않게, AI가 새로 채운 제도의 입력 상태를 비운다
             if r["ok"]:
@@ -412,13 +419,17 @@ def _batch_bar(picked: list[str], services: dict[str, dict], editor: str) -> Non
             st.success(f"AI가 {ok}개를 채웠어요. 아래 표에서 제도를 눌러 '🤖 AI 조사 메모'와 값을 확인한 뒤 '확인 완료'를 누르면 실제 답변에 반영돼요.")
         else:
             st.warning("채워진 제도가 없어요. 아래 사유를 확인하세요.")
-        with st.expander(f"AI 채우기 결과 ({len(results)}건)", expanded=True):
+        with st.container(border=True):       # 안에 '진행 기록' expander를 넣어야 해서 바깥은 expander가 아닌 상자 (expander 안에 expander는 못 쓴다)
+            st.markdown(f"**AI 채우기 결과 ({len(results)}건)**")
             for r in results:
                 st.markdown(f"{'✅' if r['ok'] else '⏭️' if r['skipped'] else '⚠️'} **{r['service_name']}** `{r['service_id']}` — {r['message']}")
                 for issue in r["issues"]:
                     st.caption(f"　· {issue}")
                 for u in r["unread"]:
                     st.caption(f"　· 읽지 못함 [{u['cause']}] {u['url']}")
+                if r.get("log"):
+                    with st.expander("진행 기록 보기"):
+                        st.text("\n".join(r["log"]))
         if st.button("결과 닫기", key="am_batch_close"):
             st.session_state.pop("am_batch_results", None)
             st.rerun()

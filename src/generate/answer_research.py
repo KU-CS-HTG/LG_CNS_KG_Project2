@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -143,9 +144,30 @@ def _search_anthropic(query: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
-def web_search_urls(query: str) -> list[str]:
+BACKEND_LABELS = {"claude": "Claude Code(claude -p)", "anthropic": "Anthropic API(Claude)", "openai": "OpenAI"}
+
+
+def _usable(name: str) -> bool:
+    return {"claude": lambda: bool(shutil.which("claude")), "anthropic": lambda: bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "openai": lambda: bool(config.OPENAI_API_KEY)}[name]()
+
+
+def search_setup() -> str:
+    """화면에 보일 검색 설정 요약: 어떤 방법을 쓸 수 있고 어떤 순서로 시도하는지."""
+    choice = (os.environ.get("RESEARCH_SEARCH") or "auto").lower()
+    parts = [f"{BACKEND_LABELS[n]} {'✅' if _usable(n) else '❌ (설치·키 없음)'}" for n in BACKEND_LABELS]
+    return f"웹 검색 방법: {' → '.join(parts)} · 모드 {choice}" + ("" if choice == "auto" else " (지정한 방법만 시도)") + f" · 구성 작성: OpenAI {config.GENERATION_MODEL}"
+
+
+def _say(log, msg: str) -> None:
+    if log:
+        log(msg)
+
+
+def web_search_urls(query: str, log=None) -> list[str]:
     """웹 검색으로 자료 후보 주소만 얻는다 (요약·발췌는 쓰지 않는다). 쓸 수 있는 방법을 차례로 시도하고 모두 실패하면 RuntimeError.
-    기본(RESEARCH_SEARCH=auto)은 Claude Code(claude 명령) -> Anthropic API(키가 있을 때) -> OpenAI(키가 있을 때). 하나만 쓰려면 claude|anthropic|openai."""
+    기본(RESEARCH_SEARCH=auto)은 Claude Code(claude 명령) -> Anthropic API(키가 있을 때) -> OpenAI(키가 있을 때). 하나만 쓰려면 claude|anthropic|openai.
+    log가 있으면 어떤 방법을 시도했고 어떻게 됐는지 한 줄씩 알린다."""
     choice = (os.environ.get("RESEARCH_SEARCH") or "auto").lower()
     backends = {"claude": _search_claude_cli, "anthropic": _search_anthropic, "openai": _search_openai}
     order = ["claude", "anthropic", "openai"] if choice == "auto" else [choice]
@@ -153,13 +175,18 @@ def web_search_urls(query: str) -> list[str]:
     for name in order:
         if name not in backends:
             raise RuntimeError(f"RESEARCH_SEARCH={choice}는 알 수 없는 값이에요 (auto|claude|anthropic|openai).")
-        if choice == "auto" and ((name == "claude" and not shutil.which("claude")) or (name == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"))
-                                 or (name == "openai" and not config.OPENAI_API_KEY)):
+        if choice == "auto" and not _usable(name):
+            _say(log, f"검색 방법 건너뜀: {BACKEND_LABELS[name]} (설치·키 없음)")
             continue
+        _say(log, f"검색 방법 시도: {BACKEND_LABELS[name]}")
         try:
-            return backends[name](query)
+            urls = backends[name](query)
         except RuntimeError as exc:
             errors.append(f"{name}: {exc}")
+            _say(log, f"✘ {BACKEND_LABELS[name]} 실패: {str(exc)[:160]}")
+            continue
+        _say(log, f"✔ {BACKEND_LABELS[name]}로 주소 {len(urls)}개 찾음")
+        return urls
     raise RuntimeError("웹 검색에 실패했어요 — " + (" / ".join(errors) or "쓸 수 있는 검색 방법이 없어요 (claude 명령 설치, ANTHROPIC_API_KEY 또는 OPENAI_API_KEY 필요)."))
 
 
@@ -170,34 +197,41 @@ def queries(service: dict) -> list[str]:
             f"{name} {agency} 공고 사업 안내 시행계획".strip()]
 
 
-def candidate_urls(service: dict, search=None, round_: int = 0) -> tuple[list[str], str]:
+def candidate_urls(service: dict, search=None, round_: int = 0, log=None) -> tuple[list[str], str]:
     """round_번째 질문으로 읽어 볼 주소 목록(공식 도메인 먼저, 최대 MAX_URLS개)과 검색 실패 메시지(성공이면 ''). 첫 라운드에는 제도 상세 링크도 넣는다."""
     found: list[str] = []
     error = ""
+    query = queries(service)[round_]
+    _say(log, f"웹 검색 {round_ + 1}번째 질문: {query}")
     try:
-        found = (search or web_search_urls)(queries(service)[round_])
+        found = search(query) if search else web_search_urls(query, log)
     except Exception as exc:     # noqa: BLE001 — 검색이 안 돼도 상세 링크는 시도한다
         error = str(exc)
     detail = service.get("detail_url") or ""
     urls = [u for u in dict.fromkeys(([detail] if round_ == 0 and detail.startswith(("http://", "https://")) else []) + found) if u]
     urls.sort(key=lambda u: _level(u) != "공식")      # 안정 정렬: 공식 도메인이 앞, 같은 등급은 검색 순서 유지
+    _say(log, f"읽어 볼 후보 주소 {len(urls[:MAX_URLS])}개 (공식 도메인 {sum(1 for u in urls[:MAX_URLS] if _level(u) == '공식')}개)")
     return urls[:MAX_URLS], error
 
 
-def read_pages(urls: list[str], fetch=None) -> tuple[list[page_fetch.Page], list[dict]]:
+def read_pages(urls: list[str], fetch=None, log=None) -> tuple[list[page_fetch.Page], list[dict]]:
     """주소를 열어 읽는다 -> (읽은 페이지, 못 읽은 기록). 막힌 사이트는 우회하지 않고 원인만 남긴다."""
     pages, unread = [], []
     for url in urls:
         if len(pages) >= MAX_PAGES:
             break
+        _say(log, f"페이지 읽는 중: {url}")
         try:
             page = (fetch or page_fetch.fetch)(url)
         except page_fetch.FetchError as exc:
             unread.append({"url": url, "cause": exc.cause, "message": str(exc)})
+            _say(log, f"✘ 못 읽음 [{exc.cause}] (우회하지 않음)")
             continue
         except RuntimeError as exc:
             unread.append({"url": url, "cause": "other", "message": str(exc)})
+            _say(log, f"✘ 못 읽음 [other] {str(exc)[:100]}")
             continue
+        _say(log, f"✔ 읽음: {page.title or '(제목 없음)'} · {len(page.text):,}자")
         if fetch is None:
             page_fetch.save_snapshot(page)       # 나중에 근거 구절을 `page_fetch verify`로 다시 대조할 수 있게
         pages.append(page)
@@ -282,20 +316,24 @@ def _pick_source(amounts: list[dict], urls: list[str]) -> int | None:
     return max(count, key=lambda i: (count[i], _level(urls[i]) == "공식"))
 
 
-def build(service: dict, pages: list[page_fetch.Page], unread: list[dict], search_error: str, chat_json=None, today: date | None = None) -> dict:
+def build(service: dict, pages: list[page_fetch.Page], unread: list[dict], search_error: str, chat_json=None, today: date | None = None, log=None) -> dict:
     """읽은 자료로 구성을 만든다 -> {ok, message, data, issues}. data는 answer_override.save가 받는 형식이다."""
     today = today or date.today()
+    injected = chat_json
     chat_json = chat_json or __import__("src.generate.condition_extractor", fromlist=["_chat_json"])._chat_json
     texts = [source_text(service)] + [p.text[:MAX_PAGE_CHARS] for p in pages]
     titles = ["수집 원문(보조금24)"] + [p.title for p in pages]
     urls = [""] + [p.url for p in pages]
     user = json.dumps({"제도 이름": service.get("service_name", ""),
                        "자료": [{"번호": i, "제목": titles[i], "본문": texts[i]} for i in range(len(texts))]}, ensure_ascii=False)
+    _say(log, f"구성 작성 중: {'OpenAI ' + config.GENERATION_MODEL if injected is None else '주입된 LLM'}가 읽은 자료 {len(pages)}개 + 수집 원문으로 작성")
     try:
         raw = chat_json(PROMPT, user)
     except Exception as exc:     # noqa: BLE001 — 키 없음·네트워크·JSON 오류를 화면에 알린다
+        _say(log, f"✘ 작성 실패: {str(exc)[:160]}")
         return {"ok": False, "message": f"AI 호출에 실패했어요: {exc!r}", "data": None, "issues": []}
     v, issues = verify(raw, texts, titles, urls)
+    _say(log, f"코드 검증: 근거 구절·숫자를 본문과 대조해 {len(issues)}개 항목을 뺐어요" if issues else "코드 검증: 모든 항목의 근거 구절·숫자가 본문과 맞아요")
     if not any(i >= 1 for i in v["relevant"]):
         return {"ok": False, "message": "읽은 자료 중 이 제도를 설명하는 페이지가 없어 채우지 않았어요.", "data": None, "issues": issues}
     pick = _pick_source(v["amounts"], urls)
@@ -344,7 +382,7 @@ def _memo(service, pages, unread, search_error, v, issues, spare, source, today)
     return "\n".join(lines)[:answer_override.MAX_MEMO]
 
 
-def research(service: dict, *, search=None, fetch=None, chat_json=None, today: date | None = None) -> dict:
+def research(service: dict, *, search=None, fetch=None, chat_json=None, today: date | None = None, log=None) -> dict:
     """제도 하나를 조사해 구성을 만든다 (저장하지 않음) -> {ok, message, data, issues, read, unread}.
     읽은 자료가 MIN_PAGES개 모자라면(막힌 사이트가 많으면) 다른 검색 질문으로 다른 자료를 찾아 더 읽는다 (이미 시도한 주소는 다시 읽지 않는다)."""
     pages: list[page_fetch.Page] = []
@@ -353,11 +391,11 @@ def research(service: dict, *, search=None, fetch=None, chat_json=None, today: d
     errors: list[str] = []
     found = 0
     for round_ in range(len(queries(service))):
-        urls, error = candidate_urls(service, search, round_)
+        urls, error = candidate_urls(service, search, round_, log)
         found += len([u for u in urls if u != service.get("detail_url")])
         if error:
             errors.append(error)
-        more, bad = read_pages([u for u in urls if u not in tried], fetch)
+        more, bad = read_pages([u for u in urls if u not in tried], fetch, log)
         tried.update(urls)
         pages += more
         unread += bad
@@ -369,33 +407,51 @@ def research(service: dict, *, search=None, fetch=None, chat_json=None, today: d
         search_note = f"웹 검색 오류: {search_error[:200]}" if search_error else f"웹 검색으로 찾은 주소 {found}개"
         return {"ok": False, "message": f"읽을 수 있는 자료가 없어 채우지 않았어요 — {search_note} / 읽지 못함: {why}. 접속이 막힌 사이트는 '자료 주소로 채우기'의 본문 붙여넣기를 쓰세요.",
                 "data": None, "issues": [], "read": [], "unread": unread}
-    res = build(service, pages[:MAX_PAGES], unread, search_error, chat_json, today)
+    res = build(service, pages[:MAX_PAGES], unread, search_error, chat_json, today, log)
     return {**res, "read": [p.url for p in pages[:MAX_PAGES]], "unread": unread}
 
 
-def run_batch(services: list[dict], editor: str, *, folder: Path | None = None, progress=None, **deps) -> list[dict]:
-    """제도들을 차례로 조사해 AI 구성으로 저장한다. 한 제도가 실패해도 다음으로 넘어간다 -> 제도별 결과 목록.
-    사람이 구성해 둔(또는 확인 완료한) 답변이 있는 제도는 건너뛴다 (AI가 채우고 아직 확인 전인 구성만 다시 쓴다)."""
+def run_batch(services: list[dict], editor: str, *, folder: Path | None = None, progress=None, on_log=None, **deps) -> list[dict]:
+    """제도들을 차례로 조사해 AI 구성으로 저장한다. 한 제도가 실패해도 다음으로 넘어간다 -> 제도별 결과 목록(진행 기록 `log` 포함).
+    사람이 구성해 둔(또는 확인 완료한) 답변이 있는 제도는 건너뛴다 (AI가 채우고 아직 확인 전인 구성만 다시 쓴다).
+    on_log(i, n, name, 줄)은 진행 기록이 한 줄 생길 때마다 불린다 (화면에서 실시간으로 보여 주는 데 쓴다). 진행 기록은 AI 조사 메모에도 남는다."""
     if not answer_override.valid_editor(editor):
         raise ValueError("입력자 이름은 영문·숫자·_-만 쓸 수 있어요.")
     results = []
+    total = min(len(services), MAX_BATCH)
     for i, s in enumerate(services[:MAX_BATCH], 1):
         sid, name = s["service_id"], s.get("service_name", "")
+        lines: list[str] = []
+        started = time.monotonic()
+
+        def log(msg: str, _i=i, _name=name, _lines=lines, _t0=started) -> None:
+            line = f"[{time.monotonic() - _t0:5.1f}초] {msg}"
+            _lines.append(line)
+            if on_log:
+                on_log(_i, total, _name, line)
+
         if progress:
-            progress(i, min(len(services), MAX_BATCH), name)
+            progress(i, total, name)
         existing = answer_override.overrides(folder).get(sid)
         if existing and not answer_override.pending_ai(existing):
-            results.append({"service_id": sid, "service_name": name, "ok": False, "skipped": True,
+            log("건너뜀: 사람이 구성한(또는 확인 완료한) 답변이 있어요")
+            results.append({"service_id": sid, "service_name": name, "ok": False, "skipped": True, "log": lines,
                             "message": "사람이 구성한(또는 확인 완료한) 답변이 있어 건너뛰었어요.", "issues": [], "read": [], "unread": []})
             continue
+        log("조사 시작")
         try:
-            res = research(s, **deps)
+            res = research(s, log=log, **deps)
             if res["ok"]:
-                answer_override.save(sid, editor, res["data"], folder, ai=True)
+                log("AI 구성으로 저장 (사람이 '확인 완료'하기 전에는 실제 답변에 나오지 않아요)")
+                data = {**res["data"], "ai_memo": (res["data"]["ai_memo"] + "\n■ 진행 기록\n" + "\n".join(lines))[:answer_override.MAX_MEMO]}
+                answer_override.save(sid, editor, data, folder, ai=True)
+            else:
+                log("채우지 않음: " + str(res["message"])[:120])
         except Exception as exc:     # noqa: BLE001 — 한 제도의 오류가 전체 작업을 멈추지 않게
             res = {"ok": False, "message": f"처리 중 오류: {exc!r}", "data": None, "issues": [], "read": [], "unread": []}
-        results.append({"service_id": sid, "service_name": name, "skipped": False, **{k: res.get(k) for k in ("ok", "message", "issues", "read", "unread")}})
+            log(f"✘ 오류: {exc!r}"[:160])
+        results.append({"service_id": sid, "service_name": name, "skipped": False, "log": lines, **{k: res.get(k) for k in ("ok", "message", "issues", "read", "unread")}})
     if len(services) > MAX_BATCH:
-        results.append({"service_id": "", "service_name": "", "ok": False, "skipped": True,
+        results.append({"service_id": "", "service_name": "", "ok": False, "skipped": True, "log": [],
                         "message": f"한 번에 {MAX_BATCH}개까지만 처리해요. 나머지 {len(services) - MAX_BATCH}개는 다시 체크해 주세요.", "issues": [], "read": [], "unread": []})
     return results
