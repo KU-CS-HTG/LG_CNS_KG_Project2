@@ -8,6 +8,8 @@
 지원내용 원문은 카드 머리 '무엇을 받나요' 칸의 '원문 확인하기' 링크(새 창)로 본다 (app/main.py)."""
 from __future__ import annotations
 
+import re
+
 import streamlit as st
 
 from src.common.schema import Recommendation
@@ -150,6 +152,11 @@ def _override_amounts(ov: dict | None) -> bool:
     return True
 
 
+def _break_lines(text: str) -> str:
+    """markdown은 한 번 줄바꿈을 무시하므로, 담당자가 쓴 줄바꿈이 보이게 줄 끝에 공백 두 칸(강제 줄바꿈)을 붙인다."""
+    return re.sub(r"[ \t]*\r?\n", "  \n", (text or "").strip())
+
+
 def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) -> None:
     rule = amount_rules.find(r.service_id)
     ov = answer_override.find(r.service_id)
@@ -159,8 +166,11 @@ def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) 
     st.markdown("##### ✅ 체크한 조건으로 받을 수 있는 지원")
     custom = (ov or {}).get("support_lines")
     if custom:                                    # 담당자가 직접 쓴 지원 내용 줄이 LLM이 정리한 항목을 대신한다
-        for line in custom:
-            st.markdown(f"**{line['label']}** — {line['text']}")
+        shown = [l for l in custom if not l.get("when") or set(l["when"]) & checked]      # 표시 조건이 있는 줄은 그 체크 항목 중 하나라도 체크했을 때만
+        for line in shown:
+            st.markdown(f"**{line['label']}** — {_break_lines(line['text'])}")
+        if not shown:
+            st.info("체크한 조건으로 받을 수 있는 지원이 아직 없어요. 조건을 바꿔 다시 '체크 완료'를 눌러 보세요.")
         groups = {**groups, "pending": []}
     elif got:
         for t in got:

@@ -642,3 +642,81 @@ def test_committed_ai_overrides_are_well_formed():
         if clean["amounts"]:
             assert clean["source"]["url"].startswith("https://") and clean["source"]["level"] == "공식" and len(clean["source"]["quote"]) >= 8
         assert clean["ai_memo"] and clean["needs_check"] and clean["how_to_apply"]
+
+
+def test_support_line_when_condition_is_validated():
+    from src.generate import answer_override as ao
+    ok, problems = ao.validate({"needs_check": ["기업 조건", "구직자 조건"], "support_lines": [
+        {"label": "기업", "text": "a", "when": [1, 1]}, {"label": "구직자", "text": "b", "when": [2]}, {"label": "공통", "text": "c", "when": []}]})
+    assert problems == [] and ok["support_lines"] == [{"label": "기업", "text": "a", "when": [1]}, {"label": "구직자", "text": "b", "when": [2]},
+                                                       {"label": "공통", "text": "c"}]          # 빈 조건은 키 자체를 두지 않는다 (옛 형식과 같음)
+    assert ao.validate({"needs_check": ["하나"], "support_lines": [{"label": "a", "text": "b", "when": [2]}]})[0] is None
+    assert ao.validate({"needs_check": ["하나"], "support_lines": [{"label": "a", "text": "b", "when": [0]}]})[0] is None
+
+
+def _when_card(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+    from src.generate import answer_override as ao, benefit_tiers
+    monkeypatch.setattr(ao, "OVERRIDE_DIR", tmp_path)
+    ao.save("S60", "kim", {**GOOD_OV, "needs_check": ["기업 — 채용이 어려운 기업", "구직자 — 일자리를 찾는 사람"], "amounts": [], "source": {}, "notes": [],
+                           "support_lines": [{"label": "기업 패키지", "text": "기업 상담\n맞춤 서비스", "when": [1]},
+                                             {"label": "구직자 패키지", "text": "구직 상담", "when": [2]},
+                                             {"label": "공통", "text": "항상 보임"}]}, tmp_path)
+    monkeypatch.setattr(benefit_tiers, "compute", lambda *a, **k: {"tiers": [{"label": "x", "requires": [], "benefit": "y", "quote": "", "basis": "outside",
+                                                                            "amount": "", "amount_basis": "", "evidence": []}], "notes": []})
+
+    def script():
+        import streamlit as st
+        from app import main as app
+        from src.common.schema import Recommendation
+        st.session_state.setdefault("checks", {})
+        st.session_state.setdefault("guides", {})
+        app._card(1, Recommendation("가상", "기관", "이유", "원래", "원래 신청", needs_check=["a", "b"], service_id="S60"), "t1")
+    return AppTest.from_function(script, default_timeout=30).run()
+
+
+@pytest.mark.parametrize("which,shown,hidden", [([0], "기업 패키지", "구직자 패키지"), ([1], "구직자 패키지", "기업 패키지"), ([0, 1], "기업 패키지", None), ([], None, "기업 패키지")])
+def test_card_shows_only_support_lines_whose_condition_is_checked(tmp_path, monkeypatch, which, shown, hidden):
+    at = _when_card(tmp_path, monkeypatch)
+    for i in which:
+        at.checkbox[i].check()
+    at.run()
+    next(b for b in at.button if b.label == "체크 완료").click().run()
+    btn = [b for b in at.button if "내 조건으로" in b.label]
+    next(iter(btn)).click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert not at.exception
+    if shown:
+        assert f"**{shown}**" in text
+    if hidden:
+        assert f"**{hidden}**" not in text
+    assert ("**공통**" in text) is True                         # 표시 조건이 없는 줄은 항상 나온다
+    if which == [0]:
+        assert "기업 상담  \n맞춤 서비스" in text                  # 담당자가 쓴 줄바꿈이 markdown 강제 줄바꿈으로 남는다
+
+
+def test_card_keeps_newlines_in_what_you_get_box():
+    from app import main as app
+    assert "white-space:pre-line" in app.CSS.replace(" ", "").replace("white-space:pre-line", "white-space:pre-line")
+    assert "&#10;" in app._e_inline("첫 줄\n둘째 줄")
+
+
+def test_page_sets_support_line_display_condition_and_saves(tmp_path, monkeypatch):
+    pytest.importorskip("streamlit")
+    from src.generate import answer_override as ao
+    svc = {**NOMONEY, "support_content": "첫 문단 지원"}
+    _setup_page(tmp_path, monkeypatch, {"S50": svc})
+    at = _open_page(tmp_path)
+    at.text_area(key="am_S50_cneeds").set_value("기업 — 채용이 어려운 기업\n구직자 — 일자리를 찾는 사람").run()
+    at.number_input(key="am_S50_ns").set_value(2).run()
+    at.text_input(key="am_S50_s1_label").set_value("기업 패키지")
+    at.text_area(key="am_S50_s1_text").set_value("기업 상담\n맞춤 서비스")
+    at.text_input(key="am_S50_s2_label").set_value("구직자 패키지")
+    at.text_area(key="am_S50_s2_text").set_value("구직 상담").run()
+    at.multiselect(key="am_S50_s1_when").set_value([1]).run()
+    at.multiselect(key="am_S50_s2_when").set_value([2]).run()
+    next(b for b in at.button if b.label == "이 구성을 실제 답변으로 저장").click().run()
+    saved = ao.find("S50")
+    assert not at.exception
+    assert saved["support_lines"] == [{"label": "기업 패키지", "text": "기업 상담\n맞춤 서비스", "when": [1]}, {"label": "구직자 패키지", "text": "구직 상담", "when": [2]}]
