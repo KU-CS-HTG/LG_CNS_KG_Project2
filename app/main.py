@@ -430,8 +430,8 @@ def _guides_html(cits: list, numbered: bool = False) -> str:
 
 def _card_guides(r: Recommendation, key: str, region: str | None) -> None:
     """'확인 필요' 조건의 판정 기준 문서 근거 (README 1.2). 버튼을 누를 때만 카드당 1번 검색하고 결과를 저장한다
-    (답변 속도 유지, 다시 그려도 재검색하지 않음). B의 검색 모듈이 없으면 버튼을 보이지 않는다."""
-    if not (r.needs_check and r.service_id and guide_evidence.available()):
+    (답변 속도 유지, 다시 그려도 재검색하지 않음). B의 검색 모듈이 없거나 이 제도에 연결된 문서가 없으면 버튼을 보이지 않는다."""
+    if not (r.needs_check and r.service_id and guide_evidence.has_guides(r.service_id)):
         return
     found = st.session_state.guides.get(key)
     if found is None:
@@ -630,10 +630,11 @@ def _render_guide_answer(answer) -> None:
 
 
 def _guide_targets(thread: list[dict]) -> list[Recommendation]:
-    """판정 기준으로 물어볼 대상 = 이 주제의 마지막 보통 답변에 나온 제도들 (판정 문서 답변은 건너뜀)."""
+    """판정 기준으로 물어볼 대상 = 이 주제의 마지막 보통 답변에 나온 제도 중 판정 기준 문서가 있는 제도 (판정 문서 답변은 건너뜀).
+    없으면 '판정 기준으로 물어보기' 버튼과 이어진 질문 분류(guide_router)를 건너뛴다."""
     for m in reversed(thread):
         if m["role"] == "assistant" and not m.get("guide"):
-            return [r for r in m["content"].recommendations if r.service_id]
+            return [r for r in m["content"].recommendations if r.service_id and guide_evidence.has_guides(r.service_id)]
     return []
 
 
