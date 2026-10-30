@@ -13,7 +13,7 @@ import re
 import streamlit as st
 
 from src.common.schema import Recommendation
-from src.generate import amount_rules, answer_override, benefit_tiers
+from src.generate import amount_rules, answer_override, benefit_tiers, earned_credit_rules
 
 
 def _checked(key: str, n: int) -> frozenset[int]:
@@ -132,6 +132,51 @@ def _amount_form(r: Recommendation, rule: dict, key: str, checked: frozenset[int
             _show_amount(st.session_state[state_key])
 
 
+def _show_earned_credit(out: dict) -> None:
+    for sec in (out["work"], out["child"]):
+        if not sec:
+            continue
+        icon = {"해당 가능": "✅", "확인 필요": "❓", "해당 어려움": "⛔"}[sec["verdict"]]
+        st.markdown(f"**{icon} {sec['title']} — {sec['verdict']}**")
+        if sec["high_won"]:
+            same = sec["low_won"] == sec["high_won"]
+            st.markdown("💰 **예상 수령액: " + (amount_rules.won(sec["low_won"]) if same else f"{amount_rules.won(sec['low_won'])} ~ {amount_rules.won(sec['high_won'])}") + "**")
+        for line in sec["lines"]:
+            st.markdown(f"- {line}")
+    for note in out["notes"]:
+        st.caption(note)
+    with st.expander("자세히 보기 (계산 근거·자료 간 불일치·남은 변수)"):
+        st.markdown("**자료 간 불일치**")
+        for text in out["conflicts"]:
+            st.markdown(f"- {text}")
+        st.markdown("**계산에 반영하지 못한 것**")
+        for text in out["open_issues"]:
+            st.markdown(f"- {text}")
+        st.markdown("**근거 자료**")
+        for src in out["sources"]:
+            st.markdown(f"- [{src['title']}]({src['url']}) · {src['level']} — {src['facts']}")
+    st.caption(f"확인일 {out['as_of']} · 상태: {out['status']}. 홈택스 모의계산과 다를 수 있어요. 최종 금액은 국세청 심사로 정해져요.")
+
+
+def _earned_credit_form(r: Recommendation, rule: dict, key: str) -> None:
+    """근로·자녀장려금: 가구원 구성·부양가족 수·총급여액을 넣으면 예상 수령액을 바로 계산한다 (값이 바뀔 때마다). LLM 없음."""
+    st.markdown("##### 💰 예상 수령액 (근로·자녀장려금)")
+    st.caption("총급여액은 근로소득만 기준이에요. 아래 값은 공식 모의계산(홈택스)과 대조 전 초안이에요.")
+    values: dict = {}
+    for spec in earned_credit_rules.INPUTS:
+        if any(values.get(k) != v for k, v in (spec.get("when") or {}).items()):
+            continue
+        wk = f"ecr_{key}_{spec['id']}"
+        if spec["type"] == "choice":
+            values[spec["id"]] = st.radio(spec["label"], spec["options"], index=None, horizontal=True, key=wk)
+        else:
+            values[spec["id"]] = st.number_input(spec["label"], min_value=spec["min"], max_value=spec["max"], value=None, step=1, key=wk)
+    if values.get("own_man") is None or values.get("spouse") is None:
+        st.info("본인 총급여액과 배우자 유무를 입력하면 계산해요.")
+        return
+    _show_earned_credit(earned_credit_rules.calculate(rule, values))
+
+
 def _override_amounts(ov: dict | None) -> bool:
     """담당자가 직접 쓴 금액 안내와 공식 근거. 그렸으면 True."""
     if not ov or not (ov.get("amounts") or ov.get("notes")):
@@ -185,6 +230,9 @@ def _result(r: Recommendation, key: str, result: dict, checked: frozenset[int]) 
     _override_amounts(ov)
     if rule:
         _amount_form(r, rule, key, checked)
+    ec_rule = earned_credit_rules.find(r.service_id)
+    if ec_rule:
+        _earned_credit_form(r, ec_rule, key)
     if result["notes"]:
         st.caption("참고 (자료 밖 일반 정보라 정확하지 않을 수 있어요): " + " / ".join(n["text"] for n in result["notes"]))
     st.caption("체크는 스스로 확인한 결과예요. 금액은 소득·가구 등에 따라 달라질 수 있으니 최종 내용은 담당 기관에서 확인해 주세요.")
@@ -220,6 +268,10 @@ def render(r: Recommendation, key: str) -> None:
                     computed = benefit_tiers.compute(r.service_id, r.service_name, list(r.needs_check))
                 if computed is None:
                     if _override_amounts(answer_override.find(r.service_id)):       # 담당자가 쓴 금액 안내는 정리가 실패해도 보여 준다
+                        return
+                    ec_rule = earned_credit_rules.find(r.service_id)
+                    if ec_rule:                                                     # 코드로 계산하는 장려금 계산기도 LLM 정리와 상관없이 보여 준다
+                        _earned_credit_form(r, ec_rule, key)
                         return
                     st.session_state[open_key] = False
                     st.warning("조건별 지원을 정리하지 못했어요. 카드의 원문 확인하기 링크로 확인해 주세요.")
