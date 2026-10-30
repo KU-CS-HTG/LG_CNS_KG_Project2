@@ -57,47 +57,121 @@ html, body, [class*="st-"], .stMarkdown, .stChatMessage, button, input, textarea
 span[class*="material-symbols"], span[class*="material-icons"] {
   font-family: 'Material Symbols Rounded', 'Material Icons' !important;
 }
+/* 색·모양: 진한 파랑 한 가지 색 + 흰색·옅은 회청색, 알약 모양 칩·버튼, 둥근 카드 (참고: 챗봇 앱 디자인) */
 :root {
-  --accent: #4f6bed; --accent-soft: rgba(79,107,237,.10);
-  --ok: #12a150; --ok-soft: rgba(18,161,80,.12);
-  --warn: #d97706; --warn-soft: rgba(217,119,6,.12);
-  --line: rgba(128,128,128,.22); --surface: rgba(128,128,128,.05); --muted: rgba(128,128,128,1);
+  --accent: #4f63f0; --accent-strong: #3d4fd6; --accent-soft: rgba(79,99,240,.09); --accent-line: rgba(79,99,240,.32);
+  --ok: #0f8a45; --ok-soft: #e7f6ee;
+  --warn: #b45309; --warn-soft: #fff6e8;
+  --text: #1b1f2e; --sub: #5b6275; --faint: #8a90a2;
+  --page: #f4f5fa; --card: #ffffff; --tile: #f6f7fb;
+  --line: #e6e8f0; --surface: #ffffff; --muted: #8a90a2;
+  --shadow: 0 2px 10px rgba(27,31,46,.05);
 }
-[data-testid="stMainBlockContainer"] { max-width: 860px; padding-top: 2.2rem; }
-#MainMenu, footer, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"] { display: none !important; }
+/* 화면 바탕: 옅은 회청색 + 흰 카드 (Streamlit 기본 흰 화면 대신), 본문 글자는 진하게 */
+.stApp, [data-testid="stAppViewContainer"] { background: var(--page) !important; color: var(--text); }
+[data-testid="stMainBlockContainer"] { max-width: 880px; padding-top: 2.2rem; font-size: 16px; }
+[data-testid="stMainBlockContainer"] p:not(button p), [data-testid="stMainBlockContainer"] li { color: var(--text); }
+#MainMenu, footer, [data-testid="stAppDeployButton"], [data-testid="stToolbarActions"], [data-testid="stDecoration"] { display: none !important; }
 header[data-testid="stHeader"] { background: transparent; }
+
+/* 사이드바: 흰 바탕 + 오른쪽 선, 제목은 서비스 이름 */
+[data-testid="stSidebar"] { background: #fff !important; border-right: 1px solid var(--line); }
+[data-testid="stSidebar"] p:not(button p), [data-testid="stSidebar"] li { color: var(--text); }
+.brand { display:flex; align-items:center; gap:.65rem; margin:.2rem 0 .6rem; }
+.brand .logo { width:2.4rem; height:2.4rem; border-radius:12px; background:var(--accent); color:#fff; font-weight:800;
+  display:flex; align-items:center; justify-content:center; font-size:.82rem; letter-spacing:-.04em; }
+.brand .name { font-size:1.15rem; font-weight:800; color:var(--text); line-height:1.2; }
+.brand .tag { font-size:.78rem; color:var(--sub); }
+.side-note { font-size:.84rem; color:var(--sub); line-height:1.6; margin-bottom:.9rem; }
+.side-h { font-size:.8rem; font-weight:800; color:var(--faint); letter-spacing:.02em; margin:1.1rem 0 .5rem; }
 .legend { margin:.15rem 0 .7rem; } .legend .badge { display:inline-block; margin:0 0 .25rem; }
-.legend div { font-size:.84rem; opacity:.75; line-height:1.5; }
+.legend div { font-size:.84rem; color:var(--sub); line-height:1.5; }
 
-.hero { padding: 1.6rem 1.7rem; border-radius: 20px; margin-bottom: 1.2rem;
-  background: linear-gradient(135deg, rgba(79,107,237,.16), rgba(56,189,248,.10)); border: 1px solid var(--line); }
-.hero .pill { display:inline-block; font-size:.78rem; font-weight:600; color:var(--accent);
-  background:var(--accent-soft); padding:.22rem .7rem; border-radius:999px; margin-bottom:.7rem; }
-.hero h1 { font-size:1.75rem; font-weight:800; line-height:1.3; margin:0 0 .35rem; padding:0; letter-spacing:-.02em; }
-.hero p { margin:0; opacity:.78; font-size:1rem; }
+/* 첫 화면: 꽉 찬 파랑 + 흰 글씨, 오른쪽 위 옅은 원 장식 */
+.hero { position:relative; overflow:hidden; padding: 2.1rem 2rem 2rem; border-radius: 24px; margin-bottom: 1.4rem; color:#fff;
+  background: linear-gradient(140deg, #5b6ff5 0%, #4f63f0 55%, #3d4fd6 100%); box-shadow: 0 14px 36px rgba(79,99,240,.28); }
+.hero::before, .hero::after { content:''; position:absolute; border-radius:50%; background:rgba(255,255,255,.10); }
+.hero::before { width:15rem; height:15rem; right:-4rem; top:-5rem; }
+.hero::after { width:8rem; height:8rem; right:5rem; bottom:-4.5rem; background:rgba(255,255,255,.07); }
+.hero .pill { position:relative; display:inline-block; font-size:.78rem; font-weight:600; color:#fff;
+  background:rgba(255,255,255,.18); padding:.24rem .75rem; border-radius:999px; margin-bottom:.9rem; }
+.hero h1 { position:relative; color:#fff; font-size:1.9rem; font-weight:800; line-height:1.32; margin:0 0 .5rem; padding:0; letter-spacing:-.02em; }
+.hero p { position:relative; margin:0; color:rgba(255,255,255,.85); font-size:1rem; }
 
-.section-label { font-size:.85rem; font-weight:600; opacity:.65; margin:.4rem 0 .5rem; }
+.section-label { font-size:.9rem; font-weight:800; color:var(--sub); margin:.4rem 0 .7rem; }
+/* 예시 질문: 흰 카드 버튼, 글은 왼쪽 정렬 + 오른쪽 화살표, 올리면 파란 테두리 */
+.st-key-ex0 button, .st-key-ex1 button, .st-key-ex2 button, .st-key-ex3 button {
+  justify-content:flex-start !important; text-align:left !important; border-radius:16px !important;
+  border:1px solid var(--line) !important; background:var(--card) !important; color:var(--text) !important;
+  padding:.95rem 2.6rem .95rem 1.1rem !important; min-height:3.6rem; box-shadow:var(--shadow); position:relative; }
+.st-key-ex0 button > div, .st-key-ex1 button > div, .st-key-ex2 button > div, .st-key-ex3 button > div { justify-content:flex-start !important; width:100%; }
+.st-key-ex0 button p, .st-key-ex1 button p, .st-key-ex2 button p, .st-key-ex3 button p { font-size:.97rem !important; font-weight:600 !important; text-align:left; }
+.st-key-ex0 button::after, .st-key-ex1 button::after, .st-key-ex2 button::after, .st-key-ex3 button::after {
+  content:'→'; position:absolute; right:1.1rem; color:var(--accent); font-weight:800; }
+.st-key-ex0 button:hover, .st-key-ex1 button:hover, .st-key-ex2 button:hover, .st-key-ex3 button:hover {
+  border-color:var(--accent) !important; color:var(--accent) !important; }
 
-.summary { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin:.1rem 0 .9rem; font-size:.98rem; }
-.chip { font-size:.8rem; font-weight:600; padding:.2rem .6rem; border-radius:999px; background:var(--accent-soft); color:var(--accent); }
+/* 본문의 Streamlit 버튼(체크 완료·판정 기준 문서·이어서 질문 등): 흰 바탕 알약 + 파란 글씨 */
+[data-testid="stMainBlockContainer"] .stButton button { border-radius:999px; border:1px solid var(--accent-line); background:var(--card);
+  color:var(--accent); font-weight:700; padding:.45rem 1.1rem; }
+[data-testid="stMainBlockContainer"] .stButton button p { font-size:.9rem; font-weight:700; }
+[data-testid="stMainBlockContainer"] .stButton button:hover { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
 
-[class*="st-key-card_"] { border:1px solid var(--line); background:var(--surface); border-radius:16px;
-  padding:1.05rem 1.15rem 1rem; margin:0 0 .85rem; gap:.6rem !important; }
-.card-head { display:flex; gap:.75rem; align-items:flex-start; margin-bottom:.75rem; }
-.num { flex:none; width:1.75rem; height:1.75rem; border-radius:50%; background:var(--accent); color:#fff;
-  font-weight:700; font-size:.9rem; display:flex; align-items:center; justify-content:center; margin-top:.1rem; }
-.title { font-size:1.08rem; font-weight:700; line-height:1.4; }
-.agency { font-size:.84rem; opacity:.7; margin-top:.1rem; }
-.badge { margin-left:auto; flex:none; font-size:.76rem; font-weight:700; padding:.25rem .6rem; border-radius:999px; white-space:nowrap; }
+/* 대화(채팅 형식): 내 질문은 오른쪽 파란 말풍선(아이콘 없음), 답변은 왼쪽 길잡이 아이콘 옆에 */
+[data-testid="stChatMessage"] { padding:0 !important; background:transparent !important; gap:.75rem !important; margin-bottom:.6rem; }
+/* 이모지 아바타는 testid가 없어 aria-hidden 첫 칸으로, 누구의 말인지는 aria-label로 구분한다 (Streamlit 1.66) */
+[data-testid="stChatMessage"]:has([aria-label="Chat message from user"]) > div[aria-hidden="true"] { display:none !important; }
+[data-testid="stChatMessageContent"][aria-label="Chat message from user"] { display:flex; flex-direction:column; align-items:flex-end; }
+[data-testid="stChatMessageContent"][aria-label="Chat message from user"] [data-testid="stMarkdownContainer"] { text-align:right; }
+.uq { text-align:left; }
+[data-testid="stChatMessage"]:has([aria-label="Chat message from assistant"]) > div[aria-hidden="true"] {
+  width:2.4rem; height:2.4rem; border-radius:50%; background:var(--accent-soft); border:none; font-size:1.2rem;
+  display:flex; align-items:center; justify-content:center; }
+[data-testid="stChatMessageContent"][aria-label="Chat message from assistant"]::before {
+  content:'길잡이'; display:block; font-size:.82rem; font-weight:800; color:var(--sub); margin:.45rem 0 .55rem; }
+.uq { display:inline-block; max-width:80%; background:var(--accent); color:#fff; font-weight:600; font-size:1.02rem; line-height:1.55;
+  padding:.75rem 1.1rem; border-radius:20px 20px 6px 20px; box-shadow:0 6px 18px rgba(79,99,240,.22); margin:.3rem 0 .8rem; }
+
+/* 입력창: 흰 둥근 막대 + 그림자 */
+[data-testid="stBottom"] > div, [data-testid="stBottomBlockContainer"] { background: var(--page) !important; }
+[data-testid="stChatInput"] { border-radius:999px !important; border:1px solid var(--line) !important;
+  background:var(--card) !important; box-shadow:0 8px 24px rgba(27,31,46,.08) !important; }
+[data-testid="stChatInput"] > div { border-radius:999px !important; background:transparent !important; border:none !important; }
+[data-testid="stChatInput"] textarea { font-size:1rem !important; color:var(--text) !important; }
+[data-testid="stChatInputSubmitButton"] { border-radius:50% !important; background:var(--accent) !important; color:#fff !important; }
+
+.summary { display:flex; flex-wrap:wrap; align-items:center; gap:.45rem; margin:.1rem 0 1rem; font-size:1.02rem; color:var(--text); }
+.chip { font-size:.84rem; font-weight:700; padding:.28rem .75rem; border-radius:999px; background:var(--accent-soft); color:var(--accent); }
+
+/* 추천 카드: 흰 카드, 제목 크게, 본문 진하게, 칸은 옅은 회색 타일 */
+[class*="st-key-card_"] { border:1px solid var(--line); background:var(--card); border-radius:22px; box-shadow:var(--shadow);
+  padding:1.45rem 1.5rem 1.2rem; margin:0 0 1.1rem; gap:.75rem !important; }
+.card-head { display:flex; gap:.85rem; align-items:flex-start; margin-bottom:.9rem; }
+.num { flex:none; width:2rem; height:2rem; border-radius:10px; background:var(--accent); color:#fff;
+  font-weight:800; font-size:.95rem; display:flex; align-items:center; justify-content:center; margin-top:.1rem; }
+.title { font-size:1.28rem; font-weight:800; line-height:1.35; color:var(--text); letter-spacing:-.01em; }
+.agency { font-size:.88rem; color:var(--sub); margin-top:.25rem; }
+.badge { margin-left:auto; flex:none; font-size:.8rem; font-weight:800; padding:.3rem .7rem; border-radius:999px; white-space:nowrap; }
 .badge.ok { color:var(--ok); background:var(--ok-soft); }
-.badge.check { color:var(--warn); background:var(--warn-soft); }
+.badge.check { color:var(--warn); background:var(--warn-soft); border:1px solid #f6dfb8; }
 
-.reason { font-size:.95rem; line-height:1.6; margin-bottom:.75rem; }
-.grid { display:grid; grid-template-columns:var(--cols, 1fr 1fr); gap:.6rem; margin-bottom:.7rem; }
+/* 카드 넘기기: 카드 양옆 둥근 화살표 버튼, 아래 점·순번 */
+[class*="st-key-prev_"] button, [class*="st-key-next_"] button { width:2.6rem; height:2.6rem; min-height:2.6rem; padding:0 !important;
+  border-radius:50% !important; background:var(--card) !important; border:1px solid var(--line) !important; box-shadow:var(--shadow); }
+[class*="st-key-prev_"] button p, [class*="st-key-next_"] button p { font-size:1.6rem !important; line-height:1; color:var(--accent); margin-top:-.15rem; }
+[class*="st-key-next_"] button:not(:disabled) { background:var(--accent) !important; border-color:var(--accent) !important; }
+[class*="st-key-next_"] button:not(:disabled) p { color:#fff !important; }
+[class*="st-key-prev_"] button:disabled, [class*="st-key-next_"] button:disabled { opacity:.35; }
+.slider-nav { display:flex; align-items:center; justify-content:center; gap:.4rem; margin:-.3rem 0 1rem; }
+.slider-nav .dot { width:.5rem; height:.5rem; border-radius:999px; background:#d5d9e6; }
+.slider-nav .dot.on { width:1.4rem; background:var(--accent); }
+.slider-count { font-size:.85rem; font-weight:700; color:var(--sub); margin-left:.4rem; }
+.reason { font-size:1.02rem; line-height:1.7; color:var(--text); margin-bottom:1rem; padding-left:.85rem; border-left:3px solid var(--accent-line); }
+.grid { display:grid; grid-template-columns:var(--cols, 1fr 1fr); gap:.75rem; margin-bottom:.8rem; }
 @media (max-width: 640px) { .grid { grid-template-columns:1fr; } .badge { margin-left:0; } .card-head { flex-wrap:wrap; } }
-.box { border-radius:12px; padding:.65rem .8rem; border:1px solid var(--line); }
-.box .k { font-size:.78rem; font-weight:700; opacity:.6; margin-bottom:.2rem; }
-.box .v { font-size:.92rem; line-height:1.55; white-space:pre-line; }      /* 담당자·원문의 줄바꿈(&#10;)을 그대로 보인다 */
+.box { border-radius:16px; padding:.95rem 1.05rem; background:var(--tile); border:none; }
+.box .k { font-size:.82rem; font-weight:800; color:var(--accent); margin-bottom:.35rem; }
+.box .v { font-size:1rem; line-height:1.65; color:var(--text); white-space:pre-line; }      /* 담당자·원문의 줄바꿈(&#10;)을 그대로 보인다 */
 .src-detail { margin-top:.4rem; }
 .src-detail summary { display:inline-block; cursor:pointer; list-style:none; font-size:.74rem; font-weight:600; color:var(--accent);
   border:1px solid var(--accent); border-radius:999px; padding:.05rem .55rem; }
@@ -115,10 +189,10 @@ header[data-testid="stHeader"] { background: transparent; }
 .scope.local { color:var(--ok); background:var(--ok-soft); }
 
 /* 자격 체크리스트 (확인이 필요한 조건을 사용자가 스스로 체크) */
-[class*="st-key-checklist_"] { border-radius:12px; padding:.65rem .9rem .55rem; background:var(--warn-soft); gap:.35rem !important; }
-.ck-title { font-size:.84rem; font-weight:700; color:var(--warn); line-height:1.4; }
-.ck-sub { font-size:.78rem; opacity:.7; line-height:1.4; padding-bottom:.7rem; }   /* markdown 블록의 음수 아래 여백 상쇄 */
-[class*="st-key-checklist_"] label p { font-size:.9rem; line-height:1.5; }
+[class*="st-key-checklist_"] { border-radius:16px; padding:1rem 1.1rem .85rem; background:var(--warn-soft); border:1px solid #f6e2c2; gap:.45rem !important; }
+.ck-title { font-size:.95rem; font-weight:800; color:var(--warn); line-height:1.4; }
+.ck-sub { font-size:.84rem; color:var(--sub); line-height:1.5; padding-bottom:.7rem; }   /* markdown 블록의 음수 아래 여백 상쇄 */
+[class*="st-key-checklist_"] label p { font-size:.98rem; line-height:1.6; color:var(--text); }
 /* 체크 상자를 서비스 색으로 (Streamlit 기본 빨강 대신). 1.66: 체크되면 label[data-selected], 첫 div가 상자 */
 [class*="st-key-checklist_"] label[data-selected="true"] > div:first-of-type {
   background-color:var(--accent) !important; border-color:var(--accent) !important; }
@@ -135,36 +209,38 @@ header[data-testid="stHeader"] { background: transparent; }
 .calc-table { font-size:.76rem; width:100%; border-collapse:collapse; margin:.3rem 0; }
 .calc-table td { padding:.12rem .2rem; border-bottom:1px solid rgba(128,128,128,.18); }
 .calc-table td:last-child { text-align:right; }
-details.src { border-top:1px dashed var(--line); padding-top:.55rem; }
-details.src summary { cursor:pointer; font-size:.85rem; font-weight:600; opacity:.75; list-style:none; }
+details.src { border-top:1px solid var(--line); padding-top:.75rem; }
+details.src summary { cursor:pointer; font-size:.9rem; font-weight:700; color:var(--sub); list-style:none; }
 details.src summary::-webkit-details-marker { display:none; }
 details.src summary::before { content:'▸ '; } details.src[open] summary::before { content:'▾ '; }
-.quote { border-left:3px solid var(--accent); padding:.25rem .7rem; margin:.5rem 0; font-size:.88rem; line-height:1.55; opacity:.9; }
+.quote { border-left:3px solid var(--accent); padding:.35rem .8rem; margin:.55rem 0; font-size:.94rem; line-height:1.65; color:var(--text);
+  background:var(--tile); border-radius:0 10px 10px 0; }
 .links { display:flex; justify-content:flex-end; margin-top:.6rem; }
-a.btn { font-size:.84rem; font-weight:600; text-decoration:none !important; color:var(--accent) !important;
-  border:1px solid var(--accent); border-radius:999px; padding:.3rem .85rem; }
-a.btn:hover { background:var(--accent-soft); }
+/* 링크 버튼(신청하기·상세 페이지 등): 진한 파랑으로 채운 버튼 */
+a.btn { display:inline-block; font-size:.85rem; font-weight:700; text-decoration:none !important; color:#fff !important;
+  background:var(--accent); border:1px solid var(--accent); border-radius:10px; padding:.42rem .95rem; }
+a.btn:hover { background:var(--accent-strong); border-color:var(--accent-strong); }
 
-.callout { border-radius:14px; padding:.8rem 1rem; border:1px solid var(--line); background:var(--accent-soft); margin:.2rem 0 .7rem; font-size:.93rem; }
+.callout { border-radius:16px; padding:.95rem 1.1rem; border:1px solid var(--line); background:var(--card); margin:.2rem 0 .8rem; font-size:.98rem; line-height:1.6; }
 .callout b { color:var(--accent); }
-.disclaimer { font-size:.8rem; opacity:.6; margin-top:.2rem; }
-.empty { text-align:center; padding:1.6rem 1rem; border:1px dashed var(--line); border-radius:16px; }
+.disclaimer { font-size:.84rem; color:var(--faint); margin:.3rem 0 .6rem; }
+.empty { text-align:center; padding:2rem 1.2rem; border:1px solid var(--line); border-radius:22px; background:var(--card); box-shadow:var(--shadow); }
 .empty .icon { font-size:2rem; } .empty p { margin:.4rem 0 .9rem; line-height:1.6; }
 .empty .links { justify-content:center; gap:.5rem; }
 /* 주제 띠 · 이어진 대화 · 이어서 질문 박스 */
-.topic { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; padding:.7rem 1rem; margin-bottom:1rem;
-  border-radius:14px; border:1px solid var(--line); background:var(--surface); }
-.topic .lbl { font-size:.75rem; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:.18rem .55rem; border-radius:999px; }
-.topic .q { font-weight:700; font-size:.95rem; flex:1; min-width:12rem; }
-.topic .cnt { font-size:.78rem; opacity:.65; }
+.topic { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; padding:.2rem 0 .9rem; margin-bottom:1rem;
+  border-bottom:1px solid var(--line); }
+.topic .lbl { font-size:.78rem; font-weight:800; color:var(--accent); background:var(--accent-soft); padding:.22rem .6rem; border-radius:999px; }
+.topic .q { font-weight:700; font-size:.98rem; flex:1; min-width:12rem; color:var(--sub); }
+.topic .cnt { font-size:.82rem; color:var(--faint); }
 [class*="st-key-fu_"] { border-left:3px solid var(--accent); margin-left:1.1rem; padding-left:.9rem; }
 .fu-tag { display:inline-block; font-size:.75rem; font-weight:700; color:var(--accent); background:var(--accent-soft);
   padding:.12rem .5rem; border-radius:999px; margin-bottom:.3rem; }
-.st-key-followbox, .st-key-replybox { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:14px;
-  background:var(--accent-soft); padding:.85rem 1rem .9rem; margin:.3rem 0 .6rem; }
-.fb-title { font-weight:700; font-size:.92rem; color:var(--accent); }
-.fb-q { font-size:.93rem; margin:.3rem 0 .1rem; }
-.fb-sub { font-size:.8rem; opacity:.7; }
+.st-key-followbox, .st-key-replybox { border:1px solid var(--line); border-radius:20px;
+  background:var(--card); box-shadow:var(--shadow); padding:1.1rem 1.2rem 1.1rem; margin:.3rem 0 .8rem; }
+.fb-title { font-weight:800; font-size:1rem; color:var(--accent); }
+.fb-q { font-size:1rem; margin:.35rem 0 .15rem; color:var(--text); }
+.fb-sub { font-size:.86rem; color:var(--sub); }
 .st-key-followbox button, .st-key-replybox button { border-radius:999px !important; font-weight:600 !important; }
 .st-key-followbox button { border-color:var(--accent) !important; color:var(--accent) !important; }
 [data-testid="stSidebar"] button[kind="primary"] { background:var(--accent) !important; border-color:var(--accent) !important; color:#fff !important; }
@@ -521,6 +597,33 @@ def _card(i: int, r: Recommendation, key: str, region: str | None = None) -> Non
         st.markdown(_card_sources(r), unsafe_allow_html=True)
 
 
+def _slide(state_key: str, step: int, total: int) -> None:
+    st.session_state[state_key] = min(max(st.session_state.get(state_key, 0) + step, 0), total - 1)
+
+
+def _card_slider(recs: list[Recommendation], key: str, region: str | None) -> None:
+    """제도 카드를 한 장씩 보여 주고 좌우 화살표로 다음 순위 제도로 넘긴다 (스크롤 대신 한 자리에서 비교).
+    카드 안 체크리스트·버튼은 Streamlit 위젯이라 HTML 슬라이더에 넣을 수 없어 버튼으로 넘긴다.
+    체크 상태는 session_state.checks에 카드 key별로 남으므로 다른 제도를 보고 돌아와도 유지된다."""
+    if not recs:
+        return
+    state_key = f"slide_{key}"
+    total = len(recs)
+    pos = min(st.session_state.get(state_key, 0), total - 1)
+    prev_col, card_col, next_col = st.columns([1, 14, 1], vertical_alignment="center", gap="small")
+    with prev_col:
+        st.button("‹", key=f"prev_{key}", disabled=pos == 0, on_click=_slide, args=(state_key, -1, total),
+                  help="이전 제도")
+    with next_col:
+        st.button("›", key=f"next_{key}", disabled=pos >= total - 1, on_click=_slide, args=(state_key, 1, total),
+                  help="다음 제도")
+    with card_col:
+        _card(pos + 1, recs[pos], f"{key}_{pos + 1}", region)
+    dots = "".join(f'<span class="dot{" on" if j == pos else ""}"></span>' for j in range(total))
+    st.markdown(f'<div class="slider-nav">{dots}<span class="slider-count">{pos + 1} / {total}</span></div>',
+                unsafe_allow_html=True)
+
+
 def _render_answer(answer: Answer, show_follow: bool = True, key: str = "", region: str | None = None) -> None:
     """key: 이 답변을 구분하는 값 (주제 번호_메시지 번호). 카드 체크리스트 위젯의 key에 쓴다.
     region: 사용자가 말한 시·도 (판정 기준 문서의 지역 비교용)."""
@@ -537,8 +640,7 @@ def _render_answer(answer: Answer, show_follow: bool = True, key: str = "", regi
     chips = "".join(f'<span class="chip">{_e(s.strip())}</span>' for s in situation.split(",") if s.strip())
     st.markdown(f'<div class="summary">{chips}<span>상황에 맞는 지원제도 <b>{len(answer.recommendations)}개</b>를 찾았어요.</span></div>',
                 unsafe_allow_html=True)
-    for i, r in enumerate(answer.recommendations, 1):
-        _card(i, r, f"{key}_{i}", region)
+    _card_slider(answer.recommendations, key, region)
     if follow and show_follow:
         st.markdown(f'<div class="callout"><b>💬 더 정확히 안내해 드릴게요</b><br>{_e(follow)}</div>', unsafe_allow_html=True)
     st.markdown('<div class="disclaimer">※ 최종 신청 자격은 담당 기관에서 확인하세요. 답변은 수집된 공공데이터에 근거하며 '
@@ -558,15 +660,16 @@ def _title(thread: list[dict]) -> str:
 
 def _sidebar() -> None:
     with st.sidebar:
-        st.markdown("### 🧭 청년 지원제도 길잡이")
-        st.caption("행정안전부 공공서비스(혜택) 정보(보조금24) 중 개인·가구 지원제도(일자리·주거·교육·생활·결혼·출산·육아 등)를 "
-                   "근거로 답합니다.")
+        st.markdown('<div class="brand"><div class="logo">개정안</div><div><div class="name">지원제도 길잡이</div>'
+                    '<div class="tag">개인 맞춤형 정부 지원제도 안내</div></div></div>'
+                    '<div class="side-note">행정안전부 공공서비스(혜택) 정보(보조금24) 중 개인·가구 지원제도(일자리·주거·교육·생활·'
+                    '결혼·출산·육아 등)를 근거로 답합니다.</div>', unsafe_allow_html=True)
         if st.button("＋ 새 질문", use_container_width=True, type="primary"):
             st.session_state.current, st.session_state.follow = None, False
             st.rerun()
 
         if st.session_state.threads:
-            st.markdown("**최근 질문**")
+            st.markdown('<div class="side-h">최근 질문</div>', unsafe_allow_html=True)
             for i in reversed(range(len(st.session_state.threads))):
                 active = i == st.session_state.current
                 label = ("▸ " if active else "") + _title(st.session_state.threads[i])
@@ -574,7 +677,7 @@ def _sidebar() -> None:
                     st.session_state.current, st.session_state.follow = i, False
                     st.rerun()
 
-        st.markdown("**답변 읽는 법**")
+        st.markdown('<div class="side-h">답변 읽는 법</div>', unsafe_allow_html=True)
         st.markdown('<div class="legend"><span class="badge ok">해당 가능성 높음</span><div>밝혀 주신 조건으로 자격이 맞아요</div></div>'
                     '<div class="legend"><span class="badge check">확인 필요</span><div>소득·가구 등 더 확인할 조건이 있어요. '
                     '카드의 자격 체크리스트에서 해당하는 조건을 체크해 보세요</div></div>'
@@ -582,7 +685,7 @@ def _sidebar() -> None:
                     '<div>체크리스트를 모두 체크했어요 (스스로 확인한 결과예요)</div></div>',
                     unsafe_allow_html=True)
         _income_calculator()
-        st.markdown("**잘 물어보는 팁**")
+        st.markdown('<div class="side-h">잘 물어보는 팁</div>', unsafe_allow_html=True)
         st.caption("나이 · 사는 지역 · 지금 상황(구직, 재직, 결혼 등) · 필요한 도움(월세, 학비 등)을 함께 적으면 더 정확해요. "
                    "답변 아래 '이어서 질문하기'로 소득 같은 정보를 덧붙일 수 있어요.")
         if not _search_ready():
@@ -608,7 +711,7 @@ def _render_thread(thread: list[dict]) -> None:
             with st.chat_message(msg["role"], avatar="🙋" if msg["role"] == "user" else "🧭"):
                 if msg["role"] == "user":
                     tag = '<div class="fu-tag">↳ 위 질문에 이어서</div>' if msg.get("follow") else ""
-                    st.markdown(f"{tag}<div>{_e(msg['content'])}</div>", unsafe_allow_html=True)
+                    st.markdown(f'{tag}<div class="uq">{_e(msg["content"])}</div>', unsafe_allow_html=True)
                 elif msg.get("guide"):
                     _render_guide_answer(msg["content"])
                 else:
@@ -646,7 +749,7 @@ def _merged_question(thread: list[dict], new: str) -> str:
 
 
 def main() -> None:
-    st.set_page_config(page_title="청년 지원제도 길잡이", page_icon="🧭", layout="centered")
+    st.set_page_config(page_title="개정안 · 지원제도 길잡이", page_icon="🧭", layout="centered")
     st.markdown(CSS, unsafe_allow_html=True)
     st.session_state.setdefault("threads", [])     # 주제별 대화 [[{role, content}, ...], ...]
     st.session_state.setdefault("current", None)   # 화면에 보이는 주제 번호 (None = 첫 화면)
@@ -662,7 +765,7 @@ def main() -> None:
     if not thread:                                  # 첫 화면: 소개 + 예시 질문
         st.markdown("""
 <div class="hero">
-  <div class="pill">청년 맞춤 · 공공데이터 기반</div>
+  <div class="pill">개인 맞춤 · 공공데이터 기반</div>
   <h1>내게 맞는 정부 지원,<br>평소 말투로 물어보세요</h1>
   <p>상황을 적으면 받을 수 있는 지원제도를 근거와 신청 방법까지 함께 찾아드려요.</p>
 </div>""", unsafe_allow_html=True)
